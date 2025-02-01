@@ -1,0 +1,32 @@
+[package]
+authors = ["Jonathan Pallant (Ferrous Systems) <jonathan.pallant@ferrous-systems.com>"]
+edition = "2021"
+readme = "README.md"
+name = "morsecode"
+version = "0.1.0"
+
+[dependencies]
+bare-metal = "1.0"
+cortex-m = {version = "0.7.0", features = ["inline-asm"]}
+cortex-m-rt = "0.7"
+cortex-m-rtic = "1"
+panic-semihosting = "0.6"
+cortex-m-semihosting = "0.5"
+psoc6-pac = {path = "../psoc6-pac", features = ["rt"]}
+systick-monotonic = "1.0.0"
+
+
+[features]
+use-bootloader = []
+
+# this lets you use `cargo fix`!
+[[bin]]
+name = "morsecode"
+test = false
+bench = false
+
+[profile.release]
+lto = true
+debug = true
+opt-level ="s"
+codegen-units = 1
