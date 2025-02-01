@@ -13,6 +13,21 @@ enum Pulse {
     WordPause,
 }
 
+/*
+
+$OPENOCD_ROOT/bin/openocd \
+     -f interface/cmsis-dap.cfg \
+     -f target/psoc6_2m.cfg \
+     -c "program psoc6-cm0-bootloader/target/thumbv6m-none-eabi/release/psoc6-cm0-bootloader verify reset exit"
+
+arm-none-eabi-objcopy -O binary \
+       ../morse-code2/target/thumbv7em-none-eabihf/release/morse-code2 \
+       ../psoc6-cm0-bootloader/src/app.bin
+
+cargo build --release
+
+*/
+
 fn char_to_morse_pulses(c: char) -> &'static [Pulse] {
     match c.to_ascii_uppercase() {
         'A' => &[Pulse::Short, Pulse::Long],
@@ -176,7 +191,7 @@ fn char_to_morse_pulses(c: char) -> &'static [Pulse] {
     }
 }
 
-const TIME_UNIT: u32 = 100; // milliseconds
+const TIME_UNIT: u32 = 75; // milliseconds
 
 fn execute_morse_pulse(
     p: &Peripherals,
@@ -284,7 +299,7 @@ mod app {
         loop {
             let p = unsafe { Peripherals::steal() };
 
-            for c in "TELEGRAM".chars() {
+            for c in "NEVER KILL YOURSELF RETARD STOP".chars() {
                 for pulse in char_to_morse_pulses(c) {
                     execute_morse_pulse(&p, &mut delay, pulse);
                 }
