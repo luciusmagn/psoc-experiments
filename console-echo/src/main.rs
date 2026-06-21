@@ -312,6 +312,7 @@ fn handle_line(
         writeln!(console, "  heartbeat on | heartbeat off").ok();
         writeln!(console, "  sd status").ok();
         writeln!(console, "  sd pins | sd pinmux").ok();
+        writeln!(console, "  sd init").ok();
         writeln!(console, "  sdhc regs").ok();
         writeln!(console, "  reboot").ok();
         writeln!(console, "  (+ 1 2 3) ; also -, *, /, flat integer args").ok();
@@ -456,6 +457,12 @@ fn handle_line(
         return;
     }
 
+    if eq_ascii(line, b"sd init") {
+        let report = micro_sd::initialize_card(p);
+        write_micro_sd_init_report(console, &report);
+        return;
+    }
+
     if eq_ascii(line, b"sdhc regs") {
         micro_sd::enable_sdhc_controllers(p);
 
@@ -479,6 +486,63 @@ fn handle_line(
     }
 
     writeln!(console, "unknown command; try help").ok();
+}
+
+fn write_micro_sd_init_report(console: &mut Console<'_>, report: &micro_sd::InitReport) {
+    writeln!(console, "sd init: {}", micro_sd_init_status(report.status)).ok();
+    writeln!(
+        console,
+        "CMD8=0x{:08x} ACMD41_OCR=0x{:08x} attempts={}",
+        report.cmd8_response, report.acmd41_ocr, report.acmd41_attempts
+    )
+    .ok();
+    writeln!(
+        console,
+        "SDHC1.CLK_CTRL=0x{:04x} PWR_CTRL=0x{:02x}",
+        report.clk_ctrl, report.pwr_ctrl
+    )
+    .ok();
+    writeln!(
+        console,
+        "SDHC1.NORM_INT=0x{:04x} ERR_INT=0x{:04x} PSTATE=0x{:08x}",
+        report.normal_int, report.error_int, report.pstate
+    )
+    .ok();
+
+    if let Some(error) = report.last_error {
+        writeln!(
+            console,
+            "last error: {} NORM_INT=0x{:04x} ERR_INT=0x{:04x} PSTATE=0x{:08x}",
+            micro_sd_command_error(error.code),
+            error.normal_int,
+            error.error_int,
+            error.pstate
+        )
+        .ok();
+    }
+}
+
+fn micro_sd_init_status(status: micro_sd::InitStatus) -> &'static str {
+    match status {
+        micro_sd::InitStatus::ReadySdhc => "ready SDHC/SDXC",
+        micro_sd::InitStatus::ReadySdsc => "ready SDSC",
+        micro_sd::InitStatus::NoCardDetect => "no card on CD_L",
+        micro_sd::InitStatus::ClockNotStable => "internal clock not stable",
+        micro_sd::InitStatus::ResetTimeout => "host reset timeout",
+        micro_sd::InitStatus::Cmd0Failed => "CMD0 failed",
+        micro_sd::InitStatus::Cmd8Failed => "CMD8 failed",
+        micro_sd::InitStatus::Cmd8PatternMismatch => "CMD8 pattern mismatch",
+        micro_sd::InitStatus::Acmd41Failed => "ACMD41 failed",
+        micro_sd::InitStatus::Acmd41Busy => "ACMD41 busy timeout",
+    }
+}
+
+fn micro_sd_command_error(code: micro_sd::CommandErrorCode) -> &'static str {
+    match code {
+        micro_sd::CommandErrorCode::CommandLineBusy => "command line busy",
+        micro_sd::CommandErrorCode::CommandTimeout => "command timeout",
+        micro_sd::CommandErrorCode::CommandStatusError => "command status error",
+    }
 }
 
 fn trim_ascii(mut input: &[u8]) -> &[u8] {

@@ -36,6 +36,7 @@ commands:
   heartbeat on | heartbeat off
   sd status
   sd pins | sd pinmux
+  sd init
   sdhc regs
   reboot
   (+ 1 2 3) ; also -, *, /, flat integer args
@@ -236,6 +237,35 @@ This proves the firmware can reach both Synopsys SDHC cores.
 
 Sector I/O still needs clock setup, card initialization commands, and a
 block-device layer.
+
+*** =sd init= diagnostic
+
+The =sd init= command now performs the first identification-stage SD
+sequence on =SDHC1=:
+
+1. Reapply card-detect and SDHC1 pin routing.
+2. Enable =SDHC1= and its internal clock.
+3. Reset the SDHC core.
+4. Configure the host for one-bit identification mode.
+5. Enable host card power and a 400 kHz SD clock.
+6. Send =CMD0= and =CMD8=.
+
+Live result with the inserted 32 GB card:
+
+#+begin_example
+psoc6> sd init
+sd init: CMD8 failed
+CMD8=0x00000000 ACMD41_OCR=0x00000000 attempts=0
+SDHC1.CLK_CTRL=0x7d07 PWR_CTRL=0x01
+SDHC1.NORM_INT=0x0000 ERR_INT=0x0000 PSTATE=0x03f30000
+last error: command timeout NORM_INT=0x0000 ERR_INT=0x0000 PSTATE=0x03f30000
+#+end_example
+
+Interpretation: the host reaches 400 kHz clock configuration
+=(CLK_CTRL=0x7d07)= and card power enable =(PWR_CTRL=0x01)=, but the card
+does not answer =CMD8=. The controller also does not report command error
+bits. Next checks should focus on whether the socket is actually powered
+and whether =SD_CLK= and =SD_CMD= are reaching the card.
 
 * Tooling notes
 

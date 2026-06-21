@@ -1,9 +1,43 @@
-use psoc6_pac::Peripherals;
+use psoc6_pac::{sdhc0, Peripherals};
 
 const CARD_DETECT_MASK: u32 = 1 << 5;
 const HSIOM_SEL_SDHC: u32 = 26;
 const DRIVE_HIGHZ_INPUT: u32 = 0x08;
 const DRIVE_STRONG_INPUT: u32 = 0x0e;
+const CPU_CLOCK_HZ: u32 = 50_000_000;
+
+const NORMAL_INT_ALL: u16 = 0x1fff;
+const ERROR_INT_ALL: u16 = 0x07ff;
+const NORMAL_INT_CMD_COMPLETE: u16 = 1 << 0;
+const NORMAL_INT_ERROR: u16 = 1 << 15;
+const PSTATE_CMD_INHIBIT: u32 = 1 << 0;
+const CLK_CTRL_INTERNAL_CLK_EN: u16 = 1 << 0;
+const CLK_CTRL_INTERNAL_CLK_STABLE: u16 = 1 << 1;
+const CLK_CTRL_SD_CLK_EN: u16 = 1 << 2;
+const HOST_CTRL1_CARD_DETECT_TEST_LEVEL: u8 = 1 << 6;
+const HOST_CTRL1_CARD_DETECT_SIGNAL_SELECT: u8 = 1 << 7;
+const HOST_CTRL2_HOST_VERSION_4_ENABLE: u16 = 1 << 12;
+const GP_OUT_BASIC_SD: u32 = (1 << 0) | (1 << 1) | (1 << 3) | (1 << 4) | (1 << 5);
+
+const SDHC_INPUT_CLOCK_HZ: u32 = 100_000_000;
+const SD_INIT_CLOCK_HZ: u32 = 400_000;
+const SD_INIT_CLOCK_DIVIDER: u16 = ((SDHC_INPUT_CLOCK_HZ / SD_INIT_CLOCK_HZ) >> 1) as u16;
+const SD_CMD8_ARGUMENT: u32 = 0x0000_01aa;
+const SD_CMD8_PATTERN_MASK: u32 = 0xff;
+const SD_CMD8_PATTERN: u32 = 0xaa;
+const SD_ACMD41_HCS: u32 = 1 << 30;
+const SD_OCR_BUSY: u32 = 1 << 31;
+const SD_OCR_CAPACITY: u32 = 1 << 30;
+const SD_ACMD41_VOLTAGE_MASK: u32 = (1 << 23)
+    | (1 << 22)
+    | (1 << 21)
+    | (1 << 20)
+    | (1 << 19)
+    | (1 << 18)
+    | (1 << 17)
+    | (1 << 16)
+    | (1 << 15);
+const SD_ACMD41_MAX_ATTEMPTS: u16 = 1000;
 
 const P12_SDHC_PINS_MASK: u32 = (0x0f << 16) | (0x0f << 20);
 const P12_SDHC_PINS_CFG: u32 = (DRIVE_STRONG_INPUT << 16) | (DRIVE_STRONG_INPUT << 20);
@@ -38,6 +72,70 @@ pub struct SdhcSnapshot {
     pub cap1: u32,
     pub cap2: u32,
     pub pstate: u32,
+}
+
+#[derive(Clone, Copy)]
+pub enum CommandErrorCode {
+    CommandLineBusy,
+    CommandTimeout,
+    CommandStatusError,
+}
+
+#[derive(Clone, Copy)]
+pub struct CommandError {
+    pub code: CommandErrorCode,
+    pub normal_int: u16,
+    pub error_int: u16,
+    pub pstate: u32,
+}
+
+#[derive(Clone, Copy)]
+pub enum InitStatus {
+    ReadySdhc,
+    ReadySdsc,
+    NoCardDetect,
+    ClockNotStable,
+    ResetTimeout,
+    Cmd0Failed,
+    Cmd8Failed,
+    Cmd8PatternMismatch,
+    Acmd41Failed,
+    Acmd41Busy,
+}
+
+pub struct InitReport {
+    pub status: InitStatus,
+    pub cmd8_response: u32,
+    pub acmd41_ocr: u32,
+    pub acmd41_attempts: u16,
+    pub last_error: Option<CommandError>,
+    pub clk_ctrl: u16,
+    pub pwr_ctrl: u8,
+    pub normal_int: u16,
+    pub error_int: u16,
+    pub pstate: u32,
+}
+
+#[derive(Clone, Copy)]
+enum ResponseType {
+    None = 0,
+    Len48 = 2,
+}
+
+#[derive(Clone, Copy)]
+enum CommandType {
+    Normal = 0,
+    Abort = 3,
+}
+
+#[derive(Clone, Copy)]
+struct Command {
+    index: u8,
+    argument: u32,
+    response: ResponseType,
+    command_type: CommandType,
+    crc_check: bool,
+    index_check: bool,
 }
 
 pub fn configure_card_detect(p: &Peripherals) {
@@ -109,6 +207,138 @@ pub fn enable_sdhc_controllers(p: &Peripherals) {
     }
 }
 
+pub fn initialize_card(p: &Peripherals) -> InitReport {
+    configure_card_detect(p);
+    configure_sdhc1_pins(p);
+
+    let card_detect = card_detect_snapshot(p);
+    if !card_detect.is_low {
+        return init_report(p, InitStatus::NoCardDetect, 0, 0, 0, None);
+    }
+
+    p.SDHC1.wrap.ctl.write(|w| w.enable().set_bit());
+    let core = &p.SDHC1.core;
+
+    if !enable_internal_clock(core) {
+        return init_report(p, InitStatus::ClockNotStable, 0, 0, 0, None);
+    }
+
+    if !software_reset_all(core) {
+        return init_report(p, InitStatus::ResetTimeout, 0, 0, 0, None);
+    }
+
+    configure_host_for_identification(core);
+    enable_card_power(core);
+    change_card_clock(core, SD_INIT_CLOCK_DIVIDER);
+    delay_ms(10);
+    clear_interrupts(core);
+
+    if let Err(error) = send_command(
+        core,
+        Command {
+            index: 0,
+            argument: 0,
+            response: ResponseType::None,
+            command_type: CommandType::Abort,
+            crc_check: false,
+            index_check: false,
+        },
+    ) {
+        return init_report(p, InitStatus::Cmd0Failed, 0, 0, 0, Some(error));
+    }
+
+    let _ = software_reset_command_line(core);
+
+    let cmd8_response = match send_command(
+        core,
+        Command {
+            index: 8,
+            argument: SD_CMD8_ARGUMENT,
+            response: ResponseType::Len48,
+            command_type: CommandType::Normal,
+            crc_check: true,
+            index_check: true,
+        },
+    ) {
+        Ok(response) => response,
+        Err(error) => return init_report(p, InitStatus::Cmd8Failed, 0, 0, 0, Some(error)),
+    };
+
+    if cmd8_response & SD_CMD8_PATTERN_MASK != SD_CMD8_PATTERN {
+        return init_report(
+            p,
+            InitStatus::Cmd8PatternMismatch,
+            cmd8_response,
+            0,
+            0,
+            None,
+        );
+    }
+
+    let acmd41_argument = SD_ACMD41_VOLTAGE_MASK | SD_ACMD41_HCS;
+    let mut acmd41_ocr = 0;
+    let mut acmd41_attempts = 0;
+
+    while acmd41_attempts < SD_ACMD41_MAX_ATTEMPTS {
+        acmd41_attempts += 1;
+
+        if let Err(error) = send_app_command(core) {
+            return init_report(
+                p,
+                InitStatus::Acmd41Failed,
+                cmd8_response,
+                acmd41_ocr,
+                acmd41_attempts,
+                Some(error),
+            );
+        }
+
+        acmd41_ocr = match send_command(
+            core,
+            Command {
+                index: 41,
+                argument: acmd41_argument,
+                response: ResponseType::Len48,
+                command_type: CommandType::Normal,
+                crc_check: false,
+                index_check: false,
+            },
+        ) {
+            Ok(response) => response,
+            Err(error) => {
+                return init_report(
+                    p,
+                    InitStatus::Acmd41Failed,
+                    cmd8_response,
+                    acmd41_ocr,
+                    acmd41_attempts,
+                    Some(error),
+                );
+            }
+        };
+
+        if acmd41_ocr & SD_OCR_BUSY != 0 {
+            let status = if acmd41_ocr & SD_OCR_CAPACITY != 0 {
+                InitStatus::ReadySdhc
+            } else {
+                InitStatus::ReadySdsc
+            };
+            return init_report(p, status, cmd8_response, acmd41_ocr, acmd41_attempts, None);
+        }
+
+        delay_ms(1);
+    }
+
+    init_report(
+        p,
+        InitStatus::Acmd41Busy,
+        cmd8_response,
+        acmd41_ocr,
+        acmd41_attempts,
+        None,
+    )
+}
+
 pub fn sdhc0_snapshot(p: &Peripherals) -> SdhcSnapshot {
     SdhcSnapshot {
         wrap_ctl: p.SDHC0.wrap.ctl.read().bits(),
@@ -127,4 +357,231 @@ pub fn sdhc1_snapshot(p: &Peripherals) -> SdhcSnapshot {
         cap2: p.SDHC1.core.capabilities2_r.read().bits(),
         pstate: p.SDHC1.core.pstate_reg.read().bits(),
     }
+}
+
+fn init_report(
+    p: &Peripherals,
+    status: InitStatus,
+    cmd8_response: u32,
+    acmd41_ocr: u32,
+    acmd41_attempts: u16,
+    last_error: Option<CommandError>,
+) -> InitReport {
+    let core = &p.SDHC1.core;
+
+    InitReport {
+        status,
+        cmd8_response,
+        acmd41_ocr,
+        acmd41_attempts,
+        last_error,
+        clk_ctrl: core.clk_ctrl_r.read().bits(),
+        pwr_ctrl: core.pwr_ctrl_r.read().bits(),
+        normal_int: core.normal_int_stat_r.read().bits(),
+        error_int: core.error_int_stat_r.read().bits(),
+        pstate: core.pstate_reg.read().bits(),
+    }
+}
+
+fn configure_host_for_identification(core: &sdhc0::CORE) {
+    core.gp_out_r.write(|w| unsafe { w.bits(GP_OUT_BASIC_SD) });
+    core.xfer_mode_r.write(|w| unsafe { w.bits(0) });
+    core.host_ctrl1_r.write(|w| unsafe {
+        w.bits(HOST_CTRL1_CARD_DETECT_TEST_LEVEL | HOST_CTRL1_CARD_DETECT_SIGNAL_SELECT)
+    });
+    core.tout_ctrl_r.write(|w| unsafe { w.bits(0x0e) });
+    core.normal_int_stat_en_r
+        .write(|w| unsafe { w.bits(NORMAL_INT_ALL) });
+    core.error_int_stat_en_r
+        .write(|w| unsafe { w.bits(ERROR_INT_ALL) });
+    core.normal_int_signal_en_r.write(|w| unsafe { w.bits(0) });
+    core.error_int_signal_en_r.write(|w| unsafe { w.bits(0) });
+    core.host_ctrl2_r
+        .write(|w| unsafe { w.bits(HOST_CTRL2_HOST_VERSION_4_ENABLE) });
+}
+
+fn enable_card_power(core: &sdhc0::CORE) {
+    core.pwr_ctrl_r.write(|w| unsafe { w.bits(1) });
+}
+
+fn enable_internal_clock(core: &sdhc0::CORE) -> bool {
+    core.clk_ctrl_r
+        .modify(|r, w| unsafe { w.bits(r.bits() | CLK_CTRL_INTERNAL_CLK_EN) });
+    wait_for_clock_stable(core)
+}
+
+fn wait_for_clock_stable(core: &sdhc0::CORE) -> bool {
+    for _ in 0..1000 {
+        if core.clk_ctrl_r.read().bits() & CLK_CTRL_INTERNAL_CLK_STABLE != 0 {
+            return true;
+        }
+        delay_us(3);
+    }
+
+    false
+}
+
+fn software_reset_all(core: &sdhc0::CORE) -> bool {
+    core.clk_ctrl_r.write(|w| unsafe { w.bits(0) });
+    delay_us(10);
+    core.sw_rst_r.write(|w| w.sw_rst_all().set_bit());
+
+    for _ in 0..1000 {
+        if core.sw_rst_r.read().sw_rst_all().bit_is_clear() {
+            core.clk_ctrl_r
+                .write(|w| unsafe { w.bits(CLK_CTRL_INTERNAL_CLK_EN) });
+            return wait_for_clock_stable(core);
+        }
+        delay_us(3);
+    }
+
+    false
+}
+
+fn software_reset_command_line(core: &sdhc0::CORE) -> bool {
+    core.sw_rst_r.write(|w| w.sw_rst_cmd().set_bit());
+
+    for _ in 0..1000 {
+        if core.sw_rst_r.read().sw_rst_cmd().bit_is_clear() {
+            return true;
+        }
+        delay_us(3);
+    }
+
+    false
+}
+
+fn change_card_clock(core: &sdhc0::CORE, divider: u16) {
+    let mut clk_ctrl = core.clk_ctrl_r.read().bits() & !CLK_CTRL_SD_CLK_EN;
+    core.clk_ctrl_r.write(|w| unsafe { w.bits(clk_ctrl) });
+
+    clk_ctrl &= !((0xff << 8) | (0x03 << 6));
+    clk_ctrl |= (divider & 0xff) << 8;
+    clk_ctrl |= ((divider >> 8) & 0x03) << 6;
+    core.clk_ctrl_r.write(|w| unsafe { w.bits(clk_ctrl) });
+
+    delay_us(10);
+    core.clk_ctrl_r
+        .write(|w| unsafe { w.bits(clk_ctrl | CLK_CTRL_SD_CLK_EN) });
+}
+
+fn send_app_command(core: &sdhc0::CORE) -> Result<u32, CommandError> {
+    send_command(
+        core,
+        Command {
+            index: 55,
+            argument: 0,
+            response: ResponseType::Len48,
+            command_type: CommandType::Normal,
+            crc_check: true,
+            index_check: true,
+        },
+    )
+}
+
+fn send_command(core: &sdhc0::CORE, command: Command) -> Result<u32, CommandError> {
+    poll_command_line_free(core)?;
+    clear_interrupts(core);
+
+    core.argument_r
+        .write(|w| unsafe { w.bits(command.argument) });
+    core.cmd_r
+        .write(|w| unsafe { w.bits(command_register_value(command)) });
+    delay_us(50);
+
+    wait_command_complete(core, matches!(command.response, ResponseType::None))?;
+    delay_us(20);
+
+    Ok(core.resp01_r.read().bits())
+}
+
+fn command_register_value(command: Command) -> u16 {
+    let mut bits = ((command.index as u16) & 0x3f) << 8;
+    bits |= (command.response as u16) & 0x03;
+    bits |= ((command.command_type as u16) & 0x03) << 6;
+
+    if command.crc_check {
+        bits |= 1 << 3;
+    }
+
+    if command.index_check {
+        bits |= 1 << 4;
+    }
+
+    bits
+}
+
+fn poll_command_line_free(core: &sdhc0::CORE) -> Result<(), CommandError> {
+    for _ in 0..1000 {
+        if core.pstate_reg.read().bits() & PSTATE_CMD_INHIBIT == 0 {
+            return Ok(());
+        }
+        delay_us(3);
+    }
+
+    Err(command_error(core, CommandErrorCode::CommandLineBusy))
+}
+
+fn wait_command_complete(
+    core: &sdhc0::CORE,
+    allow_inhibit_fallback: bool,
+) -> Result<(), CommandError> {
+    for _ in 0..1000 {
+        let normal_int = core.normal_int_stat_r.read().bits();
+        let error_int = core.error_int_stat_r.read().bits();
+        let pstate = core.pstate_reg.read().bits();
+
+        if error_int != 0 || normal_int & NORMAL_INT_ERROR != 0 {
+            let error = command_error(core, CommandErrorCode::CommandStatusError);
+            clear_interrupts(core);
+            let _ = software_reset_command_line(core);
+            return Err(error);
+        }
+
+        if normal_int & NORMAL_INT_CMD_COMPLETE != 0 {
+            core.normal_int_stat_r
+                .write(|w| unsafe { w.bits(NORMAL_INT_CMD_COMPLETE) });
+            return Ok(());
+        }
+
+        if allow_inhibit_fallback && pstate & PSTATE_CMD_INHIBIT == 0 {
+            delay_us(20);
+            let normal_int = core.normal_int_stat_r.read().bits();
+            let error_int = core.error_int_stat_r.read().bits();
+
+            if error_int == 0 && normal_int & NORMAL_INT_ERROR == 0 {
+                return Ok(());
+            }
+        }
+
+        delay_us(3);
+    }
+
+    Err(command_error(core, CommandErrorCode::CommandTimeout))
+}
+
+fn clear_interrupts(core: &sdhc0::CORE) {
+    core.normal_int_stat_r
+        .write(|w| unsafe { w.bits(NORMAL_INT_ALL) });
+    core.error_int_stat_r
+        .write(|w| unsafe { w.bits(ERROR_INT_ALL) });
+}
+
+fn command_error(core: &sdhc0::CORE, code: CommandErrorCode) -> CommandError {
+    CommandError {
+        code,
+        normal_int: core.normal_int_stat_r.read().bits(),
+        error_int: core.error_int_stat_r.read().bits(),
+        pstate: core.pstate_reg.read().bits(),
+    }
+}
+
+fn delay_ms(ms: u32) {
+    for _ in 0..ms {
+        delay_us(1000);
+    }
+}
+
+fn delay_us(us: u32) {
+    cortex_m::asm::delay((CPU_CLOCK_HZ / 1_000_000) * us);
 }
