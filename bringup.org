@@ -35,6 +35,7 @@ commands:
   led on | led off | led toggle | led status
   heartbeat on | heartbeat off
   sd status
+  sd pins | sd pinmux
   sdhc regs
   reboot
   (+ 1 2 3) ; also -, *, /, flat integer args
@@ -56,10 +57,14 @@ HSIOM.PRT5.SEL0 = 0x00001212
 GPIO.PRT5.CFG   = 0x00000068
 
 psoc6> sd status
-microSD CD_L(P13.5)=low GPIO.PRT13.IN=0x00000000 GPIO.PRT13.CFG=0x60800000
+microSD CD_L(P13.5)=low GPIO.PRT13.IN=0x0000010f GPIO.PRT13.CFG=0x6080eeee
+
+psoc6> sd pins
+microSD HSIOM P12.SEL1=0x00001a1a P13.SEL0=0x1a1a1a1a
+microSD GPIO  P12.CFG =0x00ee0000 P13.CFG =0x6080eeee
 
 psoc6> led status
-led=off heartbeat=off GPIO.PRT13.OUT=0x00000080
+led=off heartbeat=off GPIO.PRT13.OUT=0x0000008f
 #+end_example
 
 The current firmware intentionally does not blink the LED at idle. This
@@ -136,8 +141,12 @@ Quiet verified state:
 
 #+begin_example
 psoc6> led status
-led=off heartbeat=off GPIO.PRT13.OUT=0x00000080
+led=off heartbeat=off GPIO.PRT13.OUT=0x0000008f
 #+end_example
+
+The low four bits in =GPIO.PRT13.OUT= are the SDHC1 data pins preset
+high before being handed to the peripheral. =P13.7= remains high, so
+LED4 is still off.
 
 ** microSD slot
 
@@ -166,11 +175,37 @@ enabled and exposes a passive diagnostic:
 
 #+begin_example
 psoc6> sd status
-microSD CD_L(P13.5)=low GPIO.PRT13.IN=0x00000000 GPIO.PRT13.CFG=0x60800000
+microSD CD_L(P13.5)=low GPIO.PRT13.IN=0x0000010f GPIO.PRT13.CFG=0x6080eeee
 #+end_example
 
 This only proves the card-detect contact and GPIO input path. Reading
-sectors still requires native SDHC bring-up.
+sectors still requires the SDHC1 clock setup and card initialization
+sequence.
+
+The firmware now configures the removable-card bus pins for SDHC1 at
+boot:
+
+| Signal       | HSIOM selector | Drive mode |
+|--------------+----------------+------------|
+| P12.4 CMD    | 26             | 0x0e       |
+| P12.5 CLK    | 26             | 0x0e       |
+| P13.0 DAT0   | 26             | 0x0e       |
+| P13.1 DAT1   | 26             | 0x0e       |
+| P13.2 DAT2   | 26             | 0x0e       |
+| P13.3 DAT3   | 26             | 0x0e       |
+
+=0x0e= is Infineon's =CY_GPIO_DM_STRONG=, strong drive with input buffer
+enabled. The PDL SD host notes recommend this mode for DAT pins after
+card insertion before calling card initialization. =P13.5= stays as GPIO
+card-detect rather than being routed to SDHC1.
+
+Verified after flashing:
+
+#+begin_example
+psoc6> sd pins
+microSD HSIOM P12.SEL1=0x00001a1a P13.SEL0=0x1a1a1a1a
+microSD GPIO  P12.CFG =0x00ee0000 P13.CFG =0x6080eeee
+#+end_example
 
 The next diagnostic enables the SDHC0 and SDHC1 wrappers and reads
 controller registers without sending card commands:
@@ -186,8 +221,9 @@ SDHC1.WRAP.CTL      = 0x80000000
 SDHC1.HOST_VERSION  = 0x0005
 SDHC1.CAP1          = 0x276c6481
 SDHC1.CAP2          = 0x08000077
-SDHC1.PSTATE        = 0x02070000
-microSD HSIOM P12.SEL1=0x00000000 P13.SEL0=0x00000000
+SDHC1.PSTATE        = 0x03f70000
+microSD HSIOM P12.SEL1=0x00001a1a P13.SEL0=0x1a1a1a1a
+microSD GPIO  P12.CFG =0x00ee0000 P13.CFG =0x6080eeee
 #+end_example
 
 This proves the firmware can reach both Synopsys SDHC cores.
@@ -197,12 +233,9 @@ This proves the firmware can reach both Synopsys SDHC cores.
   and =P13.0..P13.3=.
 - The GPIO package header for =CY8C624ABZI-S2D44A0= says the SDHC1
   HSIOM selector for those pins is decimal =26=.
-- The live HSIOM reading is still =0= for =P12.4/P12.5/P13.0..P13.3=,
-  so the next firmware step is to switch those pins to SDHC1 before
-  issuing card commands.
 
-Sector I/O still needs pinmuxing, clock setup, card initialization
-commands, and a block-device layer.
+Sector I/O still needs clock setup, card initialization commands, and a
+block-device layer.
 
 * Tooling notes
 
@@ -416,7 +449,7 @@ Pragmatic path:
 1. Replace the flat arithmetic parser with a small reader/evaluator that
    supports nested S-expressions.
 2. Add a =mem= or =heap= command so the REPL can report allocator state.
-3. Bring up microSD after the console remains stable.
+3. Implement SDHC1 clock setup, card initialization, and block reads.
 4. Test the newer Infineon target =infineon/cy8cxxa.cfg= as a replacement
    for obsolete =target/psoc6_2m.cfg=.
 5. Start Wi-Fi from a known-good Infineon or Zephyr sample before trying

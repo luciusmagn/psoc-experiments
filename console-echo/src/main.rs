@@ -7,6 +7,8 @@ use cortex_m_rt::entry;
 use panic_halt as _;
 use psoc6_pac::{Peripherals, SCB5};
 
+mod micro_sd;
+
 const SYSCLK_HZ: u32 = 50_000_000;
 const UART_BAUD: u32 = 115_200;
 const UART_OVERSAMPLE: u32 = 12;
@@ -29,8 +31,6 @@ const SCB_DATA_WIDTH_8: u32 = 7;
 const FIFO_USED_MASK: u32 = 0x01ff;
 const FIFO_SR_VALID: u32 = 1 << 15;
 const FIFO_CLEAR: u32 = 1 << 16;
-
-const MICRO_SD_CARD_DETECT_MASK: u32 = 1 << 5;
 
 struct Console<'a> {
     scb: &'a SCB5,
@@ -92,7 +92,8 @@ fn main() -> ! {
     }
 
     configure_led(&p);
-    configure_micro_sd_detect(&p);
+    micro_sd::configure_card_detect(&p);
+    micro_sd::configure_sdhc1_pins(&p);
     configure_uart(&p);
 
     let mut delay = cortex_m::delay::Delay::new(cp.SYST, SYSCLK_HZ);
@@ -177,37 +178,42 @@ fn configure_led(p: &Peripherals) {
     led_off(p);
 }
 
-fn configure_micro_sd_detect(p: &Peripherals) {
-    p.GPIO.prt13.cfg.modify(|r, w| unsafe {
-        let mut bits = r.bits();
-        bits &= !(0x0f << 20);
-        bits |= 1 << 23;
-        w.bits(bits)
-    });
+fn write_sdhc_registers(console: &mut Console<'_>, name: &str, snapshot: &micro_sd::SdhcSnapshot) {
+    writeln!(
+        console,
+        "{}.WRAP.CTL      = 0x{:08x}",
+        name, snapshot.wrap_ctl
+    )
+    .ok();
+    writeln!(
+        console,
+        "{}.HOST_VERSION  = 0x{:04x}",
+        name, snapshot.host_version
+    )
+    .ok();
+    writeln!(console, "{}.CAP1          = 0x{:08x}", name, snapshot.cap1).ok();
+    writeln!(console, "{}.CAP2          = 0x{:08x}", name, snapshot.cap2).ok();
+    writeln!(
+        console,
+        "{}.PSTATE        = 0x{:08x}",
+        name, snapshot.pstate
+    )
+    .ok();
 }
 
-fn enable_sdhc_controllers(p: &Peripherals) {
-    p.SDHC0.wrap.ctl.write(|w| w.enable().set_bit());
-    p.SDHC1.wrap.ctl.write(|w| w.enable().set_bit());
-    for _ in 0..1024 {
-        cortex_m::asm::nop();
-    }
-}
-
-fn write_sdhc_registers(
-    console: &mut Console<'_>,
-    name: &str,
-    wrap_ctl: u32,
-    host_version: u16,
-    cap1: u32,
-    cap2: u32,
-    pstate: u32,
-) {
-    writeln!(console, "{}.WRAP.CTL      = 0x{:08x}", name, wrap_ctl).ok();
-    writeln!(console, "{}.HOST_VERSION  = 0x{:04x}", name, host_version).ok();
-    writeln!(console, "{}.CAP1          = 0x{:08x}", name, cap1).ok();
-    writeln!(console, "{}.CAP2          = 0x{:08x}", name, cap2).ok();
-    writeln!(console, "{}.PSTATE        = 0x{:08x}", name, pstate).ok();
+fn write_micro_sd_pins(console: &mut Console<'_>, snapshot: &micro_sd::PinSnapshot) {
+    writeln!(
+        console,
+        "microSD HSIOM P12.SEL1=0x{:08x} P13.SEL0=0x{:08x}",
+        snapshot.p12_sel1, snapshot.p13_sel0
+    )
+    .ok();
+    writeln!(
+        console,
+        "microSD GPIO  P12.CFG =0x{:08x} P13.CFG =0x{:08x}",
+        snapshot.p12_cfg, snapshot.p13_cfg
+    )
+    .ok();
 }
 
 fn led_on(p: &Peripherals) {
@@ -305,6 +311,7 @@ fn handle_line(
         writeln!(console, "  led on | led off | led toggle | led status").ok();
         writeln!(console, "  heartbeat on | heartbeat off").ok();
         writeln!(console, "  sd status").ok();
+        writeln!(console, "  sd pins | sd pinmux").ok();
         writeln!(console, "  sdhc regs").ok();
         writeln!(console, "  reboot").ok();
         writeln!(console, "  (+ 1 2 3) ; also -, *, /, flat integer args").ok();
@@ -424,49 +431,37 @@ fn handle_line(
     }
 
     if eq_ascii(line, b"sd status") {
-        let port_input = p.GPIO.prt13.in_.read().bits();
-        let port_cfg = p.GPIO.prt13.cfg.read().bits();
-        let card_detect_high = port_input & MICRO_SD_CARD_DETECT_MASK != 0;
+        let snapshot = micro_sd::card_detect_snapshot(p);
 
         writeln!(
             console,
             "microSD CD_L(P13.5)={} GPIO.PRT13.IN=0x{:08x} GPIO.PRT13.CFG=0x{:08x}",
-            if card_detect_high { "high" } else { "low" },
-            port_input,
-            port_cfg
+            if snapshot.is_low { "low" } else { "high" },
+            snapshot.prt13_in,
+            snapshot.prt13_cfg
         )
         .ok();
         return;
     }
 
-    if eq_ascii(line, b"sdhc regs") {
-        enable_sdhc_controllers(p);
+    if eq_ascii(line, b"sd pins") {
+        write_micro_sd_pins(console, &micro_sd::pin_snapshot(p));
+        return;
+    }
 
-        write_sdhc_registers(
-            console,
-            "SDHC0",
-            p.SDHC0.wrap.ctl.read().bits(),
-            p.SDHC0.core.host_cntrl_vers_r.read().bits(),
-            p.SDHC0.core.capabilities1_r.read().bits(),
-            p.SDHC0.core.capabilities2_r.read().bits(),
-            p.SDHC0.core.pstate_reg.read().bits(),
-        );
-        write_sdhc_registers(
-            console,
-            "SDHC1",
-            p.SDHC1.wrap.ctl.read().bits(),
-            p.SDHC1.core.host_cntrl_vers_r.read().bits(),
-            p.SDHC1.core.capabilities1_r.read().bits(),
-            p.SDHC1.core.capabilities2_r.read().bits(),
-            p.SDHC1.core.pstate_reg.read().bits(),
-        );
-        writeln!(
-            console,
-            "microSD HSIOM P12.SEL1=0x{:08x} P13.SEL0=0x{:08x}",
-            p.HSIOM.prt12.port_sel1.read().bits(),
-            p.HSIOM.prt13.port_sel0.read().bits()
-        )
-        .ok();
+    if eq_ascii(line, b"sd pinmux") {
+        micro_sd::configure_sdhc1_pins(p);
+        writeln!(console, "ok").ok();
+        write_micro_sd_pins(console, &micro_sd::pin_snapshot(p));
+        return;
+    }
+
+    if eq_ascii(line, b"sdhc regs") {
+        micro_sd::enable_sdhc_controllers(p);
+
+        write_sdhc_registers(console, "SDHC0", &micro_sd::sdhc0_snapshot(p));
+        write_sdhc_registers(console, "SDHC1", &micro_sd::sdhc1_snapshot(p));
+        write_micro_sd_pins(console, &micro_sd::pin_snapshot(p));
         return;
     }
 
