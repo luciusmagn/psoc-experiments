@@ -17,7 +17,7 @@ and commands that are known to work on the attached board.
 - `psoc6-cm0-bootloader/`: CM0+ bootloader that prepares and releases
   the CM4 application. Keep it focused on boot, reset, clocks needed for
   boot, and handoff.
-- `console-echo/`: current CM4 serial console firmware. This is the
+- `lisp-psoc-pc/`: current CM4 serial console firmware. This is the
   active place for the tiny Lisp machine work unless a better split is
   deliberately introduced.
 - `morse-code*/`, `psoc6-cm*-*`, `simple-db/`: older experiments and
@@ -118,10 +118,10 @@ that were changed and should be tested.
 For the active console firmware:
 
 ```sh
-cd console-echo
+cd lisp-psoc-pc
 RUSTFLAGS=-Awarnings cargo build --release --features use-bootloader
 arm-none-eabi-objcopy -O binary \
-  target/thumbv7em-none-eabihf/release/console-echo \
+  target/thumbv7em-none-eabihf/release/lisp-psoc-pc \
   ../psoc6-cm0-bootloader/src/app.bin
 
 cd ../psoc6-cm0-bootloader

@@ -101,7 +101,7 @@ fn main() -> ! {
 
     led_off(&p);
 
-    writeln!(console, "\nPSoC6 console-echo").ok();
+    writeln!(console, "\nPSoC6 lisp-psoc-pc").ok();
     writeln!(console, "UART: SCB5 P5.1 TX / P5.0 RX, {} 8N1", UART_BAUD).ok();
     writeln!(
         console,

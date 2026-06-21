@@ -18,7 +18,7 @@ The console milestone is now working.
 The board is flashed with:
 
 - CM0+ bootloader: =psoc6-cm0-bootloader=
-- CM4 app: =console-echo=
+- CM4 app: =lisp-psoc-pc=
 - CM4 app flash base: =0x10008000=
 - UART: =SCB5= on =P5.1 TX= and =P5.0 RX=
 - Host serial device: =/dev/ttyACM0=
@@ -369,10 +369,10 @@ ap: !v1 2   ; CM4
 Build the CM4 console app and convert it to raw bytes:
 
 #+begin_src sh
-cd console-echo
+cd lisp-psoc-pc
 RUSTFLAGS=-Awarnings cargo build --release --features use-bootloader
 arm-none-eabi-objcopy -O binary \
-  target/thumbv7em-none-eabihf/release/console-echo \
+  target/thumbv7em-none-eabihf/release/lisp-psoc-pc \
   ../psoc6-cm0-bootloader/src/app.bin
 #+end_src
 
@@ -443,7 +443,7 @@ will read an ELF header where it expects the CM4 stack pointer.
 
 ** Console implementation
 
-=console-echo= is intentionally bare and polling:
+=lisp-psoc-pc= is intentionally bare and polling:
 
 - no RTOS
 - no semihosting
