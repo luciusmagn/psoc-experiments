@@ -67,8 +67,12 @@ fn real_main() -> ! {
             .variant(psoc6_pac::gpio::prt::cfg::DRIVE_MODE0_A::STRONG.into());
         w
     });
+    p.GPIO.prt13.out_set.write(|w| {
+        w.out7().set_bit();
+        w
+    });
 
-    for _ in 0..10 {
+    for _ in 0..0 {
         p.GPIO.prt13.out_clr.write(|w| {
             w.out7().set_bit();
             w

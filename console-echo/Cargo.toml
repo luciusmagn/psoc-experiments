@@ -1,0 +1,21 @@
+[package]
+edition = "2021"
+name = "console-echo"
+version = "0.1.0"
+
+# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
+
+[dependencies]
+cortex-m = {version = "0.7.0", features = ["inline-asm"]}
+cortex-m-rt = "0.7"
+panic-halt = "0.2"
+psoc6-pac = {path = "../psoc6-pac", features = ["rt"]}
+
+[features]
+use-bootloader = []
+
+[profile.release]
+lto = true
+debug = true
+opt-level ="s"
+codegen-units = 1

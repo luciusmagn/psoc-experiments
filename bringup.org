@@ -1,0 +1,352 @@
+#+title: CY8CPROTO-062-4343W bring-up notes
+#+date: 2026-06-21
+
+* Goal
+
+Turn the CY8CPROTO-062-4343W PSoC 6 Wi-Fi BT Prototyping Kit into a
+small interactive machine:
+
+1. Reliable console over the KitProg3 USB-UART bridge.
+2. Tiny Lisp-style REPL on that console.
+3. Storage through the microSD slot.
+4. Wi-Fi through the onboard CYW4343W module.
+
+The console milestone is now working.
+
+* Current known-good state
+
+The board is flashed with:
+
+- CM0+ bootloader: =psoc6-cm0-bootloader=
+- CM4 app: =console-echo=
+- CM4 app flash base: =0x10008000=
+- UART: =SCB5= on =P5.1 TX= and =P5.0 RX=
+- Host serial device: =/dev/ttyACM0=
+- Baud: =115200 8N1=
+- User LED default: off; console heartbeat disabled by default
+
+Working serial capture:
+
+#+begin_example
+psoc6> help
+commands:
+  help
+  regs
+  led on | led off | led toggle
+  reboot
+  (+ 1 2 3) ; also -, *, /, flat integer args
+
+psoc6> (+ 1 2 3)
+=> 6
+
+psoc6> (* 6 7)
+=> 42
+
+psoc6> regs
+SCB5.CTRL       = 0x8200080b
+SCB5.UART_CTRL  = 0x00000000
+SCB5.RX_STATUS  = 0x281d000b
+SCB5.TX_STATUS  = 0x18188000
+PERI.CLOCK[5]   = 0x00000000
+PERI.DIV8[0]    = 0x00002301
+HSIOM.PRT5.SEL0 = 0x00001212
+GPIO.PRT5.CFG   = 0x00000068
+
+psoc6> led toggle
+ok
+#+end_example
+
+The current firmware intentionally does not blink the LED at idle. This
+keeps the board quiet while doing longer bring-up work. To restore a
+visible heartbeat from the console:
+
+#+begin_example
+psoc6> heartbeat on
+ok
+#+end_example
+
+The red user LED blinks, which means the CM4 app loop is running.
+
+* Hardware facts
+
+** USB devices
+
+The host sees KitProg3:
+
+#+begin_example
+04b4:f155 Cypress Semiconductor Corp. KitProg3 CMSIS-DAP
+#+end_example
+
+The USB-UART bridge appears as:
+
+#+begin_example
+/dev/serial/by-id/usb-Cypress_Semiconductor_KitProg3_CMSIS-DAP_1F110B1D03201400-if02 -> ../../ttyACM0
+#+end_example
+
+** UART wiring
+
+The kit guide says the KitProg3 USB-UART bridge is hard-wired to:
+
+| Target pin | Function |
+|------------+----------|
+| P5[0]      | UART RX  |
+| P5[1]      | UART TX  |
+| P5[2]      | UART RTS |
+| P5[3]      | UART CTS |
+
+For this exact board, Zephyr's PSoC6 pinctrl metadata says =P5.0/P5.1
+SCB5 UART= uses =HSIOM_SEL_ACT_6=.
+
+This mattered: programming =ACT_9= made SCB5 transmit internally but did
+not route TX to the KitProg3 bridge. The working live register value is:
+
+#+begin_example
+HSIOM.PRT5.SEL0 = 0x00001212
+#+end_example
+
+=0x12= is decimal =18=, the =ACT_6= selector.
+
+** LED
+
+LED4 is on =P13.7= and is active-low. The carrier schematic shows
+=VDDIO_0 -> LED4 -> R26 -> P13.7=:
+
+- Drive low: LED on.
+- Drive high: LED off.
+
+The initial =led off= confusion came from the idle heartbeat overriding
+manual LED commands every 500 ms. The local Zephyr and Tock board
+metadata model the LED as active-high, but the schematic and live board
+behavior match active-low. Current behavior:
+
+- =led on= drives =P13.7= low and disables heartbeat.
+- =led off= drives =P13.7= high and disables heartbeat.
+- =led toggle= toggles the manual state and disables heartbeat.
+- =led status= reports the tracked LED state, heartbeat state, and
+  =GPIO.PRT13.OUT=.
+- =heartbeat on= explicitly restores blinking.
+
+Quiet verified state:
+
+#+begin_example
+psoc6> led status
+led=off heartbeat=off GPIO.PRT13.OUT=0x00000080
+#+end_example
+
+* Tooling notes
+
+** Infineon OpenOCD
+
+The old workflow needed Infineon's ModusToolbox OpenOCD for a real
+reason. Generic/Zephyr OpenOCD could attach to both cores, but flash
+erase/program failed in the PSoC6 SROM/IPC path.
+
+Installed/restored:
+
+#+begin_example
+/opt/ModusToolbox/tools_3.4/openocd/bin/openocd
+Open On-Chip Debugger 0.12.0+dev-5.16.1.4486 (2026-04-14-19:02)
+#+end_example
+
+Source:
+
+#+begin_example
+https://github.com/Infineon/openocd/releases/download/release-v5.16.1/openocd-5.16.1.4486-linux.tar.gz
+#+end_example
+
+The tarball contains the missing scripts from the old setup:
+
+- =interface/kitprog3.cfg=
+- =target/psoc6_2m.cfg=
+- =target/psoc6.cfg=
+
+The successful flash command uses the old-style target:
+
+#+begin_src sh
+/opt/ModusToolbox/tools_3.4/openocd/bin/openocd \
+  -s /opt/ModusToolbox/tools_3.4/openocd/scripts \
+  -f interface/cmsis-dap.cfg \
+  -f target/psoc6_2m.cfg \
+  -c "program psoc6-cm0-bootloader/target/thumbv6m-none-eabi/release/psoc6-cm0-bootloader verify reset exit"
+#+end_src
+
+OpenOCD warns that =psoc6_2m.cfg= is obsolete and recommends
+=infineon/cy8cxxa.cfg=. Keep using =psoc6_2m.cfg= until the replacement
+command is tested.
+
+** Zephyr SDK OpenOCD
+
+Zephyr SDK OpenOCD was useful for basic inspection, but not for flash:
+
+#+begin_example
+/root/zephyr-sdk-0.16.8/sysroots/x86_64-pokysdk-linux/usr/bin/openocd
+Open On-Chip Debugger 0.11.0+dev-00728-gb6f95a16c (2024-05-29-12:13)
+#+end_example
+
+It could detect both cores and read normal flash memory. It failed when
+the flash driver tried to use PSoC6 SROM/IPC:
+
+#+begin_example
+Error: Timeout acquiring IPC structure
+Error: SROM API execution failed. Status: 0x1C000100
+Error: ROW @10000000 not erased!
+#+end_example
+
+Before the first successful reflash, a 256 KiB backup was dumped:
+
+#+begin_example
+backups/flash-10000000-40000-before-console-echo.bin
+#+end_example
+
+** probe-rs
+
+=probe-rs= was checked because the installed copy was old.
+
+Findings:
+
+- =probe-rs-tools 0.31.0= is the latest checked release.
+- =probe-rs 0.31.0= fails against this KitProg3 with a CMSIS-DAP =Info=
+  response mismatch.
+- =probe-rs 0.30.0= can enumerate the probe and inspect the AP layout.
+- =probe-rs 0.30.0= dry-runs the local PSoC62 target YAML.
+- Real flashing with =probe-rs 0.30.0= still failed at reset/halt.
+
+Current working version:
+
+#+begin_example
+probe-rs 0.30.0 (git commit: crates.io)
+#+end_example
+
+Local probe-rs target file:
+
+#+begin_example
+probe-rs-targets/PSoC_62.probe-rs-0.30.yaml
+#+end_example
+
+Important conversion from old YAML to modern =probe-rs= YAML:
+
+#+begin_example
+ap: !v1 1   ; CM0+
+ap: !v1 2   ; CM4
+#+end_example
+
+* Build and flash workflow
+
+Build the CM4 console app and convert it to raw bytes:
+
+#+begin_src sh
+cd console-echo
+RUSTFLAGS=-Awarnings cargo build --release --features use-bootloader
+arm-none-eabi-objcopy -O binary \
+  target/thumbv7em-none-eabihf/release/console-echo \
+  ../psoc6-cm0-bootloader/src/app.bin
+#+end_src
+
+Build the CM0+ bootloader that embeds the raw CM4 image:
+
+#+begin_src sh
+cd ../psoc6-cm0-bootloader
+RUSTFLAGS=-Awarnings cargo build --release
+#+end_src
+
+Flash with Infineon OpenOCD:
+
+#+begin_src sh
+cd ..
+/opt/ModusToolbox/tools_3.4/openocd/bin/openocd \
+  -s /opt/ModusToolbox/tools_3.4/openocd/scripts \
+  -f interface/cmsis-dap.cfg \
+  -f target/psoc6_2m.cfg \
+  -c "program psoc6-cm0-bootloader/target/thumbv6m-none-eabi/release/psoc6-cm0-bootloader verify reset exit"
+#+end_src
+
+Expected flash result:
+
+#+begin_example
+** Programming Finished **
+** Verify Started **
+** Verified OK **
+#+end_example
+
+* Serial workflow
+
+Interactive terminal:
+
+#+begin_src sh
+picocom -b 115200 /dev/ttyACM0
+#+end_src
+
+Exit =picocom= with =Ctrl-A Ctrl-X=.
+
+Non-interactive smoke test:
+
+#+begin_src sh
+stty -F /dev/ttyACM0 115200 cs8 -cstopb -parenb -ixon -ixoff -crtscts raw -echo
+timeout 8 cat -v /dev/ttyACM0 > /tmp/psoc-console-capture.txt &
+reader=$!
+sleep 1
+printf '\rhelp\r(+ 1 2 3)\r(* 6 7)\rregs\rled toggle\r' > /dev/ttyACM0
+wait "$reader" || true
+sed -n '1,200p' /tmp/psoc-console-capture.txt
+#+end_src
+
+* Firmware notes
+
+** Boot shape
+
+PSoC6 starts the Cortex-M0+ after reset and holds Cortex-M4 in reset.
+The =psoc6-cm0-bootloader= image runs first, sets the CM4 vector-table
+base to =0x10008000=, and releases CM4.
+
+The CM4 app must be embedded as a raw binary, not as an ELF file:
+
+#+begin_example
+psoc6-cm0-bootloader/src/app.bin
+#+end_example
+
+If =file psoc6-cm0-bootloader/src/app.bin= reports =ELF=, the bootloader
+will read an ELF header where it expects the CM4 stack pointer.
+
+** Console implementation
+
+=console-echo= is intentionally bare and polling:
+
+- no RTOS
+- no semihosting
+- SCB5 UART, 115200 8N1
+- line editing for printable characters, backspace, and Ctrl-C
+- commands: =help=, =regs=, =led on=, =led off=, =led toggle=, =reboot=
+- flat integer arithmetic forms: =(+ 1 2 3)=, =(- 3)=, =(* 6 7)=, =(/ 8 2)=
+
+The arithmetic parser is only the first Lisp-shaped smoke test. It does
+not support nested expressions yet.
+
+* Wi-Fi milestone
+
+The Wi-Fi device is the onboard CYW4343W, not a simple UART peripheral.
+Expect this to need:
+
+- GPIO power/reset control for the Wi-Fi module.
+- SDIO or SPI transport bring-up.
+- CYW4343W firmware blobs.
+- A driver plus network stack.
+
+Pragmatic path:
+
+1. Keep this Rust repo for bare-metal console, storage, and Lisp work.
+2. Bring up a known Infineon/ModusToolbox or Zephyr Wi-Fi sample for
+   =CY8CPROTO-062-4343W=.
+3. Once Wi-Fi works in a known stack, decide whether to port the needed
+   pieces into this Rust firmware or move the Lisp machine onto a Zephyr
+   firmware base.
+
+* Next actions
+
+1. Replace the flat arithmetic parser with a small reader/evaluator that
+   supports nested S-expressions.
+2. Add a =mem= or =heap= command so the REPL can report allocator state.
+3. Bring up microSD after the console remains stable.
+4. Test the newer Infineon target =infineon/cy8cxxa.cfg= as a replacement
+   for obsolete =target/psoc6_2m.cfg=.
+5. Start Wi-Fi from a known-good Infineon or Zephyr sample before trying
+   to hand-port CYW4343W support.
