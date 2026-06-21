@@ -35,6 +35,7 @@ commands:
   led on | led off | led toggle | led status
   heartbeat on | heartbeat off
   sd status
+  sdhc regs
   reboot
   (+ 1 2 3) ; also -, *, /, flat integer args
 
@@ -170,6 +171,25 @@ microSD CD_L(P13.5)=low GPIO.PRT13.IN=0x00000000 GPIO.PRT13.CFG=0x60800000
 
 This only proves the card-detect contact and GPIO input path. Reading
 sectors still requires native SDHC bring-up.
+
+The next diagnostic enables the SDHC0 wrapper and reads controller
+registers without sending card commands:
+
+#+begin_example
+psoc6> sdhc regs
+SDHC0.WRAP.CTL      = 0x80000000
+SDHC0.HOST_VERSION  = 0x0005
+SDHC0.CAP1          = 0x276c6481
+SDHC0.CAP2          = 0x08000077
+SDHC0.PSTATE        = 0x02070000
+#+end_example
+
+This proves the firmware can reach the Synopsys SDHC core. The live
+=PSTATE= reading has card-inserted, card-stable, and card-detect true
+while GPIO =CD_L= reads low, matching the active-low detect signal.
+
+Sector I/O still needs pinmuxing, clock setup, card initialization
+commands, and a block-device layer.
 
 * Tooling notes
 

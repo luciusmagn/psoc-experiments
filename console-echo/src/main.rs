@@ -186,6 +186,13 @@ fn configure_micro_sd_detect(p: &Peripherals) {
     });
 }
 
+fn enable_sdhc0(p: &Peripherals) {
+    p.SDHC0.wrap.ctl.write(|w| w.enable().set_bit());
+    for _ in 0..1024 {
+        cortex_m::asm::nop();
+    }
+}
+
 fn led_on(p: &Peripherals) {
     p.GPIO.prt13.out_clr.write(|w| w.out7().set_bit());
 }
@@ -281,6 +288,7 @@ fn handle_line(
         writeln!(console, "  led on | led off | led toggle | led status").ok();
         writeln!(console, "  heartbeat on | heartbeat off").ok();
         writeln!(console, "  sd status").ok();
+        writeln!(console, "  sdhc regs").ok();
         writeln!(console, "  reboot").ok();
         writeln!(console, "  (+ 1 2 3) ; also -, *, /, flat integer args").ok();
         return;
@@ -409,6 +417,42 @@ fn handle_line(
             if card_detect_high { "high" } else { "low" },
             port_input,
             port_cfg
+        )
+        .ok();
+        return;
+    }
+
+    if eq_ascii(line, b"sdhc regs") {
+        enable_sdhc0(p);
+
+        writeln!(
+            console,
+            "SDHC0.WRAP.CTL      = 0x{:08x}",
+            p.SDHC0.wrap.ctl.read().bits()
+        )
+        .ok();
+        writeln!(
+            console,
+            "SDHC0.HOST_VERSION  = 0x{:04x}",
+            p.SDHC0.core.host_cntrl_vers_r.read().bits()
+        )
+        .ok();
+        writeln!(
+            console,
+            "SDHC0.CAP1          = 0x{:08x}",
+            p.SDHC0.core.capabilities1_r.read().bits()
+        )
+        .ok();
+        writeln!(
+            console,
+            "SDHC0.CAP2          = 0x{:08x}",
+            p.SDHC0.core.capabilities2_r.read().bits()
+        )
+        .ok();
+        writeln!(
+            console,
+            "SDHC0.PSTATE        = 0x{:08x}",
+            p.SDHC0.core.pstate_reg.read().bits()
         )
         .ok();
         return;
