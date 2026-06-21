@@ -172,8 +172,8 @@ microSD CD_L(P13.5)=low GPIO.PRT13.IN=0x00000000 GPIO.PRT13.CFG=0x60800000
 This only proves the card-detect contact and GPIO input path. Reading
 sectors still requires native SDHC bring-up.
 
-The next diagnostic enables the SDHC0 wrapper and reads controller
-registers without sending card commands:
+The next diagnostic enables the SDHC0 and SDHC1 wrappers and reads
+controller registers without sending card commands:
 
 #+begin_example
 psoc6> sdhc regs
@@ -182,11 +182,24 @@ SDHC0.HOST_VERSION  = 0x0005
 SDHC0.CAP1          = 0x276c6481
 SDHC0.CAP2          = 0x08000077
 SDHC0.PSTATE        = 0x02070000
+SDHC1.WRAP.CTL      = 0x80000000
+SDHC1.HOST_VERSION  = 0x0005
+SDHC1.CAP1          = 0x276c6481
+SDHC1.CAP2          = 0x08000077
+SDHC1.PSTATE        = 0x02070000
+microSD HSIOM P12.SEL1=0x00000000 P13.SEL0=0x00000000
 #+end_example
 
-This proves the firmware can reach the Synopsys SDHC core. The live
-=PSTATE= reading has card-inserted, card-stable, and card-detect true
-while GPIO =CD_L= reads low, matching the active-low detect signal.
+This proves the firmware can reach both Synopsys SDHC cores.
+
+- =SDHC0= is the Wi-Fi SDIO controller on =P2.0..P2.7=.
+- =SDHC1= is the removable microSD controller on =P12.4=, =P12.5=,
+  and =P13.0..P13.3=.
+- The GPIO package header for =CY8C624ABZI-S2D44A0= says the SDHC1
+  HSIOM selector for those pins is decimal =26=.
+- The live HSIOM reading is still =0= for =P12.4/P12.5/P13.0..P13.3=,
+  so the next firmware step is to switch those pins to SDHC1 before
+  issuing card commands.
 
 Sector I/O still needs pinmuxing, clock setup, card initialization
 commands, and a block-device layer.

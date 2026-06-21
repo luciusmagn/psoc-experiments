@@ -186,11 +186,28 @@ fn configure_micro_sd_detect(p: &Peripherals) {
     });
 }
 
-fn enable_sdhc0(p: &Peripherals) {
+fn enable_sdhc_controllers(p: &Peripherals) {
     p.SDHC0.wrap.ctl.write(|w| w.enable().set_bit());
+    p.SDHC1.wrap.ctl.write(|w| w.enable().set_bit());
     for _ in 0..1024 {
         cortex_m::asm::nop();
     }
+}
+
+fn write_sdhc_registers(
+    console: &mut Console<'_>,
+    name: &str,
+    wrap_ctl: u32,
+    host_version: u16,
+    cap1: u32,
+    cap2: u32,
+    pstate: u32,
+) {
+    writeln!(console, "{}.WRAP.CTL      = 0x{:08x}", name, wrap_ctl).ok();
+    writeln!(console, "{}.HOST_VERSION  = 0x{:04x}", name, host_version).ok();
+    writeln!(console, "{}.CAP1          = 0x{:08x}", name, cap1).ok();
+    writeln!(console, "{}.CAP2          = 0x{:08x}", name, cap2).ok();
+    writeln!(console, "{}.PSTATE        = 0x{:08x}", name, pstate).ok();
 }
 
 fn led_on(p: &Peripherals) {
@@ -423,36 +440,31 @@ fn handle_line(
     }
 
     if eq_ascii(line, b"sdhc regs") {
-        enable_sdhc0(p);
+        enable_sdhc_controllers(p);
 
+        write_sdhc_registers(
+            console,
+            "SDHC0",
+            p.SDHC0.wrap.ctl.read().bits(),
+            p.SDHC0.core.host_cntrl_vers_r.read().bits(),
+            p.SDHC0.core.capabilities1_r.read().bits(),
+            p.SDHC0.core.capabilities2_r.read().bits(),
+            p.SDHC0.core.pstate_reg.read().bits(),
+        );
+        write_sdhc_registers(
+            console,
+            "SDHC1",
+            p.SDHC1.wrap.ctl.read().bits(),
+            p.SDHC1.core.host_cntrl_vers_r.read().bits(),
+            p.SDHC1.core.capabilities1_r.read().bits(),
+            p.SDHC1.core.capabilities2_r.read().bits(),
+            p.SDHC1.core.pstate_reg.read().bits(),
+        );
         writeln!(
             console,
-            "SDHC0.WRAP.CTL      = 0x{:08x}",
-            p.SDHC0.wrap.ctl.read().bits()
-        )
-        .ok();
-        writeln!(
-            console,
-            "SDHC0.HOST_VERSION  = 0x{:04x}",
-            p.SDHC0.core.host_cntrl_vers_r.read().bits()
-        )
-        .ok();
-        writeln!(
-            console,
-            "SDHC0.CAP1          = 0x{:08x}",
-            p.SDHC0.core.capabilities1_r.read().bits()
-        )
-        .ok();
-        writeln!(
-            console,
-            "SDHC0.CAP2          = 0x{:08x}",
-            p.SDHC0.core.capabilities2_r.read().bits()
-        )
-        .ok();
-        writeln!(
-            console,
-            "SDHC0.PSTATE        = 0x{:08x}",
-            p.SDHC0.core.pstate_reg.read().bits()
+            "microSD HSIOM P12.SEL1=0x{:08x} P13.SEL0=0x{:08x}",
+            p.HSIOM.prt12.port_sel1.read().bits(),
+            p.HSIOM.prt13.port_sel0.read().bits()
         )
         .ok();
         return;
