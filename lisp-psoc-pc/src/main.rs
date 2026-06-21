@@ -2,11 +2,13 @@
 #![no_main]
 
 use core::fmt::{self, Write};
+use core::ptr::{read_volatile, write_volatile};
 
 use cortex_m_rt::entry;
 use panic_halt as _;
 use psoc6_pac::{Peripherals, SCB5};
 
+mod lisp;
 mod micro_sd;
 
 const SYSCLK_HZ: u32 = 50_000_000;
@@ -31,6 +33,10 @@ const SCB_DATA_WIDTH_8: u32 = 7;
 const FIFO_USED_MASK: u32 = 0x01ff;
 const FIFO_SR_VALID: u32 = 1 << 15;
 const FIFO_CLEAR: u32 = 1 << 16;
+
+const BUTTON0_MASK: u32 = 1 << 4;
+const PERIPHERAL_REGISTER_START: u32 = 0x4000_0000;
+const PERIPHERAL_REGISTER_END: u32 = 0x40ff_fffc;
 
 struct Console<'a> {
     scb: &'a SCB5,
@@ -68,7 +74,7 @@ impl<'a> Console<'a> {
     }
 
     fn prompt(&mut self) {
-        self.write_bytes(b"\npsoc6> ");
+        self.write_bytes(b"\nlisp> ");
     }
 }
 
@@ -92,42 +98,47 @@ fn main() -> ! {
     }
 
     configure_led(&p);
+    configure_button(&p);
     micro_sd::configure_card_detect(&p);
     micro_sd::configure_sdhc1_pins(&p);
     configure_uart(&p);
 
     let mut delay = cortex_m::delay::Delay::new(cp.SYST, SYSCLK_HZ);
     let mut console = Console::new(&p.SCB5);
+    let mut machine = lisp::Machine::new();
 
     led_off(&p);
+    if let Err(error) = machine.bootstrap() {
+        writeln!(console, "\nLisp bootstrap failed: {}", error.message()).ok();
+    }
 
     writeln!(console, "\nPSoC6 lisp-psoc-pc").ok();
     writeln!(console, "UART: SCB5 P5.1 TX / P5.0 RX, {} 8N1", UART_BAUD).ok();
-    writeln!(
-        console,
-        "Try: help, regs, led on, led off, heartbeat on, (+ 1 2 3)"
-    )
-    .ok();
+    writeln!(console, "Try: (help), (led off), (regs), (+ 1 2 3)").ok();
     console.prompt();
 
-    let mut line = [0u8; 96];
+    let mut line = [0u8; 192];
     let mut line_len = 0usize;
     let mut led_state = false;
     let mut heartbeat_enabled = false;
     let mut heartbeat_ms = 0u16;
+    let mut uptime_ms = 0u32;
 
     loop {
         if let Some(byte) = console.read_byte() {
             match byte {
                 b'\r' | b'\n' => {
                     console.write_bytes(b"\n");
-                    handle_line(
-                        &line[..line_len],
-                        &mut console,
-                        &p,
-                        &mut led_state,
-                        &mut heartbeat_enabled,
-                    );
+                    let input = trim_ascii(&line[..line_len]);
+                    if !input.is_empty() {
+                        let mut board = PsocBoard {
+                            p: &p,
+                            led_state: &mut led_state,
+                            heartbeat_enabled: &mut heartbeat_enabled,
+                            uptime_ms,
+                        };
+                        machine.eval_line(input, &mut board, &mut console).ok();
+                    }
                     line_len = 0;
                     console.prompt();
                 }
@@ -156,6 +167,7 @@ fn main() -> ! {
         }
 
         delay.delay_ms(1);
+        uptime_ms = uptime_ms.wrapping_add(1);
         if heartbeat_enabled {
             heartbeat_ms += 1;
             if heartbeat_ms >= 500 {
@@ -178,42 +190,13 @@ fn configure_led(p: &Peripherals) {
     led_off(p);
 }
 
-fn write_sdhc_registers(console: &mut Console<'_>, name: &str, snapshot: &micro_sd::SdhcSnapshot) {
-    writeln!(
-        console,
-        "{}.WRAP.CTL      = 0x{:08x}",
-        name, snapshot.wrap_ctl
-    )
-    .ok();
-    writeln!(
-        console,
-        "{}.HOST_VERSION  = 0x{:04x}",
-        name, snapshot.host_version
-    )
-    .ok();
-    writeln!(console, "{}.CAP1          = 0x{:08x}", name, snapshot.cap1).ok();
-    writeln!(console, "{}.CAP2          = 0x{:08x}", name, snapshot.cap2).ok();
-    writeln!(
-        console,
-        "{}.PSTATE        = 0x{:08x}",
-        name, snapshot.pstate
-    )
-    .ok();
-}
-
-fn write_micro_sd_pins(console: &mut Console<'_>, snapshot: &micro_sd::PinSnapshot) {
-    writeln!(
-        console,
-        "microSD HSIOM P12.SEL1=0x{:08x} P13.SEL0=0x{:08x}",
-        snapshot.p12_sel1, snapshot.p13_sel0
-    )
-    .ok();
-    writeln!(
-        console,
-        "microSD GPIO  P12.CFG =0x{:08x} P13.CFG =0x{:08x}",
-        snapshot.p12_cfg, snapshot.p13_cfg
-    )
-    .ok();
+fn configure_button(p: &Peripherals) {
+    p.GPIO.prt0.cfg.modify(|r, w| unsafe {
+        let mut bits = r.bits();
+        bits &= !(0x0f << 16);
+        bits |= 0x08 << 16;
+        w.bits(bits)
+    });
 }
 
 fn led_on(p: &Peripherals) {
@@ -240,7 +223,6 @@ fn led_toggle(p: &Peripherals, state: &mut bool) {
 fn configure_uart(p: &Peripherals) {
     p.SCB5.ctrl.write(|w| unsafe { w.bits(0) });
 
-    // Route the hard-wired KitProg3 USB-UART bridge pins to SCB5.
     p.GPIO.prt5.out_set.write(|w| w.out1().set_bit());
     p.HSIOM
         .prt5
@@ -250,8 +232,8 @@ fn configure_uart(p: &Peripherals) {
     p.GPIO.prt5.cfg.modify(|r, w| unsafe {
         let mut bits = r.bits();
         bits &= !0xff;
-        bits |= 1 << 3; // P5.0 RX: high-Z with input buffer enabled.
-        bits |= 6 << 4; // P5.1 TX: strong drive, input buffer disabled.
+        bits |= 1 << 3;
+        bits |= 6 << 4;
         w.bits(bits)
     });
 
@@ -291,257 +273,191 @@ fn configure_uart(p: &Peripherals) {
     });
 }
 
-fn handle_line(
-    line: &[u8],
-    console: &mut Console<'_>,
-    p: &Peripherals,
-    led_state: &mut bool,
-    heartbeat_enabled: &mut bool,
-) {
-    let line = trim_ascii(line);
+struct PsocBoard<'a> {
+    p: &'a Peripherals,
+    led_state: &'a mut bool,
+    heartbeat_enabled: &'a mut bool,
+    uptime_ms: u32,
+}
 
-    if line.is_empty() {
-        return;
+impl lisp::Board for PsocBoard<'_> {
+    fn led(&mut self, action: lisp::LedAction) -> bool {
+        match action {
+            lisp::LedAction::On => {
+                *self.heartbeat_enabled = false;
+                *self.led_state = true;
+                led_set(self.p, true);
+            }
+            lisp::LedAction::Off => {
+                *self.heartbeat_enabled = false;
+                *self.led_state = false;
+                led_set(self.p, false);
+            }
+            lisp::LedAction::Toggle => {
+                *self.heartbeat_enabled = false;
+                *self.led_state = !*self.led_state;
+                led_set(self.p, *self.led_state);
+            }
+            lisp::LedAction::Status => {}
+        }
+
+        *self.led_state
     }
 
-    if eq_ascii(line, b"help") || eq_ascii(line, b"?") {
-        writeln!(console, "commands:").ok();
-        writeln!(console, "  help").ok();
-        writeln!(console, "  regs").ok();
-        writeln!(console, "  led on | led off | led toggle | led status").ok();
-        writeln!(console, "  heartbeat on | heartbeat off").ok();
-        writeln!(console, "  sd status").ok();
-        writeln!(console, "  sd pins | sd pinmux").ok();
-        writeln!(console, "  sd init").ok();
-        writeln!(console, "  sdhc regs").ok();
-        writeln!(console, "  reboot").ok();
-        writeln!(console, "  (+ 1 2 3) ; also -, *, /, flat integer args").ok();
-        return;
+    fn heartbeat(&mut self, enabled: bool) -> bool {
+        *self.heartbeat_enabled = enabled;
+        *self.heartbeat_enabled
     }
 
-    if eq_ascii(line, b"regs") {
-        writeln!(
-            console,
-            "SCB5.CTRL       = 0x{:08x}",
-            p.SCB5.ctrl.read().bits()
-        )
-        .ok();
-        writeln!(
-            console,
-            "SCB5.UART_CTRL  = 0x{:08x}",
-            p.SCB5.uart_ctrl.read().bits()
-        )
-        .ok();
-        writeln!(
-            console,
-            "SCB5.RX_STATUS  = 0x{:08x}",
-            p.SCB5.rx_fifo_status.read().bits()
-        )
-        .ok();
-        writeln!(
-            console,
-            "SCB5.TX_STATUS  = 0x{:08x}",
-            p.SCB5.tx_fifo_status.read().bits()
-        )
-        .ok();
-        writeln!(
-            console,
-            "PERI.CLOCK[5]   = 0x{:08x}",
-            p.PERI.clock_ctl[SCB5_CLOCK].read().bits()
-        )
-        .ok();
-        writeln!(
-            console,
-            "PERI.DIV8[0]    = 0x{:08x}",
-            p.PERI.div_8_ctl[UART_CLOCK_DIVIDER].read().bits()
-        )
-        .ok();
-        writeln!(
-            console,
-            "HSIOM.PRT5.SEL0 = 0x{:08x}",
-            p.HSIOM.prt5.port_sel0.read().bits()
-        )
-        .ok();
-        writeln!(
-            console,
-            "GPIO.PRT5.CFG   = 0x{:08x}",
-            p.GPIO.prt5.cfg.read().bits()
-        )
-        .ok();
-        writeln!(
-            console,
-            "GPIO.PRT13.OUT   = 0x{:08x}",
-            p.GPIO.prt13.out.read().bits()
-        )
-        .ok();
-        writeln!(
-            console,
-            "GPIO.PRT13.CFG   = 0x{:08x}",
-            p.GPIO.prt13.cfg.read().bits()
-        )
-        .ok();
-        return;
+    fn button_pressed(&mut self, index: i32) -> Result<bool, lisp::Error> {
+        if index != 0 {
+            return Err(lisp::Error::new("unknown button"));
+        }
+
+        Ok(self.p.GPIO.prt0.in_.read().bits() & BUTTON0_MASK == 0)
     }
 
-    if eq_ascii(line, b"led on") {
-        *heartbeat_enabled = false;
-        *led_state = true;
-        led_set(p, *led_state);
-        writeln!(console, "ok; heartbeat off").ok();
-        return;
+    fn millis(&mut self) -> u32 {
+        self.uptime_ms
     }
 
-    if eq_ascii(line, b"led off") {
-        *heartbeat_enabled = false;
-        *led_state = false;
-        led_set(p, *led_state);
-        writeln!(console, "ok; heartbeat off").ok();
-        return;
+    fn read32(&mut self, address: u32) -> Result<u32, lisp::Error> {
+        if !is_peripheral_register_address(address) {
+            return Err(lisp::Error::new(
+                "address outside peripheral register range",
+            ));
+        }
+
+        Ok(unsafe { read_volatile(address as *const u32) })
     }
 
-    if eq_ascii(line, b"led toggle") {
-        *heartbeat_enabled = false;
-        *led_state = !*led_state;
-        led_set(p, *led_state);
-        writeln!(console, "ok; heartbeat off").ok();
-        return;
+    fn write32(&mut self, address: u32, value: u32) -> Result<(), lisp::Error> {
+        if !is_peripheral_register_address(address) {
+            return Err(lisp::Error::new(
+                "address outside peripheral register range",
+            ));
+        }
+
+        unsafe {
+            write_volatile(address as *mut u32, value);
+        }
+        Ok(())
     }
 
-    if eq_ascii(line, b"led status") {
-        writeln!(
-            console,
-            "led={} heartbeat={} GPIO.PRT13.OUT=0x{:08x}",
-            if *led_state { "on" } else { "off" },
-            if *heartbeat_enabled { "on" } else { "off" },
-            p.GPIO.prt13.out.read().bits()
-        )
-        .ok();
-        return;
+    fn registers(&mut self) -> lisp::RegisterReport {
+        lisp::RegisterReport {
+            scb5_ctrl: self.p.SCB5.ctrl.read().bits(),
+            scb5_uart_ctrl: self.p.SCB5.uart_ctrl.read().bits(),
+            scb5_rx_status: self.p.SCB5.rx_fifo_status.read().bits(),
+            scb5_tx_status: self.p.SCB5.tx_fifo_status.read().bits(),
+            peri_clock5: self.p.PERI.clock_ctl[SCB5_CLOCK].read().bits(),
+            peri_div8_0: self.p.PERI.div_8_ctl[UART_CLOCK_DIVIDER].read().bits(),
+            hsiom_prt5_sel0: self.p.HSIOM.prt5.port_sel0.read().bits(),
+            gpio_prt5_cfg: self.p.GPIO.prt5.cfg.read().bits(),
+            gpio_prt13_out: self.p.GPIO.prt13.out.read().bits(),
+            gpio_prt13_cfg: self.p.GPIO.prt13.cfg.read().bits(),
+        }
     }
 
-    if eq_ascii(line, b"heartbeat on") {
-        *heartbeat_enabled = true;
-        writeln!(console, "ok").ok();
-        return;
+    fn sd_status(&mut self) -> lisp::SdStatusReport {
+        let snapshot = micro_sd::card_detect_snapshot(self.p);
+        lisp::SdStatusReport {
+            cd_low: snapshot.is_low,
+            prt13_in: snapshot.prt13_in,
+            prt13_cfg: snapshot.prt13_cfg,
+        }
     }
 
-    if eq_ascii(line, b"heartbeat off") {
-        *heartbeat_enabled = false;
-        writeln!(console, "ok").ok();
-        return;
+    fn sd_pins(&mut self) -> lisp::SdPinsReport {
+        sd_pins_report(micro_sd::pin_snapshot(self.p))
     }
 
-    if eq_ascii(line, b"sd status") {
-        let snapshot = micro_sd::card_detect_snapshot(p);
-
-        writeln!(
-            console,
-            "microSD CD_L(P13.5)={} GPIO.PRT13.IN=0x{:08x} GPIO.PRT13.CFG=0x{:08x}",
-            if snapshot.is_low { "low" } else { "high" },
-            snapshot.prt13_in,
-            snapshot.prt13_cfg
-        )
-        .ok();
-        return;
+    fn sd_pinmux(&mut self) -> lisp::SdPinsReport {
+        micro_sd::configure_sdhc1_pins(self.p);
+        sd_pins_report(micro_sd::pin_snapshot(self.p))
     }
 
-    if eq_ascii(line, b"sd pins") {
-        write_micro_sd_pins(console, &micro_sd::pin_snapshot(p));
-        return;
+    fn sd_init(&mut self) -> lisp::SdInitReport {
+        let report = micro_sd::initialize_card(self.p);
+        lisp::SdInitReport {
+            status: sd_init_status(report.status),
+            cmd8_response: report.cmd8_response,
+            acmd41_ocr: report.acmd41_ocr,
+            acmd41_attempts: report.acmd41_attempts,
+            clk_ctrl: report.clk_ctrl,
+            pwr_ctrl: report.pwr_ctrl,
+            normal_int: report.normal_int,
+            error_int: report.error_int,
+            pstate: report.pstate,
+            last_error: report.last_error.map(|error| lisp::SdCommandErrorReport {
+                code: sd_command_error(error.code),
+                normal_int: error.normal_int,
+                error_int: error.error_int,
+                pstate: error.pstate,
+            }),
+        }
     }
 
-    if eq_ascii(line, b"sd pinmux") {
-        micro_sd::configure_sdhc1_pins(p);
-        writeln!(console, "ok").ok();
-        write_micro_sd_pins(console, &micro_sd::pin_snapshot(p));
-        return;
+    fn sdhc_registers(&mut self) -> lisp::SdhcReport {
+        micro_sd::enable_sdhc_controllers(self.p);
+
+        lisp::SdhcReport {
+            sdhc0: sdhc_core_report(micro_sd::sdhc0_snapshot(self.p)),
+            sdhc1: sdhc_core_report(micro_sd::sdhc1_snapshot(self.p)),
+            pins: sd_pins_report(micro_sd::pin_snapshot(self.p)),
+        }
     }
 
-    if eq_ascii(line, b"sd init") {
-        let report = micro_sd::initialize_card(p);
-        write_micro_sd_init_report(console, &report);
-        return;
-    }
-
-    if eq_ascii(line, b"sdhc regs") {
-        micro_sd::enable_sdhc_controllers(p);
-
-        write_sdhc_registers(console, "SDHC0", &micro_sd::sdhc0_snapshot(p));
-        write_sdhc_registers(console, "SDHC1", &micro_sd::sdhc1_snapshot(p));
-        write_micro_sd_pins(console, &micro_sd::pin_snapshot(p));
-        return;
-    }
-
-    if eq_ascii(line, b"reboot") {
-        writeln!(console, "resetting").ok();
+    fn reboot(&mut self) -> ! {
         cortex_m::peripheral::SCB::sys_reset();
     }
-
-    if line.starts_with(b"(") {
-        match eval_flat_lisp(line) {
-            Ok(value) => writeln!(console, "=> {}", value).ok(),
-            Err(err) => writeln!(console, "error: {}", err).ok(),
-        };
-        return;
-    }
-
-    writeln!(console, "unknown command; try help").ok();
 }
 
-fn write_micro_sd_init_report(console: &mut Console<'_>, report: &micro_sd::InitReport) {
-    writeln!(console, "sd init: {}", micro_sd_init_status(report.status)).ok();
-    writeln!(
-        console,
-        "CMD8=0x{:08x} ACMD41_OCR=0x{:08x} attempts={}",
-        report.cmd8_response, report.acmd41_ocr, report.acmd41_attempts
-    )
-    .ok();
-    writeln!(
-        console,
-        "SDHC1.CLK_CTRL=0x{:04x} PWR_CTRL=0x{:02x}",
-        report.clk_ctrl, report.pwr_ctrl
-    )
-    .ok();
-    writeln!(
-        console,
-        "SDHC1.NORM_INT=0x{:04x} ERR_INT=0x{:04x} PSTATE=0x{:08x}",
-        report.normal_int, report.error_int, report.pstate
-    )
-    .ok();
+fn is_peripheral_register_address(address: u32) -> bool {
+    address & 0x03 == 0
+        && address >= PERIPHERAL_REGISTER_START
+        && address <= PERIPHERAL_REGISTER_END
+}
 
-    if let Some(error) = report.last_error {
-        writeln!(
-            console,
-            "last error: {} NORM_INT=0x{:04x} ERR_INT=0x{:04x} PSTATE=0x{:08x}",
-            micro_sd_command_error(error.code),
-            error.normal_int,
-            error.error_int,
-            error.pstate
-        )
-        .ok();
+fn sd_pins_report(snapshot: micro_sd::PinSnapshot) -> lisp::SdPinsReport {
+    lisp::SdPinsReport {
+        p12_sel1: snapshot.p12_sel1,
+        p13_sel0: snapshot.p13_sel0,
+        p12_cfg: snapshot.p12_cfg,
+        p13_cfg: snapshot.p13_cfg,
     }
 }
 
-fn micro_sd_init_status(status: micro_sd::InitStatus) -> &'static str {
+fn sdhc_core_report(snapshot: micro_sd::SdhcSnapshot) -> lisp::SdhcCoreReport {
+    lisp::SdhcCoreReport {
+        wrap_ctl: snapshot.wrap_ctl,
+        host_version: snapshot.host_version,
+        cap1: snapshot.cap1,
+        cap2: snapshot.cap2,
+        pstate: snapshot.pstate,
+    }
+}
+
+fn sd_init_status(status: micro_sd::InitStatus) -> &'static [u8] {
     match status {
-        micro_sd::InitStatus::ReadySdhc => "ready SDHC/SDXC",
-        micro_sd::InitStatus::ReadySdsc => "ready SDSC",
-        micro_sd::InitStatus::NoCardDetect => "no card on CD_L",
-        micro_sd::InitStatus::ClockNotStable => "internal clock not stable",
-        micro_sd::InitStatus::ResetTimeout => "host reset timeout",
-        micro_sd::InitStatus::Cmd0Failed => "CMD0 failed",
-        micro_sd::InitStatus::Cmd8Failed => "CMD8 failed",
-        micro_sd::InitStatus::Cmd8PatternMismatch => "CMD8 pattern mismatch",
-        micro_sd::InitStatus::Acmd41Failed => "ACMD41 failed",
-        micro_sd::InitStatus::Acmd41Busy => "ACMD41 busy timeout",
+        micro_sd::InitStatus::ReadySdhc => b"ready-sdhc",
+        micro_sd::InitStatus::ReadySdsc => b"ready-sdsc",
+        micro_sd::InitStatus::NoCardDetect => b"no-card-detect",
+        micro_sd::InitStatus::ClockNotStable => b"clock-not-stable",
+        micro_sd::InitStatus::ResetTimeout => b"reset-timeout",
+        micro_sd::InitStatus::Cmd0Failed => b"cmd0-failed",
+        micro_sd::InitStatus::Cmd8Failed => b"cmd8-failed",
+        micro_sd::InitStatus::Cmd8PatternMismatch => b"cmd8-pattern-mismatch",
+        micro_sd::InitStatus::Acmd41Failed => b"acmd41-failed",
+        micro_sd::InitStatus::Acmd41Busy => b"acmd41-busy",
     }
 }
 
-fn micro_sd_command_error(code: micro_sd::CommandErrorCode) -> &'static str {
+fn sd_command_error(code: micro_sd::CommandErrorCode) -> &'static [u8] {
     match code {
-        micro_sd::CommandErrorCode::CommandLineBusy => "command line busy",
-        micro_sd::CommandErrorCode::CommandTimeout => "command timeout",
-        micro_sd::CommandErrorCode::CommandStatusError => "command status error",
+        micro_sd::CommandErrorCode::CommandLineBusy => b"command-line-busy",
+        micro_sd::CommandErrorCode::CommandTimeout => b"command-timeout",
+        micro_sd::CommandErrorCode::CommandStatusError => b"command-status-error",
     }
 }
 
@@ -553,149 +469,4 @@ fn trim_ascii(mut input: &[u8]) -> &[u8] {
         input = &input[..input.len() - 1];
     }
     input
-}
-
-fn eq_ascii(left: &[u8], right: &[u8]) -> bool {
-    left.len() == right.len()
-        && left
-            .iter()
-            .zip(right)
-            .all(|(&l, &r)| l.to_ascii_lowercase() == r.to_ascii_lowercase())
-}
-
-fn eval_flat_lisp(input: &[u8]) -> Result<i32, &'static str> {
-    let mut parser = Parser { input, pos: 0 };
-    parser.skip_ws();
-    parser.expect(b'(')?;
-    parser.skip_ws();
-    let op = parser.take_op()?;
-    parser.skip_ws();
-
-    let first = parser.take_i32()?;
-    let mut result = first;
-    let mut args = 1u32;
-
-    loop {
-        parser.skip_ws();
-        if parser.try_take(b')') {
-            break;
-        }
-
-        let next = parser.take_i32()?;
-        args += 1;
-        result = match op {
-            b'+' => result.checked_add(next).ok_or("integer overflow")?,
-            b'-' => result.checked_sub(next).ok_or("integer overflow")?,
-            b'*' => result.checked_mul(next).ok_or("integer overflow")?,
-            b'/' => {
-                if next == 0 {
-                    return Err("division by zero");
-                }
-                result.checked_div(next).ok_or("integer overflow")?
-            }
-            _ => return Err("unsupported operator"),
-        };
-    }
-
-    parser.skip_ws();
-    if !parser.is_done() {
-        return Err("trailing input");
-    }
-
-    if args == 1 {
-        result = match op {
-            b'-' => result.checked_neg().ok_or("integer overflow")?,
-            b'/' => return Err("division needs at least two args"),
-            _ => result,
-        };
-    }
-
-    Ok(result)
-}
-
-struct Parser<'a> {
-    input: &'a [u8],
-    pos: usize,
-}
-
-impl Parser<'_> {
-    fn is_done(&self) -> bool {
-        self.pos >= self.input.len()
-    }
-
-    fn skip_ws(&mut self) {
-        while matches!(self.peek(), Some(b' ' | b'\t')) {
-            self.pos += 1;
-        }
-    }
-
-    fn peek(&self) -> Option<u8> {
-        self.input.get(self.pos).copied()
-    }
-
-    fn expect(&mut self, byte: u8) -> Result<(), &'static str> {
-        if self.try_take(byte) {
-            Ok(())
-        } else {
-            Err("unexpected syntax")
-        }
-    }
-
-    fn try_take(&mut self, byte: u8) -> bool {
-        if self.peek() == Some(byte) {
-            self.pos += 1;
-            true
-        } else {
-            false
-        }
-    }
-
-    fn take_op(&mut self) -> Result<u8, &'static str> {
-        match self.peek() {
-            Some(op @ (b'+' | b'-' | b'*' | b'/')) => {
-                self.pos += 1;
-                Ok(op)
-            }
-            Some(_) => Err("expected operator"),
-            None => Err("unexpected end"),
-        }
-    }
-
-    fn take_i32(&mut self) -> Result<i32, &'static str> {
-        self.skip_ws();
-        if self.peek() == Some(b'(') {
-            return Err("nested expressions not implemented yet");
-        }
-
-        let mut negative = false;
-        if self.peek() == Some(b'-') {
-            negative = true;
-            self.pos += 1;
-        }
-
-        let mut value: i32 = 0;
-        let mut digits = 0u32;
-        while let Some(byte) = self.peek() {
-            if !byte.is_ascii_digit() {
-                break;
-            }
-
-            value = value
-                .checked_mul(10)
-                .and_then(|v| v.checked_add((byte - b'0') as i32))
-                .ok_or("integer overflow")?;
-            self.pos += 1;
-            digits += 1;
-        }
-
-        if digits == 0 {
-            return Err("expected integer");
-        }
-
-        if negative {
-            value = value.checked_neg().ok_or("integer overflow")?;
-        }
-
-        Ok(value)
-    }
 }

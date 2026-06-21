@@ -28,44 +28,29 @@ The board is flashed with:
 Working serial capture:
 
 #+begin_example
-psoc6> help
-commands:
-  help
-  regs
-  led on | led off | led toggle | led status
-  heartbeat on | heartbeat off
-  sd status
-  sd pins | sd pinmux
-  sd init
-  sdhc regs
-  reboot
-  (+ 1 2 3) ; also -, *, /, flat integer args
+lisp> (help)
+=> (help quote if define lambda begin let + - * / mod = < <= > >= not eq? nil? atom? pair? number? symbol? bool? cons car cdr list led heartbeat button millis reg32 poke32 regs sd-status sd-pins sd-pinmux sd-init sdhc-regs heap gc reboot)
 
-psoc6> (+ 1 2 3)
+lisp> (+ 1 2 3)
 => 6
 
-psoc6> (* 6 7)
+lisp> ((lambda (x) (+ x 1)) 41)
 => 42
 
-psoc6> regs
-SCB5.CTRL       = 0x8200080b
-SCB5.UART_CTRL  = 0x00000000
-SCB5.RX_STATUS  = 0x281d000b
-SCB5.TX_STATUS  = 0x18188000
-PERI.CLOCK[5]   = 0x00000000
-PERI.DIV8[0]    = 0x00002301
-HSIOM.PRT5.SEL0 = 0x00001212
-GPIO.PRT5.CFG   = 0x00000068
+lisp> (define (square x) (* x x))
+=> square
 
-psoc6> sd status
-microSD CD_L(P13.5)=low GPIO.PRT13.IN=0x0000010f GPIO.PRT13.CFG=0x6080eeee
+lisp> (square 9)
+=> 81
 
-psoc6> sd pins
-microSD HSIOM P12.SEL1=0x00001a1a P13.SEL0=0x1a1a1a1a
-microSD GPIO  P12.CFG =0x00ee0000 P13.CFG =0x6080eeee
+lisp> (sd-status)
+=> ((CD_L . low) (inserted . #t) (GPIO.PRT13.IN . #x0000010f) (GPIO.PRT13.CFG . #x6080eeee))
 
-psoc6> led status
-led=off heartbeat=off GPIO.PRT13.OUT=0x0000008f
+lisp> (regs)
+=> ((SCB5.CTRL . #x8200080b) (SCB5.UART_CTRL . #x00000000) (SCB5.RX_STATUS . #x03030000) (SCB5.TX_STATUS . #x43430000) (PERI.CLOCK5 . #x00000000) (PERI.DIV8.0 . #x00002301) (HSIOM.PRT5.SEL0 . #x00001212) (GPIO.PRT5.CFG . #x00000068) (GPIO.PRT13.OUT . #x0000008f) (GPIO.PRT13.CFG . #x6080eeee))
+
+lisp> (led status)
+=> #f
 #+end_example
 
 The current firmware intentionally does not blink the LED at idle. This
@@ -73,8 +58,8 @@ keeps the board quiet while doing longer bring-up work. To restore a
 visible heartbeat from the console:
 
 #+begin_example
-psoc6> heartbeat on
-ok
+lisp> (heartbeat on)
+=> #t
 #+end_example
 
 The red user LED blinks, which means the CM4 app loop is running.
@@ -131,18 +116,25 @@ manual LED commands every 500 ms. The local Zephyr and Tock board
 metadata model the LED as active-high, but the schematic and live board
 behavior match active-low. Current behavior:
 
-- =led on= drives =P13.7= low and disables heartbeat.
-- =led off= drives =P13.7= high and disables heartbeat.
-- =led toggle= toggles the manual state and disables heartbeat.
-- =led status= reports the tracked LED state, heartbeat state, and
-  =GPIO.PRT13.OUT=.
-- =heartbeat on= explicitly restores blinking.
+- =(led on)= drives =P13.7= low and disables heartbeat.
+- =(led off)= drives =P13.7= high and disables heartbeat.
+- =(led toggle)= toggles the manual state and disables heartbeat.
+- =(led status)= reports the tracked LED state as a boolean.
+- =(heartbeat on)= explicitly restores blinking.
+- =(heartbeat off)= disables blinking without changing the current manual
+  LED state.
 
 Quiet verified state:
 
 #+begin_example
-psoc6> led status
-led=off heartbeat=off GPIO.PRT13.OUT=0x0000008f
+lisp> (led status)
+=> #f
+
+lisp> (heartbeat off)
+=> #f
+
+lisp> (reg32 #x40310680)
+=> #x0000008f
 #+end_example
 
 The low four bits in =GPIO.PRT13.OUT= are the SDHC1 data pins preset
@@ -168,15 +160,15 @@ ordinary SPI bus:
 The populated card-detect path is =CD_L -> R61 -> P13.5=. The alternate
 detect path through =R62 -> P12.1= is not loaded. The =_L= suffix matters:
 the first live reading with the user's inserted 32GB card measured low.
-The next useful manual check is removing the card and running =sd status=
+The next useful manual check is removing the card and running =(sd-status)=
 again to confirm the opposite state.
 
 The console firmware configures =P13.5= as high-Z input with input buffer
 enabled and exposes a passive diagnostic:
 
 #+begin_example
-psoc6> sd status
-microSD CD_L(P13.5)=low GPIO.PRT13.IN=0x0000010f GPIO.PRT13.CFG=0x6080eeee
+lisp> (sd-status)
+=> ((CD_L . low) (inserted . #t) (GPIO.PRT13.IN . #x0000010f) (GPIO.PRT13.CFG . #x6080eeee))
 #+end_example
 
 This only proves the card-detect contact and GPIO input path. Reading
@@ -203,28 +195,16 @@ card-detect rather than being routed to SDHC1.
 Verified after flashing:
 
 #+begin_example
-psoc6> sd pins
-microSD HSIOM P12.SEL1=0x00001a1a P13.SEL0=0x1a1a1a1a
-microSD GPIO  P12.CFG =0x00ee0000 P13.CFG =0x6080eeee
+lisp> (sd-pins)
+=> ((P12.SEL1 . #x00001a1a) (P13.SEL0 . #x1a1a1a1a) (P12.CFG . #x00ee0000) (P13.CFG . #x6080eeee))
 #+end_example
 
 The next diagnostic enables the SDHC0 and SDHC1 wrappers and reads
 controller registers without sending card commands:
 
 #+begin_example
-psoc6> sdhc regs
-SDHC0.WRAP.CTL      = 0x80000000
-SDHC0.HOST_VERSION  = 0x0005
-SDHC0.CAP1          = 0x276c6481
-SDHC0.CAP2          = 0x08000077
-SDHC0.PSTATE        = 0x02070000
-SDHC1.WRAP.CTL      = 0x80000000
-SDHC1.HOST_VERSION  = 0x0005
-SDHC1.CAP1          = 0x276c6481
-SDHC1.CAP2          = 0x08000077
-SDHC1.PSTATE        = 0x03f70000
-microSD HSIOM P12.SEL1=0x00001a1a P13.SEL0=0x1a1a1a1a
-microSD GPIO  P12.CFG =0x00ee0000 P13.CFG =0x6080eeee
+lisp> (sdhc-regs)
+=> ((SDHC0 (WRAP.CTL . #x80000000) (HOST.VERSION . #x00000005) (CAP1 . #x276c6481) (CAP2 . #x08000077) (PSTATE . #x02070000)) (SDHC1 (WRAP.CTL . #x80000000) (HOST.VERSION . #x00000005) (CAP1 . #x276c6481) (CAP2 . #x08000077) (PSTATE . #x03f70000)) (microSD-pins (P12.SEL1 . #x00001a1a) (P13.SEL0 . #x1a1a1a1a) (P12.CFG . #x00ee0000) (P13.CFG . #x6080eeee)))
 #+end_example
 
 This proves the firmware can reach both Synopsys SDHC cores.
@@ -238,9 +218,9 @@ This proves the firmware can reach both Synopsys SDHC cores.
 Sector I/O still needs clock setup, card initialization commands, and a
 block-device layer.
 
-*** =sd init= diagnostic
+*** =(sd-init)= diagnostic
 
-The =sd init= command now performs the first identification-stage SD
+The =(sd-init)= primitive now performs the first identification-stage SD
 sequence on =SDHC1=:
 
 1. Reapply card-detect and SDHC1 pin routing.
@@ -253,12 +233,8 @@ sequence on =SDHC1=:
 Live result with the inserted 32 GB card:
 
 #+begin_example
-psoc6> sd init
-sd init: CMD8 failed
-CMD8=0x00000000 ACMD41_OCR=0x00000000 attempts=0
-SDHC1.CLK_CTRL=0x7d07 PWR_CTRL=0x01
-SDHC1.NORM_INT=0x0000 ERR_INT=0x0000 PSTATE=0x03f30000
-last error: command timeout NORM_INT=0x0000 ERR_INT=0x0000 PSTATE=0x03f30000
+lisp> (sd-init)
+=> ((status . cmd8-failed) (CMD8 . #x00000000) (ACMD41.OCR . #x00000000) (attempts . 0) (CLK_CTRL . #x00007d07) (PWR_CTRL . #x00000001) (NORM_INT . #x00000000) (ERR_INT . #x00000000) (PSTATE . #x03f30000) (last-error (code . command-timeout) (NORM_INT . #x00000000) (ERR_INT . #x00000000) (PSTATE . #x03f30000)))
 #+end_example
 
 Interpretation: the host reaches 400 kHz clock configuration
@@ -449,11 +425,35 @@ will read an ELF header where it expects the CM4 stack pointer.
 - no semihosting
 - SCB5 UART, 115200 8N1
 - line editing for printable characters, backspace, and Ctrl-C
-- commands: =help=, =regs=, =led on=, =led off=, =led toggle=, =reboot=
-- flat integer arithmetic forms: =(+ 1 2 3)=, =(- 3)=, =(* 6 7)=, =(/ 8 2)=
+- prompt: =lisp>=
+- one reader/evaluator path for both Lisp and board diagnostics
 
-The arithmetic parser is only the first Lisp-shaped smoke test. It does
-not support nested expressions yet.
+Implemented REPL surface:
+
+- reader: symbols, signed decimal integers, =#x= words, quote syntax,
+  lists, and dotted pairs
+- evaluator: =quote=, =if=, =define=, =lambda=, =begin=, =let=, global
+  definitions, lexical closures, and an eval-depth guard
+- heap: fixed object table with cons cells, closures, environment cells,
+  interned symbols, and mark-sweep GC
+- arithmetic and predicates: ~+~, ~-~, ~*~, ~/~, ~mod~, ~=~, ~<~, ~<=~,
+  ~>~, ~>=~, =not=, =eq?=, =nil?=, =atom?=, =pair?=, =number?=,
+  =symbol?=, =bool?=
+- lists: =cons=, =car=, =cdr=, =list=
+- board primitives: =led=, =heartbeat=, =button=, =millis=, =reg32=,
+  =poke32=, =regs=, =sd-status=, =sd-pins=, =sd-pinmux=, =sd-init=,
+  =sdhc-regs=, =heap=, =gc=, =reboot=
+
+Hardware diagnostics are Lisp forms now, not a separate command parser.
+For example:
+
+#+begin_example
+lisp> (reg32 #x40310680)
+=> #x0000008f
+
+lisp> (heap)
+=> (7 377 384 19)
+#+end_example
 
 * Wi-Fi milestone
 
@@ -476,11 +476,11 @@ Pragmatic path:
 
 * Next actions
 
-1. Replace the flat arithmetic parser with a small reader/evaluator that
-   supports nested S-expressions.
-2. Add a =mem= or =heap= command so the REPL can report allocator state.
-3. Implement SDHC1 clock setup, card initialization, and block reads.
-4. Test the newer Infineon target =infineon/cy8cxxa.cfg= as a replacement
+1. Add REPL niceties: multiline input for unfinished lists and history.
+2. Add string support before file-path based microSD functions.
+3. Investigate why the removable microSD card does not answer =CMD8=.
+4. Implement SDHC1 block reads after the command/clock path is proven.
+5. Test the newer Infineon target =infineon/cy8cxxa.cfg= as a replacement
    for obsolete =target/psoc6_2m.cfg=.
-5. Start Wi-Fi from a known-good Infineon or Zephyr sample before trying
+6. Start Wi-Fi from a known-good Infineon or Zephyr sample before trying
    to hand-port CYW4343W support.
