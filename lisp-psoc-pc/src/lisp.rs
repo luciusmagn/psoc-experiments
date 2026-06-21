@@ -100,19 +100,42 @@ pub struct SdCommandErrorReport {
     pub normal_int: u16,
     pub error_int: u16,
     pub pstate: u32,
+    pub command: u16,
+    pub argument: u32,
+    pub pstate_after_write: u32,
+    pub normal_int_after_write: u16,
+    pub error_int_after_write: u16,
 }
 
 #[derive(Clone, Copy)]
 pub struct SdInitReport {
     pub status: &'static [u8],
     pub cmd8_response: u32,
+    pub cmd8_error: Option<SdCommandErrorReport>,
     pub acmd41_ocr: u32,
     pub acmd41_attempts: u16,
+    pub gp_out: u32,
+    pub gp_in: u32,
+    pub host_ctrl1: u8,
+    pub host_ctrl2: u16,
+    pub xfer_mode: u16,
+    pub tout_ctrl: u8,
     pub clk_ctrl: u16,
     pub pwr_ctrl: u8,
+    pub sw_rst: u8,
     pub normal_int: u16,
     pub error_int: u16,
+    pub normal_int_stat_en: u16,
+    pub error_int_stat_en: u16,
+    pub normal_int_signal_en: u16,
+    pub error_int_signal_en: u16,
     pub pstate: u32,
+    pub cmd: u16,
+    pub argument: u32,
+    pub response01: u32,
+    pub response23: u32,
+    pub response45: u32,
+    pub response67: u32,
     pub last_error: Option<SdCommandErrorReport>,
 }
 
@@ -1362,30 +1385,104 @@ impl Machine {
     fn sd_init_report(&mut self, report: SdInitReport) -> LispResult<Value> {
         let status = self.symbol_entry(b"status", report.status)?;
         let cmd8 = self.word_entry(b"CMD8", report.cmd8_response)?;
+        let cmd8_error = self.sd_command_error_entry(b"CMD8.error", report.cmd8_error)?;
         let acmd41_ocr = self.word_entry(b"ACMD41.OCR", report.acmd41_ocr)?;
         let attempts = self.int_entry(b"attempts", report.acmd41_attempts as i32)?;
+        let gp_out = self.word_entry(b"GP_OUT", report.gp_out)?;
+        let gp_in = self.word_entry(b"GP_IN", report.gp_in)?;
+        let host_ctrl1 = self.word_entry(b"HOST_CTRL1", report.host_ctrl1 as u32)?;
+        let host_ctrl2 = self.word_entry(b"HOST_CTRL2", report.host_ctrl2 as u32)?;
+        let xfer_mode = self.word_entry(b"XFER_MODE", report.xfer_mode as u32)?;
+        let tout_ctrl = self.word_entry(b"TOUT_CTRL", report.tout_ctrl as u32)?;
         let clk_ctrl = self.word_entry(b"CLK_CTRL", report.clk_ctrl as u32)?;
         let pwr_ctrl = self.word_entry(b"PWR_CTRL", report.pwr_ctrl as u32)?;
+        let sw_rst = self.word_entry(b"SW_RST", report.sw_rst as u32)?;
         let normal_int = self.word_entry(b"NORM_INT", report.normal_int as u32)?;
         let error_int = self.word_entry(b"ERR_INT", report.error_int as u32)?;
+        let normal_int_stat_en =
+            self.word_entry(b"NORM_INT_STAT_EN", report.normal_int_stat_en as u32)?;
+        let error_int_stat_en =
+            self.word_entry(b"ERR_INT_STAT_EN", report.error_int_stat_en as u32)?;
+        let normal_int_signal_en =
+            self.word_entry(b"NORM_INT_SIG_EN", report.normal_int_signal_en as u32)?;
+        let error_int_signal_en =
+            self.word_entry(b"ERR_INT_SIG_EN", report.error_int_signal_en as u32)?;
         let pstate = self.word_entry(b"PSTATE", report.pstate)?;
-        let last_error = match report.last_error {
+        let cmd = self.word_entry(b"CMD_R", report.cmd as u32)?;
+        let argument = self.word_entry(b"ARGUMENT", report.argument)?;
+        let response01 = self.word_entry(b"RESP01", report.response01)?;
+        let response23 = self.word_entry(b"RESP23", report.response23)?;
+        let response45 = self.word_entry(b"RESP45", report.response45)?;
+        let response67 = self.word_entry(b"RESP67", report.response67)?;
+        let last_error = self.sd_command_error_entry(b"last-error", report.last_error)?;
+        let entries = [
+            status,
+            cmd8,
+            cmd8_error,
+            acmd41_ocr,
+            attempts,
+            gp_out,
+            gp_in,
+            host_ctrl1,
+            host_ctrl2,
+            xfer_mode,
+            tout_ctrl,
+            clk_ctrl,
+            pwr_ctrl,
+            sw_rst,
+            normal_int,
+            error_int,
+            normal_int_stat_en,
+            error_int_stat_en,
+            normal_int_signal_en,
+            error_int_signal_en,
+            pstate,
+            cmd,
+            argument,
+            response01,
+            response23,
+            response45,
+            response67,
+            last_error,
+        ];
+        self.make_list_from_values(&entries)
+    }
+
+    fn sd_command_error_entry(
+        &mut self,
+        name: &[u8],
+        report: Option<SdCommandErrorReport>,
+    ) -> LispResult<Value> {
+        match report {
             Some(error) => {
                 let code = self.symbol_entry(b"code", error.code)?;
                 let normal_int = self.word_entry(b"NORM_INT", error.normal_int as u32)?;
                 let error_int = self.word_entry(b"ERR_INT", error.error_int as u32)?;
                 let pstate = self.word_entry(b"PSTATE", error.pstate)?;
-                let entries = [code, normal_int, error_int, pstate];
+                let cmd_r = self.word_entry(b"CMD_R", error.command as u32)?;
+                let argument = self.word_entry(b"ARGUMENT", error.argument)?;
+                let pstate_after_write =
+                    self.word_entry(b"PSTATE.after-write", error.pstate_after_write)?;
+                let normal_int_after_write =
+                    self.word_entry(b"NORM_INT.after-write", error.normal_int_after_write as u32)?;
+                let error_int_after_write =
+                    self.word_entry(b"ERR_INT.after-write", error.error_int_after_write as u32)?;
+                let entries = [
+                    code,
+                    normal_int,
+                    error_int,
+                    pstate,
+                    cmd_r,
+                    argument,
+                    pstate_after_write,
+                    normal_int_after_write,
+                    error_int_after_write,
+                ];
                 let error_list = self.make_list_from_values(&entries)?;
-                self.entry(b"last-error", error_list)?
+                self.entry(name, error_list)
             }
-            None => self.entry(b"last-error", Value::Nil)?,
-        };
-        let entries = [
-            status, cmd8, acmd41_ocr, attempts, clk_ctrl, pwr_ctrl, normal_int, error_int, pstate,
-            last_error,
-        ];
-        self.make_list_from_values(&entries)
+            None => self.entry(name, Value::Nil),
+        }
     }
 
     fn is_pair(&self, value: Value) -> bool {

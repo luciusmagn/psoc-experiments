@@ -22,6 +22,7 @@ const GP_OUT_BASIC_SD: u32 = (1 << 0) | (1 << 1) | (1 << 3) | (1 << 4) | (1 << 5
 const SDHC_INPUT_CLOCK_HZ: u32 = 100_000_000;
 const SD_INIT_CLOCK_HZ: u32 = 400_000;
 const SD_INIT_CLOCK_DIVIDER: u16 = ((SDHC_INPUT_CLOCK_HZ / SD_INIT_CLOCK_HZ) >> 1) as u16;
+const SD_BUS_RAMP_UP_MS: u32 = 1000;
 const SD_CMD8_ARGUMENT: u32 = 0x0000_01aa;
 const SD_CMD8_PATTERN_MASK: u32 = 0xff;
 const SD_CMD8_PATTERN: u32 = 0xaa;
@@ -87,6 +88,20 @@ pub struct CommandError {
     pub normal_int: u16,
     pub error_int: u16,
     pub pstate: u32,
+    pub command: u16,
+    pub argument: u32,
+    pub pstate_after_write: u32,
+    pub normal_int_after_write: u16,
+    pub error_int_after_write: u16,
+}
+
+#[derive(Clone, Copy)]
+struct CommandTrace {
+    command: u16,
+    argument: u32,
+    pstate_after_write: u32,
+    normal_int_after_write: u16,
+    error_int_after_write: u16,
 }
 
 #[derive(Clone, Copy)]
@@ -97,7 +112,6 @@ pub enum InitStatus {
     ClockNotStable,
     ResetTimeout,
     Cmd0Failed,
-    Cmd8Failed,
     Cmd8PatternMismatch,
     Acmd41Failed,
     Acmd41Busy,
@@ -106,14 +120,32 @@ pub enum InitStatus {
 pub struct InitReport {
     pub status: InitStatus,
     pub cmd8_response: u32,
+    pub cmd8_error: Option<CommandError>,
     pub acmd41_ocr: u32,
     pub acmd41_attempts: u16,
     pub last_error: Option<CommandError>,
+    pub gp_out: u32,
+    pub gp_in: u32,
+    pub host_ctrl1: u8,
+    pub host_ctrl2: u16,
+    pub xfer_mode: u16,
+    pub tout_ctrl: u8,
     pub clk_ctrl: u16,
     pub pwr_ctrl: u8,
+    pub sw_rst: u8,
     pub normal_int: u16,
     pub error_int: u16,
+    pub normal_int_stat_en: u16,
+    pub error_int_stat_en: u16,
+    pub normal_int_signal_en: u16,
+    pub error_int_signal_en: u16,
     pub pstate: u32,
+    pub cmd: u16,
+    pub argument: u32,
+    pub response01: u32,
+    pub response23: u32,
+    pub response45: u32,
+    pub response67: u32,
 }
 
 #[derive(Clone, Copy)]
@@ -213,24 +245,24 @@ pub fn initialize_card(p: &Peripherals) -> InitReport {
 
     let card_detect = card_detect_snapshot(p);
     if !card_detect.is_low {
-        return init_report(p, InitStatus::NoCardDetect, 0, 0, 0, None);
+        return init_report(p, InitStatus::NoCardDetect, 0, None, 0, 0, None);
     }
 
     p.SDHC1.wrap.ctl.write(|w| w.enable().set_bit());
     let core = &p.SDHC1.core;
 
     if !enable_internal_clock(core) {
-        return init_report(p, InitStatus::ClockNotStable, 0, 0, 0, None);
+        return init_report(p, InitStatus::ClockNotStable, 0, None, 0, 0, None);
     }
 
     if !software_reset_all(core) {
-        return init_report(p, InitStatus::ResetTimeout, 0, 0, 0, None);
+        return init_report(p, InitStatus::ResetTimeout, 0, None, 0, 0, None);
     }
 
     configure_host_for_identification(core);
     enable_card_power(core);
     change_card_clock(core, SD_INIT_CLOCK_DIVIDER);
-    delay_ms(10);
+    delay_ms(SD_BUS_RAMP_UP_MS);
     clear_interrupts(core);
 
     if let Err(error) = send_command(
@@ -244,11 +276,13 @@ pub fn initialize_card(p: &Peripherals) -> InitReport {
             index_check: false,
         },
     ) {
-        return init_report(p, InitStatus::Cmd0Failed, 0, 0, 0, Some(error));
+        return init_report(p, InitStatus::Cmd0Failed, 0, None, 0, 0, Some(error));
     }
 
     let _ = software_reset_command_line(core);
 
+    let mut cmd8_error = None;
+    let mut cmd8_is_valid = false;
     let cmd8_response = match send_command(
         core,
         Command {
@@ -260,22 +294,32 @@ pub fn initialize_card(p: &Peripherals) -> InitReport {
             index_check: true,
         },
     ) {
-        Ok(response) => response,
-        Err(error) => return init_report(p, InitStatus::Cmd8Failed, 0, 0, 0, Some(error)),
+        Ok(response) => {
+            if response & SD_CMD8_PATTERN_MASK != SD_CMD8_PATTERN {
+                return init_report(
+                    p,
+                    InitStatus::Cmd8PatternMismatch,
+                    response,
+                    None,
+                    0,
+                    0,
+                    None,
+                );
+            }
+            cmd8_is_valid = true;
+            response
+        }
+        Err(error) => {
+            cmd8_error = Some(error);
+            let _ = software_reset_command_line(core);
+            0
+        }
     };
 
-    if cmd8_response & SD_CMD8_PATTERN_MASK != SD_CMD8_PATTERN {
-        return init_report(
-            p,
-            InitStatus::Cmd8PatternMismatch,
-            cmd8_response,
-            0,
-            0,
-            None,
-        );
+    let mut acmd41_argument = SD_ACMD41_VOLTAGE_MASK;
+    if cmd8_is_valid {
+        acmd41_argument |= SD_ACMD41_HCS;
     }
-
-    let acmd41_argument = SD_ACMD41_VOLTAGE_MASK | SD_ACMD41_HCS;
     let mut acmd41_ocr = 0;
     let mut acmd41_attempts = 0;
 
@@ -287,6 +331,7 @@ pub fn initialize_card(p: &Peripherals) -> InitReport {
                 p,
                 InitStatus::Acmd41Failed,
                 cmd8_response,
+                cmd8_error,
                 acmd41_ocr,
                 acmd41_attempts,
                 Some(error),
@@ -310,6 +355,7 @@ pub fn initialize_card(p: &Peripherals) -> InitReport {
                     p,
                     InitStatus::Acmd41Failed,
                     cmd8_response,
+                    cmd8_error,
                     acmd41_ocr,
                     acmd41_attempts,
                     Some(error),
@@ -323,7 +369,15 @@ pub fn initialize_card(p: &Peripherals) -> InitReport {
             } else {
                 InitStatus::ReadySdsc
             };
-            return init_report(p, status, cmd8_response, acmd41_ocr, acmd41_attempts, None);
+            return init_report(
+                p,
+                status,
+                cmd8_response,
+                cmd8_error,
+                acmd41_ocr,
+                acmd41_attempts,
+                None,
+            );
         }
 
         delay_ms(1);
@@ -333,6 +387,7 @@ pub fn initialize_card(p: &Peripherals) -> InitReport {
         p,
         InitStatus::Acmd41Busy,
         cmd8_response,
+        cmd8_error,
         acmd41_ocr,
         acmd41_attempts,
         None,
@@ -363,6 +418,7 @@ fn init_report(
     p: &Peripherals,
     status: InitStatus,
     cmd8_response: u32,
+    cmd8_error: Option<CommandError>,
     acmd41_ocr: u32,
     acmd41_attempts: u16,
     last_error: Option<CommandError>,
@@ -372,14 +428,32 @@ fn init_report(
     InitReport {
         status,
         cmd8_response,
+        cmd8_error,
         acmd41_ocr,
         acmd41_attempts,
         last_error,
+        gp_out: core.gp_out_r.read().bits(),
+        gp_in: core.gp_in_r.read().bits(),
+        host_ctrl1: core.host_ctrl1_r.read().bits(),
+        host_ctrl2: core.host_ctrl2_r.read().bits(),
+        xfer_mode: core.xfer_mode_r.read().bits(),
+        tout_ctrl: core.tout_ctrl_r.read().bits(),
         clk_ctrl: core.clk_ctrl_r.read().bits(),
         pwr_ctrl: core.pwr_ctrl_r.read().bits(),
+        sw_rst: core.sw_rst_r.read().bits(),
         normal_int: core.normal_int_stat_r.read().bits(),
         error_int: core.error_int_stat_r.read().bits(),
+        normal_int_stat_en: core.normal_int_stat_en_r.read().bits(),
+        error_int_stat_en: core.error_int_stat_en_r.read().bits(),
+        normal_int_signal_en: core.normal_int_signal_en_r.read().bits(),
+        error_int_signal_en: core.error_int_signal_en_r.read().bits(),
         pstate: core.pstate_reg.read().bits(),
+        cmd: core.cmd_r.read().bits(),
+        argument: core.argument_r.read().bits(),
+        response01: core.resp01_r.read().bits(),
+        response23: core.resp23_r.read().bits(),
+        response45: core.resp45_r.read().bits(),
+        response67: core.resp67_r.read().bits(),
     }
 }
 
@@ -483,13 +557,20 @@ fn send_command(core: &sdhc0::CORE, command: Command) -> Result<u32, CommandErro
     poll_command_line_free(core)?;
     clear_interrupts(core);
 
+    let command_value = command_register_value(command);
     core.argument_r
         .write(|w| unsafe { w.bits(command.argument) });
-    core.cmd_r
-        .write(|w| unsafe { w.bits(command_register_value(command)) });
+    core.cmd_r.write(|w| unsafe { w.bits(command_value) });
+    let trace = CommandTrace {
+        command: command_value,
+        argument: command.argument,
+        pstate_after_write: core.pstate_reg.read().bits(),
+        normal_int_after_write: core.normal_int_stat_r.read().bits(),
+        error_int_after_write: core.error_int_stat_r.read().bits(),
+    };
     delay_us(50);
 
-    wait_command_complete(core, matches!(command.response, ResponseType::None))?;
+    wait_command_complete(core, matches!(command.response, ResponseType::None), trace)?;
     delay_us(20);
 
     Ok(core.resp01_r.read().bits())
@@ -519,12 +600,17 @@ fn poll_command_line_free(core: &sdhc0::CORE) -> Result<(), CommandError> {
         delay_us(3);
     }
 
-    Err(command_error(core, CommandErrorCode::CommandLineBusy))
+    Err(command_error(
+        core,
+        CommandErrorCode::CommandLineBusy,
+        CommandTrace::from_registers(core),
+    ))
 }
 
 fn wait_command_complete(
     core: &sdhc0::CORE,
     allow_inhibit_fallback: bool,
+    trace: CommandTrace,
 ) -> Result<(), CommandError> {
     for _ in 0..1000 {
         let normal_int = core.normal_int_stat_r.read().bits();
@@ -532,7 +618,7 @@ fn wait_command_complete(
         let pstate = core.pstate_reg.read().bits();
 
         if error_int != 0 || normal_int & NORMAL_INT_ERROR != 0 {
-            let error = command_error(core, CommandErrorCode::CommandStatusError);
+            let error = command_error(core, CommandErrorCode::CommandStatusError, trace);
             clear_interrupts(core);
             let _ = software_reset_command_line(core);
             return Err(error);
@@ -557,7 +643,7 @@ fn wait_command_complete(
         delay_us(3);
     }
 
-    Err(command_error(core, CommandErrorCode::CommandTimeout))
+    Err(command_error(core, CommandErrorCode::CommandTimeout, trace))
 }
 
 fn clear_interrupts(core: &sdhc0::CORE) {
@@ -567,12 +653,29 @@ fn clear_interrupts(core: &sdhc0::CORE) {
         .write(|w| unsafe { w.bits(ERROR_INT_ALL) });
 }
 
-fn command_error(core: &sdhc0::CORE, code: CommandErrorCode) -> CommandError {
+fn command_error(core: &sdhc0::CORE, code: CommandErrorCode, trace: CommandTrace) -> CommandError {
     CommandError {
         code,
         normal_int: core.normal_int_stat_r.read().bits(),
         error_int: core.error_int_stat_r.read().bits(),
         pstate: core.pstate_reg.read().bits(),
+        command: trace.command,
+        argument: trace.argument,
+        pstate_after_write: trace.pstate_after_write,
+        normal_int_after_write: trace.normal_int_after_write,
+        error_int_after_write: trace.error_int_after_write,
+    }
+}
+
+impl CommandTrace {
+    fn from_registers(core: &sdhc0::CORE) -> Self {
+        Self {
+            command: core.cmd_r.read().bits(),
+            argument: core.argument_r.read().bits(),
+            pstate_after_write: core.pstate_reg.read().bits(),
+            normal_int_after_write: core.normal_int_stat_r.read().bits(),
+            error_int_after_write: core.error_int_stat_r.read().bits(),
+        }
     }
 }
 

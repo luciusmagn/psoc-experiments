@@ -484,11 +484,113 @@ Pragmatic path:
    pieces into this Rust firmware or move the Lisp machine onto a Zephyr
    firmware base.
 
+* 2026-06-22 SDHC1 diagnostic trace
+
+The active firmware keeps board diagnostics inside the Lisp REPL. There
+is no separate command parser for SDHC or register inspection. Useful
+forms while keeping the board quiet:
+
+#+begin_example
+(led status)
+(sd-status)
+(sd-pins)
+(sd-init)
+(sdhc-regs)
+(reg32 #x40471024)
+#+end_example
+
+The latest SDHC1 test was flashed with heartbeat disabled and LED4 off.
+Card detect is working:
+
+#+begin_example
+(sd-status)
+=> ((CD_L . low) (inserted . #t)
+    (GPIO.PRT13.IN . #x0000010f)
+    (GPIO.PRT13.CFG . #x6080eeee))
+#+end_example
+
+The removable microSD pins are muxed to SDHC1 with HSIOM selector 26 and
+strong-input drive on CMD, CLK, and DAT0..3:
+
+#+begin_example
+(sd-pins)
+=> ((P12.SEL1 . #x00001a1a)
+    (P13.SEL0 . #x1a1a1a1a)
+    (P12.CFG . #x00ee0000)
+    (P13.CFG . #x6080eeee))
+#+end_example
+
+=sd-init= now records a richer failure report and waits 1000 ms after
+power and 400 kHz clock setup, matching the Infineon PDL bus-ramp delay.
+The current result:
+
+#+begin_example
+(sd-init)
+=> ((status . acmd41-failed)
+    (CMD8 . #x00000000)
+    (CMD8.error
+      (code . command-timeout)
+      (NORM_INT . #x00000000)
+      (ERR_INT . #x00000000)
+      (PSTATE . #x03f30000)
+      (CMD_R . #x0000081a)
+      (ARGUMENT . #x000001aa)
+      (PSTATE.after-write . #x03f30000)
+      (NORM_INT.after-write . #x00000000)
+      (ERR_INT.after-write . #x00000000))
+    (ACMD41.OCR . #x00000000)
+    (attempts . 1)
+    (GP_OUT . #x0000003b)
+    (GP_IN . #x00000000)
+    (HOST_CTRL1 . #x000000c0)
+    (HOST_CTRL2 . #x00001000)
+    (XFER_MODE . #x00000000)
+    (TOUT_CTRL . #x0000000e)
+    (CLK_CTRL . #x00007d07)
+    (PWR_CTRL . #x00000001)
+    (SW_RST . #x00000000)
+    (NORM_INT . #x00000000)
+    (ERR_INT . #x00000000)
+    (NORM_INT_STAT_EN . #x00001fff)
+    (ERR_INT_STAT_EN . #x000007ff)
+    (NORM_INT_SIG_EN . #x00000000)
+    (ERR_INT_SIG_EN . #x00000000)
+    (PSTATE . #x03f30000)
+    (CMD_R . #x0000371a)
+    (ARGUMENT . #x00000000)
+    (RESP01 . #x00000000)
+    (RESP23 . #x00000000)
+    (RESP45 . #x00000000)
+    (RESP67 . #x00000000)
+    (last-error
+      (code . command-timeout)
+      (NORM_INT . #x00000000)
+      (ERR_INT . #x00000000)
+      (PSTATE . #x03f30000)
+      (CMD_R . #x0000371a)
+      (ARGUMENT . #x00000000)
+      (PSTATE.after-write . #x03f30000)
+      (NORM_INT.after-write . #x00000000)
+      (ERR_INT.after-write . #x00000000)))
+#+end_example
+
+The host setup values match the non-LED parts of the Infineon PDL path:
+=GP_OUT= is =#x3b=, =HOST_CTRL1= uses card-detect test mode, the timeout
+and interrupt status-enable registers are set, SD clock is enabled, and
+=PWR_CTRL= only sets the VDD1 bus-power bit, as PDL does.
+
+The important observation is that command writes land in =CMD_R= and
+=ARGUMENT=, but =PSTATE= does not show command inhibit after the write and
+no normal or error status bit appears. A manual combined 32-bit write to
+=XFER_MODE_R/CMD_R= behaved the same way. This points at the SDHC command
+engine not launching or not being clocked/gated, not merely an SD card
+response timeout.
+
 * Next actions
 
 1. Add REPL history and better editing across continuation lines.
 2. Add string support before file-path based microSD functions.
-3. Investigate why the removable microSD card does not answer =CMD8=.
+3. Investigate SDHC1 command-engine launch, clock, protection, or gating.
 4. Implement SDHC1 block reads after the command/clock path is proven.
 5. Test the newer Infineon target =infineon/cy8cxxa.cfg= as a replacement
    for obsolete =target/psoc6_2m.cfg=.

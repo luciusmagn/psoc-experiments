@@ -399,19 +399,32 @@ impl lisp::Board for PsocBoard<'_> {
         lisp::SdInitReport {
             status: sd_init_status(report.status),
             cmd8_response: report.cmd8_response,
+            cmd8_error: report.cmd8_error.map(sd_command_error_report),
             acmd41_ocr: report.acmd41_ocr,
             acmd41_attempts: report.acmd41_attempts,
+            gp_out: report.gp_out,
+            gp_in: report.gp_in,
+            host_ctrl1: report.host_ctrl1,
+            host_ctrl2: report.host_ctrl2,
+            xfer_mode: report.xfer_mode,
+            tout_ctrl: report.tout_ctrl,
             clk_ctrl: report.clk_ctrl,
             pwr_ctrl: report.pwr_ctrl,
+            sw_rst: report.sw_rst,
             normal_int: report.normal_int,
             error_int: report.error_int,
+            normal_int_stat_en: report.normal_int_stat_en,
+            error_int_stat_en: report.error_int_stat_en,
+            normal_int_signal_en: report.normal_int_signal_en,
+            error_int_signal_en: report.error_int_signal_en,
             pstate: report.pstate,
-            last_error: report.last_error.map(|error| lisp::SdCommandErrorReport {
-                code: sd_command_error(error.code),
-                normal_int: error.normal_int,
-                error_int: error.error_int,
-                pstate: error.pstate,
-            }),
+            cmd: report.cmd,
+            argument: report.argument,
+            response01: report.response01,
+            response23: report.response23,
+            response45: report.response45,
+            response67: report.response67,
+            last_error: report.last_error.map(sd_command_error_report),
         }
     }
 
@@ -463,7 +476,6 @@ fn sd_init_status(status: micro_sd::InitStatus) -> &'static [u8] {
         micro_sd::InitStatus::ClockNotStable => b"clock-not-stable",
         micro_sd::InitStatus::ResetTimeout => b"reset-timeout",
         micro_sd::InitStatus::Cmd0Failed => b"cmd0-failed",
-        micro_sd::InitStatus::Cmd8Failed => b"cmd8-failed",
         micro_sd::InitStatus::Cmd8PatternMismatch => b"cmd8-pattern-mismatch",
         micro_sd::InitStatus::Acmd41Failed => b"acmd41-failed",
         micro_sd::InitStatus::Acmd41Busy => b"acmd41-busy",
@@ -475,6 +487,20 @@ fn sd_command_error(code: micro_sd::CommandErrorCode) -> &'static [u8] {
         micro_sd::CommandErrorCode::CommandLineBusy => b"command-line-busy",
         micro_sd::CommandErrorCode::CommandTimeout => b"command-timeout",
         micro_sd::CommandErrorCode::CommandStatusError => b"command-status-error",
+    }
+}
+
+fn sd_command_error_report(error: micro_sd::CommandError) -> lisp::SdCommandErrorReport {
+    lisp::SdCommandErrorReport {
+        code: sd_command_error(error.code),
+        normal_int: error.normal_int,
+        error_int: error.error_int,
+        pstate: error.pstate,
+        command: error.command,
+        argument: error.argument,
+        pstate_after_write: error.pstate_after_write,
+        normal_int_after_write: error.normal_int_after_write,
+        error_int_after_write: error.error_int_after_write,
     }
 }
 
