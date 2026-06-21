@@ -5,7 +5,7 @@ const MAX_SYMBOLS: usize = 160;
 const MAX_GLOBALS: usize = 96;
 const MAX_SYMBOL_BYTES: usize = 32;
 const MAX_CALL_ARGS: usize = 16;
-const MAX_EVAL_DEPTH: u8 = 48;
+const MAX_EVAL_DEPTH: u8 = 128;
 
 type ObjectId = u16;
 type SymbolId = u16;

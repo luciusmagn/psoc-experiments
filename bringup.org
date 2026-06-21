@@ -43,6 +43,15 @@ lisp> (define (square x) (* x x))
 lisp> (square 9)
 => 81
 
+lisp> (define (fact n)
+....>   (if (= n 0)
+....>       1
+....>       (* n (fact (- n 1)))))
+=> fact
+
+lisp> (fact 5)
+=> 120
+
 lisp> (sd-status)
 => ((CD_L . low) (inserted . #t) (GPIO.PRT13.IN . #x0000010f) (GPIO.PRT13.CFG . #x6080eeee))
 
@@ -424,7 +433,8 @@ will read an ELF header where it expects the CM4 stack pointer.
 - no RTOS
 - no semihosting
 - SCB5 UART, 115200 8N1
-- line editing for printable characters, backspace, and Ctrl-C
+- line editing for printable characters, backspace, Ctrl-C, and
+  multiline input when list parentheses are still open
 - prompt: =lisp>=
 - one reader/evaluator path for both Lisp and board diagnostics
 
@@ -433,7 +443,7 @@ Implemented REPL surface:
 - reader: symbols, signed decimal integers, =#x= words, quote syntax,
   lists, and dotted pairs
 - evaluator: =quote=, =if=, =define=, =lambda=, =begin=, =let=, global
-  definitions, lexical closures, and an eval-depth guard
+  definitions, lexical closures, and a bounded eval-depth guard
 - heap: fixed object table with cons cells, closures, environment cells,
   interned symbols, and mark-sweep GC
 - arithmetic and predicates: ~+~, ~-~, ~*~, ~/~, ~mod~, ~=~, ~<~, ~<=~,
@@ -476,7 +486,7 @@ Pragmatic path:
 
 * Next actions
 
-1. Add REPL niceties: multiline input for unfinished lists and history.
+1. Add REPL history and better editing across continuation lines.
 2. Add string support before file-path based microSD functions.
 3. Investigate why the removable microSD card does not answer =CMD8=.
 4. Implement SDHC1 block reads after the command/clock path is proven.
