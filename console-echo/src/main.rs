@@ -30,6 +30,8 @@ const FIFO_USED_MASK: u32 = 0x01ff;
 const FIFO_SR_VALID: u32 = 1 << 15;
 const FIFO_CLEAR: u32 = 1 << 16;
 
+const MICRO_SD_CARD_DETECT_MASK: u32 = 1 << 5;
+
 struct Console<'a> {
     scb: &'a SCB5,
 }
@@ -90,6 +92,7 @@ fn main() -> ! {
     }
 
     configure_led(&p);
+    configure_micro_sd_detect(&p);
     configure_uart(&p);
 
     let mut delay = cortex_m::delay::Delay::new(cp.SYST, SYSCLK_HZ);
@@ -172,6 +175,15 @@ fn configure_led(p: &Peripherals) {
         w.bits(bits)
     });
     led_off(p);
+}
+
+fn configure_micro_sd_detect(p: &Peripherals) {
+    p.GPIO.prt13.cfg.modify(|r, w| unsafe {
+        let mut bits = r.bits();
+        bits &= !(0x0f << 20);
+        bits |= 1 << 23;
+        w.bits(bits)
+    });
 }
 
 fn led_on(p: &Peripherals) {
@@ -268,6 +280,7 @@ fn handle_line(
         writeln!(console, "  regs").ok();
         writeln!(console, "  led on | led off | led toggle | led status").ok();
         writeln!(console, "  heartbeat on | heartbeat off").ok();
+        writeln!(console, "  sd status").ok();
         writeln!(console, "  reboot").ok();
         writeln!(console, "  (+ 1 2 3) ; also -, *, /, flat integer args").ok();
         return;
@@ -382,6 +395,22 @@ fn handle_line(
     if eq_ascii(line, b"heartbeat off") {
         *heartbeat_enabled = false;
         writeln!(console, "ok").ok();
+        return;
+    }
+
+    if eq_ascii(line, b"sd status") {
+        let port_input = p.GPIO.prt13.in_.read().bits();
+        let port_cfg = p.GPIO.prt13.cfg.read().bits();
+        let card_detect_high = port_input & MICRO_SD_CARD_DETECT_MASK != 0;
+
+        writeln!(
+            console,
+            "microSD CD_L(P13.5)={} GPIO.PRT13.IN=0x{:08x} GPIO.PRT13.CFG=0x{:08x}",
+            if card_detect_high { "high" } else { "low" },
+            port_input,
+            port_cfg
+        )
+        .ok();
         return;
     }
 

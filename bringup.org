@@ -32,7 +32,9 @@ psoc6> help
 commands:
   help
   regs
-  led on | led off | led toggle
+  led on | led off | led toggle | led status
+  heartbeat on | heartbeat off
+  sd status
   reboot
   (+ 1 2 3) ; also -, *, /, flat integer args
 
@@ -52,8 +54,11 @@ PERI.DIV8[0]    = 0x00002301
 HSIOM.PRT5.SEL0 = 0x00001212
 GPIO.PRT5.CFG   = 0x00000068
 
-psoc6> led toggle
-ok
+psoc6> sd status
+microSD CD_L(P13.5)=low GPIO.PRT13.IN=0x00000000 GPIO.PRT13.CFG=0x60800000
+
+psoc6> led status
+led=off heartbeat=off GPIO.PRT13.OUT=0x00000080
 #+end_example
 
 The current firmware intentionally does not blink the LED at idle. This
@@ -132,6 +137,39 @@ Quiet verified state:
 psoc6> led status
 led=off heartbeat=off GPIO.PRT13.OUT=0x00000080
 #+end_example
+
+** microSD slot
+
+The microSD socket is on the QSPI flash and microSD card breakaway
+section. The schematic maps it to the native SDHC/SDIO pins, not to an
+ordinary SPI bus:
+
+| Signal       | PSoC6 pin |
+|--------------+-----------|
+| SD_CMD       | P12.4     |
+| SD_CLK       | P12.5     |
+| SD_IO0/DAT0  | P13.0     |
+| SD_IO1/DAT1  | P13.1     |
+| SD_IO2/DAT2  | P13.2     |
+| SD_IO3/DAT3  | P13.3     |
+| CD_L detect  | P13.5     |
+
+The populated card-detect path is =CD_L -> R61 -> P13.5=. The alternate
+detect path through =R62 -> P12.1= is not loaded. The =_L= suffix matters:
+the first live reading with the user's inserted 32GB card measured low.
+The next useful manual check is removing the card and running =sd status=
+again to confirm the opposite state.
+
+The console firmware configures =P13.5= as high-Z input with input buffer
+enabled and exposes a passive diagnostic:
+
+#+begin_example
+psoc6> sd status
+microSD CD_L(P13.5)=low GPIO.PRT13.IN=0x00000000 GPIO.PRT13.CFG=0x60800000
+#+end_example
+
+This only proves the card-detect contact and GPIO input path. Reading
+sectors still requires native SDHC bring-up.
 
 * Tooling notes
 
