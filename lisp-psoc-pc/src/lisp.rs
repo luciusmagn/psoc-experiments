@@ -46,6 +46,7 @@ pub trait Board {
     fn sd_pinmux(&mut self) -> SdPinsReport;
     fn sd_clock(&mut self) -> SdClockReport;
     fn sd_init(&mut self) -> SdInitReport;
+    fn sd_read0(&mut self) -> SdRead0Report;
     fn sdhc_registers(&mut self) -> SdhcReport;
     fn reboot(&mut self) -> !;
 }
@@ -151,6 +152,28 @@ pub struct SdInitReport {
     pub last_error: Option<SdCommandErrorReport>,
 }
 
+#[derive(Clone, Copy)]
+pub struct SdRead0Report {
+    pub status: &'static [u8],
+    pub init_status: &'static [u8],
+    pub rca: u16,
+    pub ocr: u32,
+    pub acmd41_attempts: u16,
+    pub command_response: u32,
+    pub last_error: Option<SdCommandErrorReport>,
+    pub first_words: [u32; 8],
+    pub mbr_signature: u16,
+    pub partition_type: u8,
+    pub normal_int: u16,
+    pub error_int: u16,
+    pub pstate: u32,
+    pub block_size: u16,
+    pub block_count: u16,
+    pub xfer_mode: u16,
+    pub cmd: u16,
+    pub argument: u32,
+}
+
 type LispResult<T> = Result<T, Error>;
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -201,6 +224,7 @@ pub enum Primitive {
     SdPinmux,
     SdClock,
     SdInit,
+    SdRead0,
     SdhcRegs,
     Heap,
     Gc,
@@ -245,6 +269,7 @@ impl Primitive {
             Self::SdPinmux => "sd-pinmux",
             Self::SdClock => "sd-clock",
             Self::SdInit => "sd-init",
+            Self::SdRead0 => "sd-read0",
             Self::SdhcRegs => "sdhc-regs",
             Self::Heap => "heap",
             Self::Gc => "gc",
@@ -437,6 +462,7 @@ impl Machine {
         self.install_primitive(b"sd-pinmux", Primitive::SdPinmux)?;
         self.install_primitive(b"sd-clock", Primitive::SdClock)?;
         self.install_primitive(b"sd-init", Primitive::SdInit)?;
+        self.install_primitive(b"sd-read0", Primitive::SdRead0)?;
         self.install_primitive(b"sdhc-regs", Primitive::SdhcRegs)?;
         self.install_primitive(b"heap", Primitive::Heap)?;
         self.install_primitive(b"gc", Primitive::Gc)?;
@@ -1042,6 +1068,10 @@ impl Machine {
                 self.expect_count(args, 0)?;
                 self.sd_init_report(board.sd_init())
             }
+            Primitive::SdRead0 => {
+                self.expect_count(args, 0)?;
+                self.sd_read0_report(board.sd_read0())
+            }
             Primitive::SdhcRegs => {
                 self.expect_count(args, 0)?;
                 self.sdhc_report(board.sdhc_registers())
@@ -1329,6 +1359,7 @@ impl Machine {
             b"sd-pinmux",
             b"sd-clock",
             b"sd-init",
+            b"sd-read0",
             b"sdhc-regs",
             b"heap",
             b"gc",
@@ -1472,6 +1503,57 @@ impl Machine {
             error_int_after_write,
         ];
         self.make_list_from_values(&entries)
+    }
+
+    fn sd_read0_report(&mut self, report: SdRead0Report) -> LispResult<Value> {
+        let status = self.symbol_entry(b"status", report.status)?;
+        let init_status = self.symbol_entry(b"init-status", report.init_status)?;
+        let rca = self.word_entry(b"RCA", report.rca as u32)?;
+        let ocr = self.word_entry(b"OCR", report.ocr)?;
+        let attempts = self.int_entry(b"attempts", report.acmd41_attempts as i32)?;
+        let response = self.word_entry(b"CMD17.response", report.command_response)?;
+        let last_error = self.sd_error_code_entry(b"last-error", report.last_error)?;
+        let first_words = self.sd_word_list_entry(b"first-words", &report.first_words)?;
+        let mbr_signature = self.word_entry(b"MBR.sig", report.mbr_signature as u32)?;
+        let partition_type = self.word_entry(b"partition0.type", report.partition_type as u32)?;
+        let normal_int = self.word_entry(b"NORM_INT", report.normal_int as u32)?;
+        let error_int = self.word_entry(b"ERR_INT", report.error_int as u32)?;
+        let pstate = self.word_entry(b"PSTATE", report.pstate)?;
+        let block_size = self.word_entry(b"BLOCK_SIZE", report.block_size as u32)?;
+        let block_count = self.word_entry(b"BLOCK_COUNT", report.block_count as u32)?;
+        let xfer_mode = self.word_entry(b"XFER_MODE", report.xfer_mode as u32)?;
+        let cmd = self.word_entry(b"CMD_R", report.cmd as u32)?;
+        let argument = self.word_entry(b"ARGUMENT", report.argument)?;
+        let entries = [
+            status,
+            init_status,
+            rca,
+            ocr,
+            attempts,
+            response,
+            last_error,
+            first_words,
+            mbr_signature,
+            partition_type,
+            normal_int,
+            error_int,
+            pstate,
+            block_size,
+            block_count,
+            xfer_mode,
+            cmd,
+            argument,
+        ];
+        self.make_list_from_values(&entries)
+    }
+
+    fn sd_word_list_entry(&mut self, name: &[u8], words: &[u32]) -> LispResult<Value> {
+        let mut values = [Value::Nil; 8];
+        for (index, word) in words.iter().enumerate() {
+            values[index] = Value::Word(*word);
+        }
+        let list = self.make_list_from_values(&values)?;
+        self.entry(name, list)
     }
 
     fn sd_error_code_entry(

@@ -29,7 +29,7 @@ Working serial capture:
 
 #+begin_example
 lisp> (help)
-=> (help quote if define lambda begin let + - * / mod = < <= > >= not eq? nil? atom? pair? number? symbol? bool? cons car cdr list led heartbeat button millis reg32 poke32 regs sd-status sd-pins sd-pinmux sd-clock sd-init sdhc-regs heap gc reboot)
+=> (help quote if define lambda begin let + - * / mod = < <= > >= not eq? nil? atom? pair? number? symbol? bool? cons car cdr list led heartbeat button millis reg32 poke32 regs sd-status sd-pins sd-pinmux sd-clock sd-init sd-read0 sdhc-regs heap gc reboot)
 
 lisp> (+ 1 2 3)
 => 6
@@ -456,7 +456,7 @@ Implemented REPL surface:
 - lists: =cons=, =car=, =cdr=, =list=
 - board primitives: =led=, =heartbeat=, =button=, =millis=, =reg32=,
   =poke32=, =regs=, =sd-status=, =sd-pins=, =sd-pinmux=, =sd-clock=,
-  =sd-init=, =sdhc-regs=, =heap=, =gc=, =reboot=
+  =sd-init=, =sd-read0=, =sdhc-regs=, =heap=, =gc=, =reboot=
 
 Hardware diagnostics are Lisp forms now, not a separate command parser.
 For example:
@@ -500,6 +500,7 @@ forms while keeping the board quiet:
 (sd-pins)
 (sd-clock)
 (sd-init)
+(sd-read0)
 (sdhc-regs)
 (reg32 #x40471024)
 #+end_example
@@ -579,12 +580,53 @@ identification sequence. =CMD8= echoes the expected =#xaa= pattern, and
 slice should select the card, configure block length if needed, and read
 sector 0 through the same Lisp diagnostic surface.
 
+* 2026-06-22 raw microSD sector 0 read
+
+The next slice added a non-DMA single-block read path and exposes it as
+=sd-read0=. The command sequence is:
+
+1. Re-run the identification path used by =sd-init=.
+2. Send =CMD2= to move the card toward standby.
+3. Send =CMD3= and retain the returned RCA.
+4. Send =CMD7= to select the card.
+5. Configure =BLOCKSIZE=512=, =BLOCKCOUNT=1=, and read transfer mode.
+6. Send =CMD17= for sector 0 and drain 128 words from =BUF_DATA_R=.
+
+Live result:
+
+#+begin_example
+(sd-read0)
+=> ((status . ready)
+    (init-status . ready-sdhc)
+    (RCA . #x00005048)
+    (OCR . #xc0ff8000)
+    (attempts . 2)
+    (CMD17.response . #x00000900)
+    (last-error)
+    (first-words #x00000000 #x00000000 #x00000000 #x00000000
+                 #x00000000 #x00000000 #x00000000 #x00000000)
+    (MBR.sig . #x0000aa55)
+    (partition0.type . #x00000083)
+    (NORM_INT . #x00000000)
+    (ERR_INT . #x00000000)
+    (PSTATE . #x03f30000)
+    (BLOCK_SIZE . #x00000200)
+    (BLOCK_COUNT . #x00000000)
+    (XFER_MODE . #x00000012)
+    (CMD_R . #x0000113a)
+    (ARGUMENT . #x00000000))
+#+end_example
+
+=MBR.sig=#xaa55= and partition type =#x83= prove that firmware is reading
+actual sector data from the inserted card. The first eight words are zero
+because this card's MBR boot-code area starts with zero-filled bytes.
+
 * Next actions
 
 1. Add REPL history and better editing across continuation lines.
 2. Add string support before file-path based microSD functions.
-3. Implement SDHC1 block reads and expose a compact sector-0 diagnostic.
-4. Add a FAT/exFAT-aware storage layer after raw sector reads work.
+3. Generalize =sd-read0= into an internal block-device API.
+4. Add a FAT/exFAT-aware storage layer after raw block reads work.
 5. Test the newer Infineon target =infineon/cy8cxxa.cfg= as a replacement
    for obsolete =target/psoc6_2m.cfg=.
 6. Start Wi-Fi from a known-good Infineon or Zephyr sample before trying

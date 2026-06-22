@@ -442,6 +442,30 @@ impl lisp::Board for PsocBoard<'_> {
         }
     }
 
+    fn sd_read0(&mut self) -> lisp::SdRead0Report {
+        let report = micro_sd::read_sector_zero(self.p);
+        lisp::SdRead0Report {
+            status: sd_read_status(report.status),
+            init_status: sd_init_status(report.init_status),
+            rca: report.rca,
+            ocr: report.ocr,
+            acmd41_attempts: report.acmd41_attempts,
+            command_response: report.command_response,
+            last_error: report.last_error.map(sd_command_error_report),
+            first_words: report.first_words,
+            mbr_signature: report.mbr_signature,
+            partition_type: report.partition_type,
+            normal_int: report.normal_int,
+            error_int: report.error_int,
+            pstate: report.pstate,
+            block_size: report.block_size,
+            block_count: report.block_count,
+            xfer_mode: report.xfer_mode,
+            cmd: report.cmd,
+            argument: report.argument,
+        }
+    }
+
     fn sdhc_registers(&mut self) -> lisp::SdhcReport {
         micro_sd::enable_sdhc_controllers(self.p);
 
@@ -493,6 +517,22 @@ fn sd_init_status(status: micro_sd::InitStatus) -> &'static [u8] {
         micro_sd::InitStatus::Cmd8PatternMismatch => b"cmd8-pattern-mismatch",
         micro_sd::InitStatus::Acmd41Failed => b"acmd41-failed",
         micro_sd::InitStatus::Acmd41Busy => b"acmd41-busy",
+    }
+}
+
+fn sd_read_status(status: micro_sd::ReadStatus) -> &'static [u8] {
+    match status {
+        micro_sd::ReadStatus::Ready => b"ready",
+        micro_sd::ReadStatus::InitFailed => b"init-failed",
+        micro_sd::ReadStatus::Cmd2Failed => b"cmd2-failed",
+        micro_sd::ReadStatus::Cmd3Failed => b"cmd3-failed",
+        micro_sd::ReadStatus::Cmd7Failed => b"cmd7-failed",
+        micro_sd::ReadStatus::Cmd16Failed => b"cmd16-failed",
+        micro_sd::ReadStatus::DataSetupBusy => b"data-setup-busy",
+        micro_sd::ReadStatus::Cmd17Failed => b"cmd17-failed",
+        micro_sd::ReadStatus::BufferReadTimeout => b"buffer-read-timeout",
+        micro_sd::ReadStatus::BufferEnableTimeout => b"buffer-enable-timeout",
+        micro_sd::ReadStatus::TransferTimeout => b"transfer-timeout",
     }
 }
 

@@ -9,12 +9,19 @@ const CPU_CLOCK_HZ: u32 = 50_000_000;
 const NORMAL_INT_ALL: u16 = 0x1fff;
 const ERROR_INT_ALL: u16 = 0x07ff;
 const NORMAL_INT_CMD_COMPLETE: u16 = 1 << 0;
+const NORMAL_INT_XFER_COMPLETE: u16 = 1 << 1;
+const NORMAL_INT_BUF_RD_READY: u16 = 1 << 5;
 const NORMAL_INT_ERROR: u16 = 1 << 15;
 const PSTATE_CMD_INHIBIT: u32 = 1 << 0;
+const PSTATE_CMD_INHIBIT_DAT: u32 = 1 << 1;
+const PSTATE_DAT_LINE_ACTIVE: u32 = 1 << 2;
+const PSTATE_BUF_RD_ENABLE: u32 = 1 << 11;
 const CLK_CTRL_INTERNAL_CLK_EN: u16 = 1 << 0;
 const CLK_CTRL_INTERNAL_CLK_STABLE: u16 = 1 << 1;
 const CLK_CTRL_SD_CLK_EN: u16 = 1 << 2;
 const CLK_CTRL_PLL_ENABLE: u16 = 1 << 3;
+const XFER_MODE_BLOCK_COUNT_ENABLE: u16 = 1 << 1;
+const XFER_MODE_READ: u16 = 1 << 4;
 const HOST_CTRL1_CARD_DETECT_TEST_LEVEL: u8 = 1 << 6;
 const HOST_CTRL1_CARD_DETECT_SIGNAL_SELECT: u8 = 1 << 7;
 const HOST_CTRL2_HOST_VERSION_4_ENABLE: u16 = 1 << 12;
@@ -30,6 +37,10 @@ const SD_CMD8_PATTERN: u32 = 0xaa;
 const SD_ACMD41_HCS: u32 = 1 << 30;
 const SD_OCR_BUSY: u32 = 1 << 31;
 const SD_OCR_CAPACITY: u32 = 1 << 30;
+const SD_RCA_SHIFT: u8 = 16;
+const SD_BLOCK_SIZE_BYTES: u16 = 512;
+const SD_BLOCK_WORDS: usize = 128;
+const SD_SECTOR_PREVIEW_WORDS: usize = 8;
 const SD_ACMD41_VOLTAGE_MASK: u32 = (1 << 23)
     | (1 << 22)
     | (1 << 21)
@@ -134,6 +145,21 @@ pub enum InitStatus {
     Acmd41Busy,
 }
 
+#[derive(Clone, Copy)]
+pub enum ReadStatus {
+    Ready,
+    InitFailed,
+    Cmd2Failed,
+    Cmd3Failed,
+    Cmd7Failed,
+    Cmd16Failed,
+    DataSetupBusy,
+    Cmd17Failed,
+    BufferReadTimeout,
+    BufferEnableTimeout,
+    TransferTimeout,
+}
+
 pub struct InitReport {
     pub status: InitStatus,
     pub cmd8_response: u32,
@@ -165,10 +191,42 @@ pub struct InitReport {
     pub response67: u32,
 }
 
+pub struct SectorZeroReport {
+    pub status: ReadStatus,
+    pub init_status: InitStatus,
+    pub rca: u16,
+    pub ocr: u32,
+    pub acmd41_attempts: u16,
+    pub command_response: u32,
+    pub last_error: Option<CommandError>,
+    pub first_words: [u32; SD_SECTOR_PREVIEW_WORDS],
+    pub mbr_signature: u16,
+    pub partition_type: u8,
+    pub normal_int: u16,
+    pub error_int: u16,
+    pub pstate: u32,
+    pub block_size: u16,
+    pub block_count: u16,
+    pub xfer_mode: u16,
+    pub cmd: u16,
+    pub argument: u32,
+}
+
+#[derive(Clone, Copy)]
+struct IdentifiedCard {
+    status: InitStatus,
+    cmd8_response: u32,
+    cmd8_error: Option<CommandError>,
+    acmd41_ocr: u32,
+    acmd41_attempts: u16,
+}
+
 #[derive(Clone, Copy)]
 enum ResponseType {
     None = 0,
+    Len136 = 1,
     Len48 = 2,
+    Len48Busy = 3,
 }
 
 #[derive(Clone, Copy)]
@@ -183,6 +241,7 @@ struct Command {
     argument: u32,
     response: ResponseType,
     command_type: CommandType,
+    data_present: bool,
     crc_check: bool,
     index_check: bool,
 }
@@ -258,24 +317,199 @@ pub fn enable_sdhc_controllers(p: &Peripherals) {
 }
 
 pub fn initialize_card(p: &Peripherals) -> InitReport {
+    match identify_card(p) {
+        Ok(card) => init_report(
+            p,
+            card.status,
+            card.cmd8_response,
+            card.cmd8_error,
+            card.acmd41_ocr,
+            card.acmd41_attempts,
+            None,
+        ),
+        Err(report) => report,
+    }
+}
+
+pub fn read_sector_zero(p: &Peripherals) -> SectorZeroReport {
+    let card = match identify_card(p) {
+        Ok(card) => card,
+        Err(report) => {
+            return sector_report(
+                p,
+                ReadStatus::InitFailed,
+                report.status,
+                0,
+                report.acmd41_ocr,
+                report.acmd41_attempts,
+                0,
+                report.last_error,
+                [0; SD_SECTOR_PREVIEW_WORDS],
+                0,
+                0,
+            )
+        }
+    };
+
+    let core = &p.SDHC1.core;
+
+    if let Err(error) = send_command(
+        core,
+        Command {
+            index: 2,
+            argument: 0,
+            response: ResponseType::Len136,
+            command_type: CommandType::Normal,
+            data_present: false,
+            crc_check: true,
+            index_check: false,
+        },
+    ) {
+        return sector_report_for_card(p, ReadStatus::Cmd2Failed, card, 0, 0, Some(error));
+    }
+
+    let rca_response = match send_command(
+        core,
+        Command {
+            index: 3,
+            argument: 0,
+            response: ResponseType::Len48,
+            command_type: CommandType::Normal,
+            data_present: false,
+            crc_check: true,
+            index_check: true,
+        },
+    ) {
+        Ok(response) => response,
+        Err(error) => {
+            return sector_report_for_card(p, ReadStatus::Cmd3Failed, card, 0, 0, Some(error))
+        }
+    };
+    let rca = (rca_response >> SD_RCA_SHIFT) as u16;
+
+    if let Err(error) = send_command(
+        core,
+        Command {
+            index: 7,
+            argument: (rca as u32) << SD_RCA_SHIFT,
+            response: ResponseType::Len48Busy,
+            command_type: CommandType::Normal,
+            data_present: false,
+            crc_check: false,
+            index_check: false,
+        },
+    ) {
+        return sector_report_for_card(p, ReadStatus::Cmd7Failed, card, rca, 0, Some(error));
+    }
+
+    if !wait_transfer_complete(core) {
+        return sector_report_for_card(p, ReadStatus::TransferTimeout, card, rca, 0, None);
+    }
+
+    if matches!(card.status, InitStatus::ReadySdsc) {
+        if let Err(error) = send_command(
+            core,
+            Command {
+                index: 16,
+                argument: SD_BLOCK_SIZE_BYTES as u32,
+                response: ResponseType::Len48,
+                command_type: CommandType::Normal,
+                data_present: false,
+                crc_check: true,
+                index_check: true,
+            },
+        ) {
+            return sector_report_for_card(p, ReadStatus::Cmd16Failed, card, rca, 0, Some(error));
+        }
+    }
+
+    if !configure_single_block_read(core) {
+        return sector_report_for_card(p, ReadStatus::DataSetupBusy, card, rca, 0, None);
+    }
+
+    let command_response = match send_command(
+        core,
+        Command {
+            index: 17,
+            argument: 0,
+            response: ResponseType::Len48,
+            command_type: CommandType::Normal,
+            data_present: true,
+            crc_check: true,
+            index_check: true,
+        },
+    ) {
+        Ok(response) => response,
+        Err(error) => {
+            return sector_report_for_card(p, ReadStatus::Cmd17Failed, card, rca, 0, Some(error))
+        }
+    };
+
+    let read = match read_single_block_preview(core) {
+        Ok(read) => read,
+        Err(status) => {
+            return sector_report_for_card(p, status, card, rca, command_response, None);
+        }
+    };
+
+    sector_report(
+        p,
+        ReadStatus::Ready,
+        card.status,
+        rca,
+        card.acmd41_ocr,
+        card.acmd41_attempts,
+        command_response,
+        None,
+        read.first_words,
+        read.mbr_signature,
+        read.partition_type,
+    )
+}
+
+fn identify_card(p: &Peripherals) -> Result<IdentifiedCard, InitReport> {
     configure_sdhc1_clock(p);
     configure_card_detect(p);
     configure_sdhc1_pins(p);
 
     let card_detect = card_detect_snapshot(p);
     if !card_detect.is_low {
-        return init_report(p, InitStatus::NoCardDetect, 0, None, 0, 0, None);
+        return Err(init_report(
+            p,
+            InitStatus::NoCardDetect,
+            0,
+            None,
+            0,
+            0,
+            None,
+        ));
     }
 
     p.SDHC1.wrap.ctl.write(|w| w.enable().set_bit());
     let core = &p.SDHC1.core;
 
     if !enable_internal_clock(core) {
-        return init_report(p, InitStatus::ClockNotStable, 0, None, 0, 0, None);
+        return Err(init_report(
+            p,
+            InitStatus::ClockNotStable,
+            0,
+            None,
+            0,
+            0,
+            None,
+        ));
     }
 
     if !software_reset_all(core) {
-        return init_report(p, InitStatus::ResetTimeout, 0, None, 0, 0, None);
+        return Err(init_report(
+            p,
+            InitStatus::ResetTimeout,
+            0,
+            None,
+            0,
+            0,
+            None,
+        ));
     }
 
     configure_host_for_identification(core);
@@ -294,11 +528,20 @@ pub fn initialize_card(p: &Peripherals) -> InitReport {
             // complete CMD0 with CMD_TYPE=ABORT. A normal no-response CMD0
             // completes and still sends GO_IDLE_STATE on the bus.
             command_type: CommandType::Normal,
+            data_present: false,
             crc_check: false,
             index_check: false,
         },
     ) {
-        return init_report(p, InitStatus::Cmd0Failed, 0, None, 0, 0, Some(error));
+        return Err(init_report(
+            p,
+            InitStatus::Cmd0Failed,
+            0,
+            None,
+            0,
+            0,
+            Some(error),
+        ));
     }
 
     let _ = software_reset_command_line(core);
@@ -312,13 +555,14 @@ pub fn initialize_card(p: &Peripherals) -> InitReport {
             argument: SD_CMD8_ARGUMENT,
             response: ResponseType::Len48,
             command_type: CommandType::Normal,
+            data_present: false,
             crc_check: true,
             index_check: true,
         },
     ) {
         Ok(response) => {
             if response & SD_CMD8_PATTERN_MASK != SD_CMD8_PATTERN {
-                return init_report(
+                return Err(init_report(
                     p,
                     InitStatus::Cmd8PatternMismatch,
                     response,
@@ -326,7 +570,7 @@ pub fn initialize_card(p: &Peripherals) -> InitReport {
                     0,
                     0,
                     None,
-                );
+                ));
             }
             cmd8_is_valid = true;
             response
@@ -349,7 +593,7 @@ pub fn initialize_card(p: &Peripherals) -> InitReport {
         acmd41_attempts += 1;
 
         if let Err(error) = send_app_command(core) {
-            return init_report(
+            return Err(init_report(
                 p,
                 InitStatus::Acmd41Failed,
                 cmd8_response,
@@ -357,7 +601,7 @@ pub fn initialize_card(p: &Peripherals) -> InitReport {
                 acmd41_ocr,
                 acmd41_attempts,
                 Some(error),
-            );
+            ));
         }
 
         acmd41_ocr = match send_command(
@@ -367,13 +611,14 @@ pub fn initialize_card(p: &Peripherals) -> InitReport {
                 argument: acmd41_argument,
                 response: ResponseType::Len48,
                 command_type: CommandType::Normal,
+                data_present: false,
                 crc_check: false,
                 index_check: false,
             },
         ) {
             Ok(response) => response,
             Err(error) => {
-                return init_report(
+                return Err(init_report(
                     p,
                     InitStatus::Acmd41Failed,
                     cmd8_response,
@@ -381,7 +626,7 @@ pub fn initialize_card(p: &Peripherals) -> InitReport {
                     acmd41_ocr,
                     acmd41_attempts,
                     Some(error),
-                );
+                ));
             }
         };
 
@@ -391,21 +636,19 @@ pub fn initialize_card(p: &Peripherals) -> InitReport {
             } else {
                 InitStatus::ReadySdsc
             };
-            return init_report(
-                p,
+            return Ok(IdentifiedCard {
                 status,
                 cmd8_response,
                 cmd8_error,
                 acmd41_ocr,
                 acmd41_attempts,
-                None,
-            );
+            });
         }
 
         delay_ms(1);
     }
 
-    init_report(
+    Err(init_report(
         p,
         InitStatus::Acmd41Busy,
         cmd8_response,
@@ -413,7 +656,7 @@ pub fn initialize_card(p: &Peripherals) -> InitReport {
         acmd41_ocr,
         acmd41_attempts,
         None,
-    )
+    ))
 }
 
 pub fn sdhc0_snapshot(p: &Peripherals) -> SdhcSnapshot {
@@ -496,6 +739,72 @@ fn init_report(
     }
 }
 
+struct ReadBlockPreview {
+    first_words: [u32; SD_SECTOR_PREVIEW_WORDS],
+    mbr_signature: u16,
+    partition_type: u8,
+}
+
+fn sector_report_for_card(
+    p: &Peripherals,
+    status: ReadStatus,
+    card: IdentifiedCard,
+    rca: u16,
+    command_response: u32,
+    last_error: Option<CommandError>,
+) -> SectorZeroReport {
+    sector_report(
+        p,
+        status,
+        card.status,
+        rca,
+        card.acmd41_ocr,
+        card.acmd41_attempts,
+        command_response,
+        last_error,
+        [0; SD_SECTOR_PREVIEW_WORDS],
+        0,
+        0,
+    )
+}
+
+fn sector_report(
+    p: &Peripherals,
+    status: ReadStatus,
+    init_status: InitStatus,
+    rca: u16,
+    ocr: u32,
+    acmd41_attempts: u16,
+    command_response: u32,
+    last_error: Option<CommandError>,
+    first_words: [u32; SD_SECTOR_PREVIEW_WORDS],
+    mbr_signature: u16,
+    partition_type: u8,
+) -> SectorZeroReport {
+    let core = &p.SDHC1.core;
+
+    SectorZeroReport {
+        status,
+        init_status,
+        rca,
+        ocr,
+        acmd41_attempts,
+        command_response,
+        last_error,
+        first_words,
+        mbr_signature,
+        partition_type,
+        normal_int: core.normal_int_stat_r.read().bits(),
+        error_int: core.error_int_stat_r.read().bits(),
+        pstate: core.pstate_reg.read().bits(),
+        block_size: core.blocksize_r.read().bits(),
+        block_count: core.blockcount_r.read().bits(),
+        xfer_mode: core.xfer_mode_r.read().bits(),
+        cmd: core.cmd_r.read().bits(),
+        argument: core.argument_r.read().bits(),
+    }
+}
+
 fn configure_host_for_identification(core: &sdhc0::CORE) {
     core.gp_out_r.write(|w| unsafe { w.bits(GP_OUT_BASIC_SD) });
     core.xfer_mode_r.write(|w| unsafe { w.bits(0) });
@@ -564,6 +873,19 @@ fn software_reset_command_line(core: &sdhc0::CORE) -> bool {
     false
 }
 
+fn software_reset_data_line(core: &sdhc0::CORE) -> bool {
+    core.sw_rst_r.write(|w| w.sw_rst_dat().set_bit());
+
+    for _ in 0..1000 {
+        if core.sw_rst_r.read().sw_rst_dat().bit_is_clear() {
+            return true;
+        }
+        delay_us(3);
+    }
+
+    false
+}
+
 fn change_card_clock(core: &sdhc0::CORE, divider: u16) {
     let mut clk_ctrl = core.clk_ctrl_r.read().bits() & !(CLK_CTRL_SD_CLK_EN | CLK_CTRL_PLL_ENABLE);
     core.clk_ctrl_r.write(|w| unsafe { w.bits(clk_ctrl) });
@@ -578,6 +900,123 @@ fn change_card_clock(core: &sdhc0::CORE, divider: u16) {
         .write(|w| unsafe { w.bits(clk_ctrl | CLK_CTRL_PLL_ENABLE | CLK_CTRL_SD_CLK_EN) });
 }
 
+fn configure_single_block_read(core: &sdhc0::CORE) -> bool {
+    if !wait_command_and_data_lines_free(core) {
+        return false;
+    }
+
+    core.blocksize_r
+        .write(|w| unsafe { w.bits(SD_BLOCK_SIZE_BYTES) });
+    core.blockcount_r.write(|w| unsafe { w.bits(1) });
+    core.sdmasa_r.write(|w| unsafe { w.bits(1) });
+    core.bgap_ctrl_r.write(|w| unsafe { w.bits(0) });
+    core.tout_ctrl_r.write(|w| unsafe { w.bits(0x0e) });
+    core.xfer_mode_r
+        .write(|w| unsafe { w.bits(XFER_MODE_BLOCK_COUNT_ENABLE | XFER_MODE_READ) });
+    clear_interrupts(core);
+
+    true
+}
+
+fn wait_command_and_data_lines_free(core: &sdhc0::CORE) -> bool {
+    const BUSY_MASK: u32 = PSTATE_CMD_INHIBIT | PSTATE_CMD_INHIBIT_DAT | PSTATE_DAT_LINE_ACTIVE;
+
+    for _ in 0..1000 {
+        if core.pstate_reg.read().bits() & BUSY_MASK == 0 {
+            return true;
+        }
+        delay_us(3);
+    }
+
+    false
+}
+
+fn read_single_block_preview(core: &sdhc0::CORE) -> Result<ReadBlockPreview, ReadStatus> {
+    if !wait_buffer_read_ready(core) {
+        return Err(ReadStatus::BufferReadTimeout);
+    }
+
+    let mut first_words = [0; SD_SECTOR_PREVIEW_WORDS];
+    let mut signature_word = 0;
+    let mut partition_word = 0;
+
+    for index in 0..SD_BLOCK_WORDS {
+        if !wait_buffer_read_enable(core) {
+            let _ = software_reset_data_line(core);
+            return Err(ReadStatus::BufferEnableTimeout);
+        }
+
+        let word = core.buf_data_r.read().bits();
+        if index < SD_SECTOR_PREVIEW_WORDS {
+            first_words[index] = word;
+        }
+        if index == 112 {
+            partition_word = word;
+        }
+        if index == SD_BLOCK_WORDS - 1 {
+            signature_word = word;
+        }
+    }
+
+    if !wait_transfer_complete(core) {
+        let _ = software_reset_data_line(core);
+        return Err(ReadStatus::TransferTimeout);
+    }
+
+    Ok(ReadBlockPreview {
+        first_words,
+        mbr_signature: (signature_word >> 16) as u16,
+        partition_type: ((partition_word >> 16) & 0xff) as u8,
+    })
+}
+
+fn wait_buffer_read_ready(core: &sdhc0::CORE) -> bool {
+    for _ in 0..1000 {
+        let normal_int = core.normal_int_stat_r.read().bits();
+        let error_int = core.error_int_stat_r.read().bits();
+        if error_int != 0 || normal_int & NORMAL_INT_ERROR != 0 {
+            return false;
+        }
+        if normal_int & NORMAL_INT_BUF_RD_READY != 0 {
+            core.normal_int_stat_r
+                .write(|w| unsafe { w.bits(NORMAL_INT_BUF_RD_READY) });
+            return true;
+        }
+        delay_us(150);
+    }
+
+    false
+}
+
+fn wait_buffer_read_enable(core: &sdhc0::CORE) -> bool {
+    for _ in 0..1000 {
+        if core.pstate_reg.read().bits() & PSTATE_BUF_RD_ENABLE != 0 {
+            return true;
+        }
+        delay_us(1);
+    }
+
+    false
+}
+
+fn wait_transfer_complete(core: &sdhc0::CORE) -> bool {
+    for _ in 0..1000 {
+        let normal_int = core.normal_int_stat_r.read().bits();
+        let error_int = core.error_int_stat_r.read().bits();
+        if error_int != 0 || normal_int & NORMAL_INT_ERROR != 0 {
+            return false;
+        }
+        if normal_int & NORMAL_INT_XFER_COMPLETE != 0 {
+            core.normal_int_stat_r
+                .write(|w| unsafe { w.bits(NORMAL_INT_XFER_COMPLETE) });
+            return true;
+        }
+        delay_us(250);
+    }
+
+    false
+}
+
 fn send_app_command(core: &sdhc0::CORE) -> Result<u32, CommandError> {
     send_command(
         core,
@@ -586,6 +1025,7 @@ fn send_app_command(core: &sdhc0::CORE) -> Result<u32, CommandError> {
             argument: 0,
             response: ResponseType::Len48,
             command_type: CommandType::Normal,
+            data_present: false,
             crc_check: true,
             index_check: true,
         },
@@ -626,6 +1066,10 @@ fn command_register_value(command: Command) -> u16 {
 
     if command.index_check {
         bits |= 1 << 4;
+    }
+
+    if command.data_present {
+        bits |= 1 << 5;
     }
 
     bits
