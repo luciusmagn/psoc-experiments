@@ -153,6 +153,7 @@ pub enum ReadStatus {
     Cmd3Failed,
     Cmd7Failed,
     Cmd16Failed,
+    AddressOverflow,
     DataSetupBusy,
     Cmd17Failed,
     BufferReadTimeout,
@@ -191,9 +192,10 @@ pub struct InitReport {
     pub response67: u32,
 }
 
-pub struct SectorZeroReport {
+pub struct SectorReport {
     pub status: ReadStatus,
     pub init_status: InitStatus,
+    pub sector: u32,
     pub rca: u16,
     pub ocr: u32,
     pub acmd41_attempts: u16,
@@ -331,7 +333,11 @@ pub fn initialize_card(p: &Peripherals) -> InitReport {
     }
 }
 
-pub fn read_sector_zero(p: &Peripherals) -> SectorZeroReport {
+pub fn read_sector_zero(p: &Peripherals) -> SectorReport {
+    read_sector(p, 0)
+}
+
+pub fn read_sector(p: &Peripherals, sector: u32) -> SectorReport {
     let card = match identify_card(p) {
         Ok(card) => card,
         Err(report) => {
@@ -339,6 +345,7 @@ pub fn read_sector_zero(p: &Peripherals) -> SectorZeroReport {
                 p,
                 ReadStatus::InitFailed,
                 report.status,
+                sector,
                 0,
                 report.acmd41_ocr,
                 report.acmd41_attempts,
@@ -365,7 +372,7 @@ pub fn read_sector_zero(p: &Peripherals) -> SectorZeroReport {
             index_check: false,
         },
     ) {
-        return sector_report_for_card(p, ReadStatus::Cmd2Failed, card, 0, 0, Some(error));
+        return sector_report_for_card(p, ReadStatus::Cmd2Failed, card, sector, 0, 0, Some(error));
     }
 
     let rca_response = match send_command(
@@ -382,7 +389,15 @@ pub fn read_sector_zero(p: &Peripherals) -> SectorZeroReport {
     ) {
         Ok(response) => response,
         Err(error) => {
-            return sector_report_for_card(p, ReadStatus::Cmd3Failed, card, 0, 0, Some(error))
+            return sector_report_for_card(
+                p,
+                ReadStatus::Cmd3Failed,
+                card,
+                sector,
+                0,
+                0,
+                Some(error),
+            )
         }
     };
     let rca = (rca_response >> SD_RCA_SHIFT) as u16;
@@ -399,11 +414,19 @@ pub fn read_sector_zero(p: &Peripherals) -> SectorZeroReport {
             index_check: false,
         },
     ) {
-        return sector_report_for_card(p, ReadStatus::Cmd7Failed, card, rca, 0, Some(error));
+        return sector_report_for_card(
+            p,
+            ReadStatus::Cmd7Failed,
+            card,
+            sector,
+            rca,
+            0,
+            Some(error),
+        );
     }
 
     if !wait_transfer_complete(core) {
-        return sector_report_for_card(p, ReadStatus::TransferTimeout, card, rca, 0, None);
+        return sector_report_for_card(p, ReadStatus::TransferTimeout, card, sector, rca, 0, None);
     }
 
     if matches!(card.status, InitStatus::ReadySdsc) {
@@ -419,19 +442,46 @@ pub fn read_sector_zero(p: &Peripherals) -> SectorZeroReport {
                 index_check: true,
             },
         ) {
-            return sector_report_for_card(p, ReadStatus::Cmd16Failed, card, rca, 0, Some(error));
+            return sector_report_for_card(
+                p,
+                ReadStatus::Cmd16Failed,
+                card,
+                sector,
+                rca,
+                0,
+                Some(error),
+            );
         }
     }
 
     if !configure_single_block_read(core) {
-        return sector_report_for_card(p, ReadStatus::DataSetupBusy, card, rca, 0, None);
+        return sector_report_for_card(p, ReadStatus::DataSetupBusy, card, sector, rca, 0, None);
     }
+
+    let command_argument = if matches!(card.status, InitStatus::ReadySdsc) {
+        match sector.checked_mul(SD_BLOCK_SIZE_BYTES as u32) {
+            Some(address) => address,
+            None => {
+                return sector_report_for_card(
+                    p,
+                    ReadStatus::AddressOverflow,
+                    card,
+                    sector,
+                    rca,
+                    0,
+                    None,
+                )
+            }
+        }
+    } else {
+        sector
+    };
 
     let command_response = match send_command(
         core,
         Command {
             index: 17,
-            argument: 0,
+            argument: command_argument,
             response: ResponseType::Len48,
             command_type: CommandType::Normal,
             data_present: true,
@@ -441,14 +491,22 @@ pub fn read_sector_zero(p: &Peripherals) -> SectorZeroReport {
     ) {
         Ok(response) => response,
         Err(error) => {
-            return sector_report_for_card(p, ReadStatus::Cmd17Failed, card, rca, 0, Some(error))
+            return sector_report_for_card(
+                p,
+                ReadStatus::Cmd17Failed,
+                card,
+                sector,
+                rca,
+                0,
+                Some(error),
+            )
         }
     };
 
     let read = match read_single_block_preview(core) {
         Ok(read) => read,
         Err(status) => {
-            return sector_report_for_card(p, status, card, rca, command_response, None);
+            return sector_report_for_card(p, status, card, sector, rca, command_response, None);
         }
     };
 
@@ -456,6 +514,7 @@ pub fn read_sector_zero(p: &Peripherals) -> SectorZeroReport {
         p,
         ReadStatus::Ready,
         card.status,
+        sector,
         rca,
         card.acmd41_ocr,
         card.acmd41_attempts,
@@ -749,14 +808,16 @@ fn sector_report_for_card(
     p: &Peripherals,
     status: ReadStatus,
     card: IdentifiedCard,
+    sector: u32,
     rca: u16,
     command_response: u32,
     last_error: Option<CommandError>,
-) -> SectorZeroReport {
+) -> SectorReport {
     sector_report(
         p,
         status,
         card.status,
+        sector,
         rca,
         card.acmd41_ocr,
         card.acmd41_attempts,
@@ -772,6 +833,7 @@ fn sector_report(
     p: &Peripherals,
     status: ReadStatus,
     init_status: InitStatus,
+    sector: u32,
     rca: u16,
     ocr: u32,
     acmd41_attempts: u16,
@@ -780,12 +842,13 @@ fn sector_report(
     first_words: [u32; SD_SECTOR_PREVIEW_WORDS],
     mbr_signature: u16,
     partition_type: u8,
-) -> SectorZeroReport {
+) -> SectorReport {
     let core = &p.SDHC1.core;
 
-    SectorZeroReport {
+    SectorReport {
         status,
         init_status,
+        sector,
         rca,
         ocr,
         acmd41_attempts,

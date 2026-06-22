@@ -46,7 +46,7 @@ pub trait Board {
     fn sd_pinmux(&mut self) -> SdPinsReport;
     fn sd_clock(&mut self) -> SdClockReport;
     fn sd_init(&mut self) -> SdInitReport;
-    fn sd_read0(&mut self) -> SdRead0Report;
+    fn sd_read(&mut self, sector: u32) -> SdReadReport;
     fn sdhc_registers(&mut self) -> SdhcReport;
     fn reboot(&mut self) -> !;
 }
@@ -153,9 +153,10 @@ pub struct SdInitReport {
 }
 
 #[derive(Clone, Copy)]
-pub struct SdRead0Report {
+pub struct SdReadReport {
     pub status: &'static [u8],
     pub init_status: &'static [u8],
+    pub sector: u32,
     pub rca: u16,
     pub ocr: u32,
     pub acmd41_attempts: u16,
@@ -224,6 +225,7 @@ pub enum Primitive {
     SdPinmux,
     SdClock,
     SdInit,
+    SdRead,
     SdRead0,
     SdhcRegs,
     Heap,
@@ -269,6 +271,7 @@ impl Primitive {
             Self::SdPinmux => "sd-pinmux",
             Self::SdClock => "sd-clock",
             Self::SdInit => "sd-init",
+            Self::SdRead => "sd-read",
             Self::SdRead0 => "sd-read0",
             Self::SdhcRegs => "sdhc-regs",
             Self::Heap => "heap",
@@ -462,6 +465,7 @@ impl Machine {
         self.install_primitive(b"sd-pinmux", Primitive::SdPinmux)?;
         self.install_primitive(b"sd-clock", Primitive::SdClock)?;
         self.install_primitive(b"sd-init", Primitive::SdInit)?;
+        self.install_primitive(b"sd-read", Primitive::SdRead)?;
         self.install_primitive(b"sd-read0", Primitive::SdRead0)?;
         self.install_primitive(b"sdhc-regs", Primitive::SdhcRegs)?;
         self.install_primitive(b"heap", Primitive::Heap)?;
@@ -1068,9 +1072,14 @@ impl Machine {
                 self.expect_count(args, 0)?;
                 self.sd_init_report(board.sd_init())
             }
+            Primitive::SdRead => {
+                self.expect_count(args, 1)?;
+                let sector = self.expect_u32(args[0])?;
+                self.sd_read_report(board.sd_read(sector))
+            }
             Primitive::SdRead0 => {
                 self.expect_count(args, 0)?;
-                self.sd_read0_report(board.sd_read0())
+                self.sd_read_report(board.sd_read(0))
             }
             Primitive::SdhcRegs => {
                 self.expect_count(args, 0)?;
@@ -1359,6 +1368,7 @@ impl Machine {
             b"sd-pinmux",
             b"sd-clock",
             b"sd-init",
+            b"sd-read",
             b"sd-read0",
             b"sdhc-regs",
             b"heap",
@@ -1505,9 +1515,10 @@ impl Machine {
         self.make_list_from_values(&entries)
     }
 
-    fn sd_read0_report(&mut self, report: SdRead0Report) -> LispResult<Value> {
+    fn sd_read_report(&mut self, report: SdReadReport) -> LispResult<Value> {
         let status = self.symbol_entry(b"status", report.status)?;
         let init_status = self.symbol_entry(b"init-status", report.init_status)?;
+        let sector = self.word_entry(b"sector", report.sector)?;
         let rca = self.word_entry(b"RCA", report.rca as u32)?;
         let ocr = self.word_entry(b"OCR", report.ocr)?;
         let attempts = self.int_entry(b"attempts", report.acmd41_attempts as i32)?;
@@ -1527,6 +1538,7 @@ impl Machine {
         let entries = [
             status,
             init_status,
+            sector,
             rca,
             ocr,
             attempts,

@@ -442,11 +442,12 @@ impl lisp::Board for PsocBoard<'_> {
         }
     }
 
-    fn sd_read0(&mut self) -> lisp::SdRead0Report {
-        let report = micro_sd::read_sector_zero(self.p);
-        lisp::SdRead0Report {
+    fn sd_read(&mut self, sector: u32) -> lisp::SdReadReport {
+        let report = micro_sd::read_sector(self.p, sector);
+        lisp::SdReadReport {
             status: sd_read_status(report.status),
             init_status: sd_init_status(report.init_status),
+            sector: report.sector,
             rca: report.rca,
             ocr: report.ocr,
             acmd41_attempts: report.acmd41_attempts,
@@ -528,6 +529,7 @@ fn sd_read_status(status: micro_sd::ReadStatus) -> &'static [u8] {
         micro_sd::ReadStatus::Cmd3Failed => b"cmd3-failed",
         micro_sd::ReadStatus::Cmd7Failed => b"cmd7-failed",
         micro_sd::ReadStatus::Cmd16Failed => b"cmd16-failed",
+        micro_sd::ReadStatus::AddressOverflow => b"address-overflow",
         micro_sd::ReadStatus::DataSetupBusy => b"data-setup-busy",
         micro_sd::ReadStatus::Cmd17Failed => b"cmd17-failed",
         micro_sd::ReadStatus::BufferReadTimeout => b"buffer-read-timeout",
