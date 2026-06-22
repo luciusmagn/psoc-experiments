@@ -62,6 +62,8 @@ pub trait Board {
     fn wifi_cmd52_write(&mut self, function: u8, address: u32, data: u8) -> WifiSdioDirectReport;
     fn wifi_enable_functions(&mut self, requested: u8) -> WifiSdioEnableReport;
     fn wifi_setup_backplane(&mut self) -> WifiSdioBackplaneReport;
+    fn wifi_cmd53_read(&mut self, function: u8, address: u32, count: u8)
+        -> WifiSdioCmd53ReadReport;
     fn sdhc_registers(&mut self) -> SdhcReport;
     fn reboot(&mut self) -> !;
 }
@@ -355,6 +357,19 @@ pub struct WifiSdioBackplaneReport {
     pub host: WifiSdioHostReport,
 }
 
+#[derive(Clone, Copy)]
+pub struct WifiSdioCmd53ReadReport {
+    pub status: &'static [u8],
+    pub setup_status: &'static [u8],
+    pub function: u8,
+    pub address: u32,
+    pub count: u8,
+    pub response: u32,
+    pub bytes: [u8; 16],
+    pub last_error: Option<WifiSdioCommandErrorReport>,
+    pub host: WifiSdioHostReport,
+}
+
 type LispResult<T> = Result<T, Error>;
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -417,6 +432,7 @@ pub enum Primitive {
     WifiCmd52Write,
     WifiEnableFunctions,
     WifiSetupBackplane,
+    WifiCmd53Read,
     SdhcRegs,
     Heap,
     Gc,
@@ -473,6 +489,7 @@ impl Primitive {
             Self::WifiCmd52Write => "wifi-cmd52-write",
             Self::WifiEnableFunctions => "wifi-enable-functions",
             Self::WifiSetupBackplane => "wifi-setup-backplane",
+            Self::WifiCmd53Read => "wifi-cmd53-read",
             Self::SdhcRegs => "sdhc-regs",
             Self::Heap => "heap",
             Self::Gc => "gc",
@@ -681,6 +698,7 @@ impl Machine {
         self.install_primitive(b"wifi-cmd52-write", Primitive::WifiCmd52Write)?;
         self.install_primitive(b"wifi-enable-functions", Primitive::WifiEnableFunctions)?;
         self.install_primitive(b"wifi-setup-backplane", Primitive::WifiSetupBackplane)?;
+        self.install_primitive(b"wifi-cmd53-read", Primitive::WifiCmd53Read)?;
         self.install_primitive(b"sdhc-regs", Primitive::SdhcRegs)?;
         self.install_primitive(b"heap", Primitive::Heap)?;
         self.install_primitive(b"gc", Primitive::Gc)?;
@@ -1364,6 +1382,13 @@ impl Machine {
                 self.expect_count(args, 0)?;
                 self.wifi_sdio_backplane_report(board.wifi_setup_backplane())
             }
+            Primitive::WifiCmd53Read => {
+                self.expect_count(args, 3)?;
+                let function = self.expect_u8(args[0])?;
+                let address = self.expect_u32(args[1])?;
+                let count = self.expect_u8(args[2])?;
+                self.wifi_sdio_cmd53_read_report(board.wifi_cmd53_read(function, address, count))
+            }
             Primitive::SdhcRegs => {
                 self.expect_count(args, 0)?;
                 self.sdhc_report(board.sdhc_registers())
@@ -1700,6 +1725,7 @@ impl Machine {
             b"wifi-cmd52-write",
             b"wifi-enable-functions",
             b"wifi-setup-backplane",
+            b"wifi-cmd53-read",
             b"sdhc-regs",
             b"heap",
             b"gc",
@@ -2100,6 +2126,34 @@ impl Machine {
         self.make_list_from_values(&entries)
     }
 
+    fn wifi_sdio_cmd53_read_report(
+        &mut self,
+        report: WifiSdioCmd53ReadReport,
+    ) -> LispResult<Value> {
+        let status = self.symbol_entry(b"status", report.status)?;
+        let setup_status = self.symbol_entry(b"setup-status", report.setup_status)?;
+        let function = self.int_entry(b"function", report.function as i32)?;
+        let address = self.word_entry(b"address", report.address)?;
+        let count = self.word_entry(b"count", report.count as u32)?;
+        let response = self.word_entry(b"response", report.response)?;
+        let bytes = self.wifi_byte_list_entry(b"bytes", &report.bytes, report.count)?;
+        let last_error = self.wifi_sdio_error_entry(b"last-error", report.last_error)?;
+        let host = self.wifi_sdio_host_report(report.host)?;
+        let host = self.entry(b"SDHC0", host)?;
+        let entries = [
+            status,
+            setup_status,
+            function,
+            address,
+            count,
+            response,
+            bytes,
+            last_error,
+            host,
+        ];
+        self.make_list_from_values(&entries)
+    }
+
     fn wifi_sdio_host_report(&mut self, report: WifiSdioHostReport) -> LispResult<Value> {
         let wrap_ctl = self.word_entry(b"WRAP.CTL", report.wrap_ctl)?;
         let gp_out = self.word_entry(b"GP_OUT", report.gp_out)?;
@@ -2233,6 +2287,22 @@ impl Machine {
             values[index] = Value::Word(*word);
         }
         let list = self.make_list_from_values(&values)?;
+        self.entry(name, list)
+    }
+
+    fn wifi_byte_list_entry(
+        &mut self,
+        name: &[u8],
+        bytes: &[u8; 16],
+        count: u8,
+    ) -> LispResult<Value> {
+        let mut values = [Value::Nil; 16];
+        let mut index = 0usize;
+        while index < count as usize && index < values.len() {
+            values[index] = Value::Word(bytes[index] as u32);
+            index += 1;
+        }
+        let list = self.make_list_from_values(&values[..index])?;
         self.entry(name, list)
     }
 

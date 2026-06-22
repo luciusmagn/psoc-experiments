@@ -8,8 +8,12 @@ const NORMAL_INT_ALL: u16 = 0x1fff;
 const ERROR_INT_ALL: u16 = 0x07ff;
 const NORMAL_INT_CMD_COMPLETE: u16 = 1 << 0;
 const NORMAL_INT_XFER_COMPLETE: u16 = 1 << 1;
+const NORMAL_INT_BUF_RD_READY: u16 = 1 << 5;
 const NORMAL_INT_ERROR: u16 = 1 << 15;
 const PSTATE_CMD_INHIBIT: u32 = 1 << 0;
+const PSTATE_CMD_INHIBIT_DAT: u32 = 1 << 1;
+const PSTATE_DAT_LINE_ACTIVE: u32 = 1 << 2;
+const PSTATE_BUF_RD_ENABLE: u32 = 1 << 11;
 const CLK_CTRL_INTERNAL_CLK_EN: u16 = 1 << 0;
 const CLK_CTRL_INTERNAL_CLK_STABLE: u16 = 1 << 1;
 const CLK_CTRL_SD_CLK_EN: u16 = 1 << 2;
@@ -35,6 +39,13 @@ const SDIO_CMD52_RAW_FLAG: u32 = 1 << 27;
 const SDIO_CMD52_ADDRESS_SHIFT: u8 = 9;
 const SDIO_CMD52_MAX_FUNCTION: u8 = 7;
 const SDIO_CMD52_MAX_ADDRESS: u32 = 0x1ffff;
+const SDIO_CMD53_RW_FLAG: u32 = 1 << 31;
+const SDIO_CMD53_FUNCTION_SHIFT: u8 = 28;
+const SDIO_CMD53_BLOCK_MODE: u32 = 1 << 27;
+const SDIO_CMD53_INCREMENTING_ADDRESS: u32 = 1 << 26;
+const SDIO_CMD53_ADDRESS_SHIFT: u8 = 9;
+const SDIO_CMD53_MAX_COUNT: u16 = 16;
+const SDIO_CMD53_WORD_BYTES: u16 = 4;
 const SDIO_CCCR_IO_ENABLE: u32 = 0x02;
 const SDIO_CCCR_IO_READY: u32 = 0x03;
 const SDIO_CCCR_INTERRUPT_ENABLE: u32 = 0x04;
@@ -45,6 +56,7 @@ const SDIO_CCCR_F1_BLOCK_SIZE_LOW: u32 = 0x110;
 const SDIO_CCCR_F1_BLOCK_SIZE_HIGH: u32 = 0x111;
 const SDIO_CCCR_F2_BLOCK_SIZE_LOW: u32 = 0x210;
 const SDIO_CCCR_F2_BLOCK_SIZE_HIGH: u32 = 0x211;
+const SDIO_CHIP_CLOCK_CSR: u32 = 0x1000e;
 const SDIO_FUNCTION_ENABLE_1: u8 = 0x02;
 const SDIO_FUNCTION_READY_1: u8 = 0x02;
 const SDIO_INTERRUPT_MASTER_FUNC1_FUNC2: u8 = 0x07;
@@ -53,6 +65,13 @@ const SDIO_BUS_WIDTH_4BIT: u8 = 0x02;
 const SDIO_BLOCK_SIZE_64: u8 = 64;
 const SDIO_READY_MAX_ATTEMPTS: u16 = 1000;
 const SDIO_BACKPLANE_SETUP_MAX_ATTEMPTS: u16 = 1000;
+const SDIO_ALP_AVAIL_MAX_ATTEMPTS: u16 = 100;
+const SBSDIO_FORCE_ALP: u8 = 0x01;
+const SBSDIO_ALP_AVAIL_REQ: u8 = 0x08;
+const SBSDIO_FORCE_HW_CLKREQ_OFF: u8 = 0x20;
+const SBSDIO_ALP_AVAIL: u8 = 0x40;
+const XFER_MODE_BLOCK_COUNT_ENABLE: u16 = 1 << 1;
+const XFER_MODE_READ: u16 = 1 << 4;
 
 const P2_SDIO_DATA_MASK: u32 = 0x0f | (0x0f << 4) | (0x0f << 8) | (0x0f << 12);
 const P2_SDIO_DATA_CFG: u32 = DRIVE_STRONG_INPUT
@@ -129,6 +148,24 @@ pub enum WifiSdioBackplaneStatus {
     InterruptEnableReadFailed,
     ReadyReadFailed,
     ReadyTimeout,
+}
+
+#[derive(Clone, Copy)]
+pub enum WifiSdioCmd53ReadStatus {
+    Ready,
+    SetupFailed,
+    InvalidFunction,
+    InvalidAddress,
+    InvalidCount,
+    DataSetupBusy,
+    AlpWriteFailed,
+    AlpReadFailed,
+    AlpTimeout,
+    AlpClearFailed,
+    Cmd53Failed,
+    BufferReadTimeout,
+    BufferEnableTimeout,
+    TransferTimeout,
 }
 
 #[derive(Clone, Copy)]
@@ -249,6 +286,18 @@ pub struct WifiSdioBackplaneReport {
     pub interrupt_enable: u8,
     pub attempts: u16,
     pub last_response: u32,
+    pub last_error: Option<CommandError>,
+    pub host: WifiSdioHostSnapshot,
+}
+
+pub struct WifiSdioCmd53ReadReport {
+    pub status: WifiSdioCmd53ReadStatus,
+    pub setup_status: WifiSdioBackplaneStatus,
+    pub function: u8,
+    pub address: u32,
+    pub count: u8,
+    pub response: u32,
+    pub bytes: [u8; SDIO_CMD53_MAX_COUNT as usize],
     pub last_error: Option<CommandError>,
     pub host: WifiSdioHostSnapshot,
 }
@@ -1048,6 +1097,218 @@ pub fn setup_backplane(p: &Peripherals) -> WifiSdioBackplaneReport {
     )
 }
 
+pub fn cmd53_read(
+    p: &Peripherals,
+    function: u8,
+    address: u32,
+    count: u8,
+) -> WifiSdioCmd53ReadReport {
+    if function == 0 || function > SDIO_CMD52_MAX_FUNCTION {
+        return cmd53_read_report(
+            p,
+            WifiSdioCmd53ReadStatus::InvalidFunction,
+            WifiSdioBackplaneStatus::Ready,
+            function,
+            address,
+            count,
+            0,
+            [0; SDIO_CMD53_MAX_COUNT as usize],
+            None,
+        );
+    }
+
+    if address > SDIO_CMD52_MAX_ADDRESS {
+        return cmd53_read_report(
+            p,
+            WifiSdioCmd53ReadStatus::InvalidAddress,
+            WifiSdioBackplaneStatus::Ready,
+            function,
+            address,
+            count,
+            0,
+            [0; SDIO_CMD53_MAX_COUNT as usize],
+            None,
+        );
+    }
+
+    if !is_valid_cmd53_read_count(count) {
+        return cmd53_read_report(
+            p,
+            WifiSdioCmd53ReadStatus::InvalidCount,
+            WifiSdioBackplaneStatus::Ready,
+            function,
+            address,
+            count,
+            0,
+            [0; SDIO_CMD53_MAX_COUNT as usize],
+            None,
+        );
+    }
+
+    let setup = setup_backplane(p);
+    if !matches!(setup.status, WifiSdioBackplaneStatus::Ready) {
+        return cmd53_read_report(
+            p,
+            WifiSdioCmd53ReadStatus::SetupFailed,
+            setup.status,
+            function,
+            address,
+            count,
+            0,
+            [0; SDIO_CMD53_MAX_COUNT as usize],
+            setup.last_error,
+        );
+    }
+
+    let core = &p.SDHC0.core;
+    let alp_request = SBSDIO_FORCE_HW_CLKREQ_OFF | SBSDIO_ALP_AVAIL_REQ | SBSDIO_FORCE_ALP;
+    let mut alp_response =
+        match cmd52_write_function_byte_selected(core, 1, SDIO_CHIP_CLOCK_CSR, alp_request) {
+            Ok(response) => response,
+            Err(error) => {
+                return cmd53_read_report(
+                    p,
+                    WifiSdioCmd53ReadStatus::AlpWriteFailed,
+                    setup.status,
+                    function,
+                    address,
+                    count,
+                    0,
+                    [0; SDIO_CMD53_MAX_COUNT as usize],
+                    Some(error),
+                )
+            }
+        };
+
+    let mut alp_attempts = 0;
+    let mut clock_csr = 0;
+    while alp_attempts < SDIO_ALP_AVAIL_MAX_ATTEMPTS {
+        alp_attempts += 1;
+        let read = match cmd52_read_function_byte_selected(core, 1, SDIO_CHIP_CLOCK_CSR) {
+            Ok(read) => read,
+            Err(error) => {
+                return cmd53_read_report(
+                    p,
+                    WifiSdioCmd53ReadStatus::AlpReadFailed,
+                    setup.status,
+                    function,
+                    address,
+                    count,
+                    alp_response,
+                    [0; SDIO_CMD53_MAX_COUNT as usize],
+                    Some(error),
+                )
+            }
+        };
+        clock_csr = read.0;
+        alp_response = read.1;
+        if clock_csr & SBSDIO_ALP_AVAIL != 0 {
+            break;
+        }
+        delay_ms(1);
+    }
+
+    if clock_csr & SBSDIO_ALP_AVAIL == 0 {
+        return cmd53_read_report(
+            p,
+            WifiSdioCmd53ReadStatus::AlpTimeout,
+            setup.status,
+            function,
+            address,
+            count,
+            alp_response,
+            [0; SDIO_CMD53_MAX_COUNT as usize],
+            None,
+        );
+    }
+
+    if let Err(error) = cmd52_write_function_byte_selected(core, 1, SDIO_CHIP_CLOCK_CSR, 0) {
+        return cmd53_read_report(
+            p,
+            WifiSdioCmd53ReadStatus::AlpClearFailed,
+            setup.status,
+            function,
+            address,
+            count,
+            alp_response,
+            [0; SDIO_CMD53_MAX_COUNT as usize],
+            Some(error),
+        );
+    }
+
+    if !configure_cmd53_byte_read(core, count) {
+        return cmd53_read_report(
+            p,
+            WifiSdioCmd53ReadStatus::DataSetupBusy,
+            setup.status,
+            function,
+            address,
+            count,
+            0,
+            [0; SDIO_CMD53_MAX_COUNT as usize],
+            None,
+        );
+    }
+
+    let argument = cmd53_argument(false, function, false, true, address, count as u16);
+    let response = match send_command(
+        core,
+        Command {
+            index: 53,
+            argument,
+            response: ResponseType::Len48,
+            command_type: CommandType::Normal,
+            data_present: true,
+            crc_check: true,
+            index_check: true,
+        },
+    ) {
+        Ok(response) => response,
+        Err(error) => {
+            return cmd53_read_report(
+                p,
+                WifiSdioCmd53ReadStatus::Cmd53Failed,
+                setup.status,
+                function,
+                address,
+                count,
+                0,
+                [0; SDIO_CMD53_MAX_COUNT as usize],
+                Some(error),
+            )
+        }
+    };
+
+    let bytes = match read_cmd53_bytes(core, count) {
+        Ok(bytes) => bytes,
+        Err(status) => {
+            return cmd53_read_report(
+                p,
+                status,
+                setup.status,
+                function,
+                address,
+                count,
+                response,
+                [0; SDIO_CMD53_MAX_COUNT as usize],
+                None,
+            )
+        }
+    };
+
+    cmd53_read_report(
+        p,
+        WifiSdioCmd53ReadStatus::Ready,
+        setup.status,
+        function,
+        address,
+        count,
+        response,
+        bytes,
+        None,
+    )
+}
+
 fn cmd52_transfer(
     p: &Peripherals,
     write: bool,
@@ -1163,8 +1424,137 @@ fn cmd52_argument(write: bool, function: u8, raw: bool, address: u32, data: u8) 
     argument
 }
 
+fn cmd53_argument(
+    write: bool,
+    function: u8,
+    block_mode: bool,
+    incrementing_address: bool,
+    address: u32,
+    count: u16,
+) -> u32 {
+    let mut argument = ((function as u32) & 0x07) << SDIO_CMD53_FUNCTION_SHIFT;
+    argument |= (address & SDIO_CMD52_MAX_ADDRESS) << SDIO_CMD53_ADDRESS_SHIFT;
+    argument |= (count as u32) & 0x01ff;
+
+    if write {
+        argument |= SDIO_CMD53_RW_FLAG;
+    }
+    if block_mode {
+        argument |= SDIO_CMD53_BLOCK_MODE;
+    }
+    if incrementing_address {
+        argument |= SDIO_CMD53_INCREMENTING_ADDRESS;
+    }
+
+    argument
+}
+
+fn is_valid_cmd53_read_count(count: u8) -> bool {
+    count > 0 && count as u16 <= SDIO_CMD53_MAX_COUNT && count as u16 % SDIO_CMD53_WORD_BYTES == 0
+}
+
+fn configure_cmd53_byte_read(core: &sdhc0::CORE, count: u8) -> bool {
+    if !wait_command_and_data_lines_free(core) {
+        return false;
+    }
+
+    core.blocksize_r.write(|w| unsafe { w.bits(count as u16) });
+    core.blockcount_r.write(|w| unsafe { w.bits(1) });
+    core.sdmasa_r.write(|w| unsafe { w.bits(1) });
+    core.bgap_ctrl_r.write(|w| unsafe { w.bits(0) });
+    core.tout_ctrl_r.write(|w| unsafe { w.bits(0x0e) });
+    core.xfer_mode_r
+        .write(|w| unsafe { w.bits(XFER_MODE_BLOCK_COUNT_ENABLE | XFER_MODE_READ) });
+    clear_interrupts(core);
+
+    true
+}
+
+fn wait_command_and_data_lines_free(core: &sdhc0::CORE) -> bool {
+    const BUSY_MASK: u32 = PSTATE_CMD_INHIBIT | PSTATE_CMD_INHIBIT_DAT | PSTATE_DAT_LINE_ACTIVE;
+
+    for _ in 0..1000 {
+        if core.pstate_reg.read().bits() & BUSY_MASK == 0 {
+            return true;
+        }
+        delay_us(3);
+    }
+
+    false
+}
+
+fn read_cmd53_bytes(
+    core: &sdhc0::CORE,
+    count: u8,
+) -> Result<[u8; SDIO_CMD53_MAX_COUNT as usize], WifiSdioCmd53ReadStatus> {
+    if !wait_buffer_read_ready(core) {
+        let _ = software_reset_data_line(core);
+        return Err(WifiSdioCmd53ReadStatus::BufferReadTimeout);
+    }
+
+    let mut bytes = [0u8; SDIO_CMD53_MAX_COUNT as usize];
+    let word_count = count as usize / SDIO_CMD53_WORD_BYTES as usize;
+    for word_index in 0..word_count {
+        if !wait_buffer_read_enable(core) {
+            let _ = software_reset_data_line(core);
+            return Err(WifiSdioCmd53ReadStatus::BufferEnableTimeout);
+        }
+
+        let word = core.buf_data_r.read().bits();
+        let offset = word_index * 4;
+        bytes[offset] = word as u8;
+        bytes[offset + 1] = (word >> 8) as u8;
+        bytes[offset + 2] = (word >> 16) as u8;
+        bytes[offset + 3] = (word >> 24) as u8;
+    }
+
+    if !wait_transfer_complete(core) {
+        let _ = software_reset_data_line(core);
+        return Err(WifiSdioCmd53ReadStatus::TransferTimeout);
+    }
+
+    Ok(bytes)
+}
+
+fn wait_buffer_read_ready(core: &sdhc0::CORE) -> bool {
+    for _ in 0..1000 {
+        let normal_int = core.normal_int_stat_r.read().bits();
+        let error_int = core.error_int_stat_r.read().bits();
+        if error_int != 0 || normal_int & NORMAL_INT_ERROR != 0 {
+            return false;
+        }
+        if normal_int & NORMAL_INT_BUF_RD_READY != 0 {
+            core.normal_int_stat_r
+                .write(|w| unsafe { w.bits(NORMAL_INT_BUF_RD_READY) });
+            return true;
+        }
+        delay_us(150);
+    }
+
+    false
+}
+
+fn wait_buffer_read_enable(core: &sdhc0::CORE) -> bool {
+    for _ in 0..1000 {
+        if core.pstate_reg.read().bits() & PSTATE_BUF_RD_ENABLE != 0 {
+            return true;
+        }
+        delay_us(3);
+    }
+
+    false
+}
+
 fn cmd52_read_byte_selected(core: &sdhc0::CORE, address: u32) -> Result<(u8, u32), CommandError> {
-    let response = cmd52_selected(core, false, 0, address, 0, false)?;
+    cmd52_read_function_byte_selected(core, 0, address)
+}
+
+fn cmd52_read_function_byte_selected(
+    core: &sdhc0::CORE,
+    function: u8,
+    address: u32,
+) -> Result<(u8, u32), CommandError> {
+    let response = cmd52_selected(core, false, function, address, 0, false)?;
     Ok(((response & 0xff) as u8, response))
 }
 
@@ -1173,7 +1563,16 @@ fn cmd52_write_byte_selected(
     address: u32,
     data: u8,
 ) -> Result<u32, CommandError> {
-    cmd52_selected(core, true, 0, address, data, false)
+    cmd52_write_function_byte_selected(core, 0, address, data)
+}
+
+fn cmd52_write_function_byte_selected(
+    core: &sdhc0::CORE,
+    function: u8,
+    address: u32,
+    data: u8,
+) -> Result<u32, CommandError> {
+    cmd52_selected(core, true, function, address, data, false)
 }
 
 fn write_block_size(
@@ -1230,6 +1629,30 @@ fn backplane_report(
         interrupt_enable,
         attempts,
         last_response,
+        last_error,
+        host: host_snapshot(p),
+    }
+}
+
+fn cmd53_read_report(
+    p: &Peripherals,
+    status: WifiSdioCmd53ReadStatus,
+    setup_status: WifiSdioBackplaneStatus,
+    function: u8,
+    address: u32,
+    count: u8,
+    response: u32,
+    bytes: [u8; SDIO_CMD53_MAX_COUNT as usize],
+    last_error: Option<CommandError>,
+) -> WifiSdioCmd53ReadReport {
+    WifiSdioCmd53ReadReport {
+        status,
+        setup_status,
+        function,
+        address,
+        count,
+        response,
+        bytes,
         last_error,
         host: host_snapshot(p),
     }
@@ -1455,6 +1878,17 @@ fn software_reset_command_line(core: &sdhc0::CORE) -> bool {
     core.sw_rst_r.write(|w| w.sw_rst_cmd().set_bit());
     for _ in 0..1000 {
         if core.sw_rst_r.read().sw_rst_cmd().bit_is_clear() {
+            return true;
+        }
+        delay_us(3);
+    }
+    false
+}
+
+fn software_reset_data_line(core: &sdhc0::CORE) -> bool {
+    core.sw_rst_r.write(|w| w.sw_rst_dat().set_bit());
+    for _ in 0..1000 {
+        if core.sw_rst_r.read().sw_rst_dat().bit_is_clear() {
             return true;
         }
         delay_us(3);

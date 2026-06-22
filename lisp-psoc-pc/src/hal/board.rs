@@ -326,6 +326,15 @@ impl lisp::Board for PsocBoard<'_> {
         wifi_sdio_backplane_report(wifi_sdio::setup_backplane(self.p))
     }
 
+    fn wifi_cmd53_read(
+        &mut self,
+        function: u8,
+        address: u32,
+        count: u8,
+    ) -> lisp::WifiSdioCmd53ReadReport {
+        wifi_sdio_cmd53_read_report(wifi_sdio::cmd53_read(self.p, function, address, count))
+    }
+
     fn sdhc_registers(&mut self) -> lisp::SdhcReport {
         micro_sd::enable_sdhc_controllers(self.p);
 
@@ -524,6 +533,25 @@ fn wifi_sdio_backplane_status(status: wifi_sdio::WifiSdioBackplaneStatus) -> &'s
     }
 }
 
+fn wifi_sdio_cmd53_read_status(status: wifi_sdio::WifiSdioCmd53ReadStatus) -> &'static [u8] {
+    match status {
+        wifi_sdio::WifiSdioCmd53ReadStatus::Ready => b"ready",
+        wifi_sdio::WifiSdioCmd53ReadStatus::SetupFailed => b"setup-failed",
+        wifi_sdio::WifiSdioCmd53ReadStatus::InvalidFunction => b"invalid-function",
+        wifi_sdio::WifiSdioCmd53ReadStatus::InvalidAddress => b"invalid-address",
+        wifi_sdio::WifiSdioCmd53ReadStatus::InvalidCount => b"invalid-count",
+        wifi_sdio::WifiSdioCmd53ReadStatus::DataSetupBusy => b"data-setup-busy",
+        wifi_sdio::WifiSdioCmd53ReadStatus::AlpWriteFailed => b"alp-write-failed",
+        wifi_sdio::WifiSdioCmd53ReadStatus::AlpReadFailed => b"alp-read-failed",
+        wifi_sdio::WifiSdioCmd53ReadStatus::AlpTimeout => b"alp-timeout",
+        wifi_sdio::WifiSdioCmd53ReadStatus::AlpClearFailed => b"alp-clear-failed",
+        wifi_sdio::WifiSdioCmd53ReadStatus::Cmd53Failed => b"cmd53-failed",
+        wifi_sdio::WifiSdioCmd53ReadStatus::BufferReadTimeout => b"buffer-read-timeout",
+        wifi_sdio::WifiSdioCmd53ReadStatus::BufferEnableTimeout => b"buffer-enable-timeout",
+        wifi_sdio::WifiSdioCmd53ReadStatus::TransferTimeout => b"transfer-timeout",
+    }
+}
+
 fn wifi_sdio_command_error_report(
     error: wifi_sdio::CommandError,
 ) -> lisp::WifiSdioCommandErrorReport {
@@ -584,6 +612,22 @@ fn wifi_sdio_backplane_report(
         interrupt_enable: report.interrupt_enable,
         attempts: report.attempts,
         last_response: report.last_response,
+        last_error: report.last_error.map(wifi_sdio_command_error_report),
+        host: wifi_sdio_host_report(report.host),
+    }
+}
+
+fn wifi_sdio_cmd53_read_report(
+    report: wifi_sdio::WifiSdioCmd53ReadReport,
+) -> lisp::WifiSdioCmd53ReadReport {
+    lisp::WifiSdioCmd53ReadReport {
+        status: wifi_sdio_cmd53_read_status(report.status),
+        setup_status: wifi_sdio_backplane_status(report.setup_status),
+        function: report.function,
+        address: report.address,
+        count: report.count,
+        response: report.response,
+        bytes: report.bytes,
         last_error: report.last_error.map(wifi_sdio_command_error_report),
         host: wifi_sdio_host_report(report.host),
     }

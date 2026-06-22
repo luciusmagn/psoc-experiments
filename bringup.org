@@ -1066,6 +1066,44 @@ Live result after flashing:
 This confirms the card accepts the WHD-style function 1 setup. The next
 meaningful Wi-Fi diagnostic is CMD53 byte-mode access through function 1.
 
+* 2026-06-22 Wi-Fi CMD53 read diagnostic
+
+Added =(wifi-cmd53-read function address count)= as a small read-only
+diagnostic. The first implementation is deliberately constrained:
+
+1. Function must be 1 through 7.
+2. Address must fit the SDIO 17-bit register address field.
+3. Count must be 4, 8, 12, or 16 bytes so the SDHC FIFO is read in whole
+   words.
+4. The form runs =(wifi-setup-backplane)= first, requests ALP through
+   function 1 =SDIO_CHIP_CLOCK_CSR=, sends CMD53 byte mode, and reports
+   the first bytes or the precise failure state.
+
+Live result after flashing:
+
+#+begin_example
+(wifi-cmd53-read 1 #x1000c 4)
+=> ((status . buffer-read-timeout)
+    (setup-status . ready)
+    (function . 1)
+    (address . #x0001000c)
+    (count . #x00000004)
+    (response . #x00001100)
+    (bytes #x00000000 #x00000000 #x00000000 #x00000000)
+    (last-error)
+    (SDHC0 ... (XFER_MODE . #x00000012)
+           ... (SW_RST . #x00000004)
+           ... (ARGUMENT . #x16001804)
+           ... (RESP01 . #x00001100)))
+#+end_example
+
+Interpretation: CMD53 command phase is accepted, but SDHC0 never raises
+buffer-read-ready for the data phase. ALP request/polling does not change
+that failure mode. Next investigation should compare the host transfer
+setup against PDL/WHD HAL, especially byte-mode block-size/count handling
+and whether SDHC0 needs a different transfer-mode programming sequence for
+SDIO CMD53.
+
 * Next actions
 
 1. Add REPL history and better editing across continuation lines.
