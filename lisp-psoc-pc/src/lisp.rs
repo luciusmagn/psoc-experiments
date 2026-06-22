@@ -60,6 +60,7 @@ pub trait Board {
     fn wifi_sdio_init(&mut self) -> WifiSdioReport;
     fn wifi_cmd52_read(&mut self, function: u8, address: u32) -> WifiSdioDirectReport;
     fn wifi_cmd52_write(&mut self, function: u8, address: u32, data: u8) -> WifiSdioDirectReport;
+    fn wifi_enable_functions(&mut self, requested: u8) -> WifiSdioEnableReport;
     fn sdhc_registers(&mut self) -> SdhcReport;
     fn reboot(&mut self) -> !;
 }
@@ -322,6 +323,19 @@ pub struct WifiSdioDirectReport {
     pub host: WifiSdioHostReport,
 }
 
+#[derive(Clone, Copy)]
+pub struct WifiSdioEnableReport {
+    pub status: &'static [u8],
+    pub init_status: &'static [u8],
+    pub requested: u8,
+    pub ready: u8,
+    pub attempts: u16,
+    pub write_response: u32,
+    pub ready_response: u32,
+    pub last_error: Option<WifiSdioCommandErrorReport>,
+    pub host: WifiSdioHostReport,
+}
+
 type LispResult<T> = Result<T, Error>;
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -382,6 +396,7 @@ pub enum Primitive {
     WifiSdioInit,
     WifiCmd52Read,
     WifiCmd52Write,
+    WifiEnableFunctions,
     SdhcRegs,
     Heap,
     Gc,
@@ -436,6 +451,7 @@ impl Primitive {
             Self::WifiSdioInit => "wifi-sdio-init",
             Self::WifiCmd52Read => "wifi-cmd52-read",
             Self::WifiCmd52Write => "wifi-cmd52-write",
+            Self::WifiEnableFunctions => "wifi-enable-functions",
             Self::SdhcRegs => "sdhc-regs",
             Self::Heap => "heap",
             Self::Gc => "gc",
@@ -642,6 +658,7 @@ impl Machine {
         self.install_primitive(b"wifi-sdio-init", Primitive::WifiSdioInit)?;
         self.install_primitive(b"wifi-cmd52-read", Primitive::WifiCmd52Read)?;
         self.install_primitive(b"wifi-cmd52-write", Primitive::WifiCmd52Write)?;
+        self.install_primitive(b"wifi-enable-functions", Primitive::WifiEnableFunctions)?;
         self.install_primitive(b"sdhc-regs", Primitive::SdhcRegs)?;
         self.install_primitive(b"heap", Primitive::Heap)?;
         self.install_primitive(b"gc", Primitive::Gc)?;
@@ -1316,6 +1333,11 @@ impl Machine {
                 let data = self.expect_u8(args[2])?;
                 self.wifi_sdio_direct_report(board.wifi_cmd52_write(function, address, data))
             }
+            Primitive::WifiEnableFunctions => {
+                self.expect_count(args, 1)?;
+                let requested = self.expect_u8(args[0])?;
+                self.wifi_sdio_enable_report(board.wifi_enable_functions(requested))
+            }
             Primitive::SdhcRegs => {
                 self.expect_count(args, 0)?;
                 self.sdhc_report(board.sdhc_registers())
@@ -1650,6 +1672,7 @@ impl Machine {
             b"wifi-sdio-init",
             b"wifi-cmd52-read",
             b"wifi-cmd52-write",
+            b"wifi-enable-functions",
             b"sdhc-regs",
             b"heap",
             b"gc",
@@ -1982,6 +2005,31 @@ impl Machine {
             write,
             data,
             response,
+            last_error,
+            host,
+        ];
+        self.make_list_from_values(&entries)
+    }
+
+    fn wifi_sdio_enable_report(&mut self, report: WifiSdioEnableReport) -> LispResult<Value> {
+        let status = self.symbol_entry(b"status", report.status)?;
+        let init_status = self.symbol_entry(b"init-status", report.init_status)?;
+        let requested = self.word_entry(b"requested", report.requested as u32)?;
+        let ready = self.word_entry(b"ready", report.ready as u32)?;
+        let attempts = self.int_entry(b"attempts", report.attempts as i32)?;
+        let write_response = self.word_entry(b"write-response", report.write_response)?;
+        let ready_response = self.word_entry(b"ready-response", report.ready_response)?;
+        let last_error = self.wifi_sdio_error_entry(b"last-error", report.last_error)?;
+        let host = self.wifi_sdio_host_report(report.host)?;
+        let host = self.entry(b"SDHC0", host)?;
+        let entries = [
+            status,
+            init_status,
+            requested,
+            ready,
+            attempts,
+            write_response,
+            ready_response,
             last_error,
             host,
         ];

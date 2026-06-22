@@ -554,6 +554,10 @@ impl lisp::Board for PsocBoard<'_> {
         wifi_sdio_direct_report(wifi_sdio::cmd52_write(self.p, function, address, data))
     }
 
+    fn wifi_enable_functions(&mut self, requested: u8) -> lisp::WifiSdioEnableReport {
+        wifi_sdio_enable_report(wifi_sdio::enable_functions(self.p, requested))
+    }
+
     fn sdhc_registers(&mut self) -> lisp::SdhcReport {
         micro_sd::enable_sdhc_controllers(self.p);
 
@@ -692,6 +696,16 @@ fn wifi_sdio_direct_status(status: wifi_sdio::WifiSdioDirectStatus) -> &'static 
     }
 }
 
+fn wifi_sdio_enable_status(status: wifi_sdio::WifiSdioEnableStatus) -> &'static [u8] {
+    match status {
+        wifi_sdio::WifiSdioEnableStatus::Ready => b"ready",
+        wifi_sdio::WifiSdioEnableStatus::InitFailed => b"init-failed",
+        wifi_sdio::WifiSdioEnableStatus::WriteFailed => b"write-failed",
+        wifi_sdio::WifiSdioEnableStatus::ReadyReadFailed => b"ready-read-failed",
+        wifi_sdio::WifiSdioEnableStatus::ReadyTimeout => b"ready-timeout",
+    }
+}
+
 fn wifi_sdio_command_error_report(
     error: wifi_sdio::CommandError,
 ) -> lisp::WifiSdioCommandErrorReport {
@@ -717,6 +731,20 @@ fn wifi_sdio_direct_report(report: wifi_sdio::WifiSdioDirectReport) -> lisp::Wif
         write: report.write,
         data: report.data,
         response: report.response,
+        last_error: report.last_error.map(wifi_sdio_command_error_report),
+        host: wifi_sdio_host_report(report.host),
+    }
+}
+
+fn wifi_sdio_enable_report(report: wifi_sdio::WifiSdioEnableReport) -> lisp::WifiSdioEnableReport {
+    lisp::WifiSdioEnableReport {
+        status: wifi_sdio_enable_status(report.status),
+        init_status: wifi_sdio_status(report.init_status),
+        requested: report.requested,
+        ready: report.ready,
+        attempts: report.attempts,
+        write_response: report.write_response,
+        ready_response: report.ready_response,
         last_error: report.last_error.map(wifi_sdio_command_error_report),
         host: wifi_sdio_host_report(report.host),
     }

@@ -954,6 +954,65 @@ Controlled write smoke test:
 transaction itself is working; the follow-up readiness polling needs to
 happen in one firmware operation rather than as separate REPL forms.
 
+* 2026-06-22 Wi-Fi function enable
+
+Added =(wifi-enable-functions mask)=, which performs one selected-card
+session:
+
+1. CMD0/CMD5/CMD3/CMD7 SDIO initialization.
+2. CMD52 write to CCCR I/O Enable =#x02=.
+3. CMD52 polling of CCCR I/O Ready =#x03=.
+
+Function 1 is ready immediately:
+
+#+begin_example
+(wifi-enable-functions #x02)
+=> ((status . ready)
+    (init-status . ready)
+    (requested . #x00000002)
+    (ready . #x00000002)
+    (attempts . 1)
+    (write-response . #x00001002)
+    (ready-response . #x00001002)
+    (last-error)
+    ...)
+#+end_example
+
+Requesting both functions only brings up function 1 within the current
+one-second poll window:
+
+#+begin_example
+(wifi-enable-functions #x06)
+=> ((status . ready-timeout)
+    (init-status . ready)
+    (requested . #x00000006)
+    (ready . #x00000002)
+    (attempts . 1000)
+    (write-response . #x00001006)
+    (ready-response . #x00001002)
+    (last-error)
+    ...)
+#+end_example
+
+Function 2 alone does not become ready in the current poll window:
+
+#+begin_example
+(wifi-enable-functions #x04)
+=> ((status . ready-timeout)
+    (init-status . ready)
+    (requested . #x00000004)
+    (ready . #x00000000)
+    (attempts . 1000)
+    (write-response . #x00001004)
+    (ready-response . #x00001000)
+    (last-error)
+    ...)
+#+end_example
+
+Working hypothesis: function 1 is the first useful CYW4343W backplane
+function. Function 2 should not be treated as a blocker until function 1
+register access, firmware download, and mailbox setup are understood.
+
 * Next actions
 
 1. Add REPL history and better editing across continuation lines.
@@ -962,7 +1021,6 @@ happen in one firmware operation rather than as separate REPL forms.
 3. Add a FAT/exFAT-aware storage layer after raw block reads/writes work.
 4. Test the newer Infineon target =infineon/cy8cxxa.cfg= as a replacement
    for obsolete =target/psoc6_2m.cfg=.
-5. Add a single-form Wi-Fi function enable/poll diagnostic.
-6. Add CMD53 diagnostics on top of =hal::wifi_sdio=.
-7. Start Wi-Fi from a known-good Infineon or Zephyr sample before trying
+5. Add CMD53 diagnostics on top of =hal::wifi_sdio= for function 1.
+6. Start Wi-Fi from a known-good Infineon or Zephyr sample before trying
    to hand-port CYW4343W support.

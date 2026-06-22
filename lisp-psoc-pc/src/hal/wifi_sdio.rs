@@ -34,6 +34,9 @@ const SDIO_CMD52_RAW_FLAG: u32 = 1 << 27;
 const SDIO_CMD52_ADDRESS_SHIFT: u8 = 9;
 const SDIO_CMD52_MAX_FUNCTION: u8 = 7;
 const SDIO_CMD52_MAX_ADDRESS: u32 = 0x1ffff;
+const SDIO_CCCR_IO_ENABLE: u32 = 0x02;
+const SDIO_CCCR_IO_READY: u32 = 0x03;
+const SDIO_READY_MAX_ATTEMPTS: u16 = 1000;
 
 const P2_SDIO_DATA_MASK: u32 = 0x0f | (0x0f << 4) | (0x0f << 8) | (0x0f << 12);
 const P2_SDIO_DATA_CFG: u32 = DRIVE_STRONG_INPUT
@@ -83,6 +86,15 @@ pub enum WifiSdioDirectStatus {
     InvalidFunction,
     InvalidAddress,
     Cmd52Failed,
+}
+
+#[derive(Clone, Copy)]
+pub enum WifiSdioEnableStatus {
+    Ready,
+    InitFailed,
+    WriteFailed,
+    ReadyReadFailed,
+    ReadyTimeout,
 }
 
 #[derive(Clone, Copy)]
@@ -174,6 +186,18 @@ pub struct WifiSdioDirectReport {
     pub write: bool,
     pub data: u8,
     pub response: u32,
+    pub last_error: Option<CommandError>,
+    pub host: WifiSdioHostSnapshot,
+}
+
+pub struct WifiSdioEnableReport {
+    pub status: WifiSdioEnableStatus,
+    pub init_status: WifiSdioStatus,
+    pub requested: u8,
+    pub ready: u8,
+    pub attempts: u16,
+    pub write_response: u32,
+    pub ready_response: u32,
     pub last_error: Option<CommandError>,
     pub host: WifiSdioHostSnapshot,
 }
@@ -364,6 +388,98 @@ pub fn cmd52_write(p: &Peripherals, function: u8, address: u32, data: u8) -> Wif
     cmd52_transfer(p, true, function, address, data, false)
 }
 
+pub fn enable_functions(p: &Peripherals, requested: u8) -> WifiSdioEnableReport {
+    let init = initialize(p);
+    if !matches!(init.status, WifiSdioStatus::Ready) {
+        return enable_report(
+            p,
+            WifiSdioEnableStatus::InitFailed,
+            init.status,
+            requested,
+            0,
+            0,
+            0,
+            0,
+            init.last_error,
+        );
+    }
+
+    let write_response = match cmd52_selected(
+        &p.SDHC0.core,
+        true,
+        0,
+        SDIO_CCCR_IO_ENABLE,
+        requested,
+        false,
+    ) {
+        Ok(response) => response,
+        Err(error) => {
+            return enable_report(
+                p,
+                WifiSdioEnableStatus::WriteFailed,
+                init.status,
+                requested,
+                0,
+                0,
+                0,
+                0,
+                Some(error),
+            );
+        }
+    };
+
+    let mut attempts = 0;
+    let mut ready = 0;
+    let mut ready_response = 0;
+    while attempts < SDIO_READY_MAX_ATTEMPTS {
+        attempts += 1;
+        ready_response = match cmd52_selected(&p.SDHC0.core, false, 0, SDIO_CCCR_IO_READY, 0, false)
+        {
+            Ok(response) => response,
+            Err(error) => {
+                return enable_report(
+                    p,
+                    WifiSdioEnableStatus::ReadyReadFailed,
+                    init.status,
+                    requested,
+                    ready,
+                    attempts,
+                    write_response,
+                    ready_response,
+                    Some(error),
+                );
+            }
+        };
+        ready = (ready_response & 0xff) as u8;
+        if ready & requested == requested {
+            return enable_report(
+                p,
+                WifiSdioEnableStatus::Ready,
+                init.status,
+                requested,
+                ready,
+                attempts,
+                write_response,
+                ready_response,
+                None,
+            );
+        }
+        delay_ms(1);
+    }
+
+    enable_report(
+        p,
+        WifiSdioEnableStatus::ReadyTimeout,
+        init.status,
+        requested,
+        ready,
+        attempts,
+        write_response,
+        ready_response,
+        None,
+    )
+}
+
 fn cmd52_transfer(
     p: &Peripherals,
     write: bool,
@@ -415,19 +531,7 @@ fn cmd52_transfer(
         );
     }
 
-    let argument = cmd52_argument(write, function, raw, address, data);
-    match send_command(
-        &p.SDHC0.core,
-        Command {
-            index: 52,
-            argument,
-            response: ResponseType::Len48,
-            command_type: CommandType::Normal,
-            data_present: false,
-            crc_check: true,
-            index_check: true,
-        },
-    ) {
+    match cmd52_selected(&p.SDHC0.core, write, function, address, data, raw) {
         Ok(response) => direct_report(
             p,
             WifiSdioDirectStatus::Ready,
@@ -453,6 +557,29 @@ fn cmd52_transfer(
     }
 }
 
+fn cmd52_selected(
+    core: &sdhc0::CORE,
+    write: bool,
+    function: u8,
+    address: u32,
+    data: u8,
+    raw: bool,
+) -> Result<u32, CommandError> {
+    let argument = cmd52_argument(write, function, raw, address, data);
+    send_command(
+        core,
+        Command {
+            index: 52,
+            argument,
+            response: ResponseType::Len48,
+            command_type: CommandType::Normal,
+            data_present: false,
+            crc_check: true,
+            index_check: true,
+        },
+    )
+}
+
 fn cmd52_argument(write: bool, function: u8, raw: bool, address: u32, data: u8) -> u32 {
     let mut argument = ((function as u32) & 0x07) << SDIO_CMD52_FUNCTION_SHIFT;
     argument |= (address & SDIO_CMD52_MAX_ADDRESS) << SDIO_CMD52_ADDRESS_SHIFT;
@@ -466,6 +593,30 @@ fn cmd52_argument(write: bool, function: u8, raw: bool, address: u32, data: u8) 
     }
 
     argument
+}
+
+fn enable_report(
+    p: &Peripherals,
+    status: WifiSdioEnableStatus,
+    init_status: WifiSdioStatus,
+    requested: u8,
+    ready: u8,
+    attempts: u16,
+    write_response: u32,
+    ready_response: u32,
+    last_error: Option<CommandError>,
+) -> WifiSdioEnableReport {
+    WifiSdioEnableReport {
+        status,
+        init_status,
+        requested,
+        ready,
+        attempts,
+        write_response,
+        ready_response,
+        last_error,
+        host: host_snapshot(p),
+    }
 }
 
 fn direct_report(
