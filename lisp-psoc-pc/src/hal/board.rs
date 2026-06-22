@@ -362,6 +362,10 @@ impl lisp::Board for PsocBoard<'_> {
         wifi_sdio_backplane_write8_report(wifi_sdio::backplane_write8(self.p, address, value))
     }
 
+    fn wifi_core_state(&mut self, base: u32) -> lisp::WifiSdioCoreStateReport {
+        wifi_sdio_core_state_report(wifi_sdio::core_state(self.p, base))
+    }
+
     fn sdhc_registers(&mut self) -> lisp::SdhcReport {
         micro_sd::enable_sdhc_controllers(self.p);
 
@@ -628,6 +632,23 @@ fn wifi_sdio_backplane_write8_status(
     }
 }
 
+fn wifi_sdio_core_state_status(status: wifi_sdio::WifiSdioCoreStateStatus) -> &'static [u8] {
+    match status {
+        wifi_sdio::WifiSdioCoreStateStatus::Ready => b"ready",
+        wifi_sdio::WifiSdioCoreStateStatus::SetupFailed => b"setup-failed",
+        wifi_sdio::WifiSdioCoreStateStatus::AlpWriteFailed => b"alp-write-failed",
+        wifi_sdio::WifiSdioCoreStateStatus::AlpReadFailed => b"alp-read-failed",
+        wifi_sdio::WifiSdioCoreStateStatus::AlpTimeout => b"alp-timeout",
+        wifi_sdio::WifiSdioCoreStateStatus::AlpClearFailed => b"alp-clear-failed",
+        wifi_sdio::WifiSdioCoreStateStatus::WindowHighWriteFailed => b"window-high-write-failed",
+        wifi_sdio::WifiSdioCoreStateStatus::WindowMidWriteFailed => b"window-mid-write-failed",
+        wifi_sdio::WifiSdioCoreStateStatus::WindowLowWriteFailed => b"window-low-write-failed",
+        wifi_sdio::WifiSdioCoreStateStatus::IoctrlReadFailed => b"ioctrl-read-failed",
+        wifi_sdio::WifiSdioCoreStateStatus::ResetctrlReadFailed => b"resetctrl-read-failed",
+        wifi_sdio::WifiSdioCoreStateStatus::ResetstatusReadFailed => b"resetstatus-read-failed",
+    }
+}
+
 fn wifi_sdio_command_error_report(
     error: wifi_sdio::CommandError,
 ) -> lisp::WifiSdioCommandErrorReport {
@@ -737,6 +758,27 @@ fn wifi_sdio_backplane_write8_report(
         window_base: report.window_base,
         window_address: report.window_address,
         response: report.response,
+        last_error: report.last_error.map(wifi_sdio_command_error_report),
+        host: wifi_sdio_host_report(report.host),
+    }
+}
+
+fn wifi_sdio_core_state_report(
+    report: wifi_sdio::WifiSdioCoreStateReport,
+) -> lisp::WifiSdioCoreStateReport {
+    lisp::WifiSdioCoreStateReport {
+        status: wifi_sdio_core_state_status(report.status),
+        setup_status: wifi_sdio_backplane_status(report.setup_status),
+        base: report.base,
+        ioctrl: report.ioctrl,
+        resetctrl: report.resetctrl,
+        resetstatus: report.resetstatus,
+        clock_enabled: report.clock_enabled,
+        force_gated: report.force_gated,
+        in_reset: report.in_reset,
+        reset_busy: report.reset_busy,
+        core_up: report.core_up,
+        last_response: report.last_response,
         last_error: report.last_error.map(wifi_sdio_command_error_report),
         host: wifi_sdio_host_report(report.host),
     }

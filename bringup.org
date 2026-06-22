@@ -1367,6 +1367,54 @@ This gives the firmware bring-up path the safe primitive needed to mirror
 WHD's =whd_disable_device_core= and =whd_reset_device_core= register
 sequence. Bulk firmware download still needs CMD53 write support.
 
+* 2026-06-22 Wi-Fi core state diagnostic
+
+Added =(wifi-core-state base)= to read WHD AI core wrapper state in one
+setup/ALP session. The form reads:
+
+1. =base + #x408= for =IOCTRL=;
+2. =base + #x800= for =RESETCTRL=;
+3. =base + #x804= for =RESETSTATUS=.
+
+It decodes WHD's =SICF_CLOCK_EN=, =SICF_FGC=, and =AIRC_RESET= bits and
+returns =core-up= only when the clock is enabled, force-gate is clear,
+reset-control is clear, and reset-status is zero.
+
+Live validation after flashing:
+
+#+begin_example
+(wifi-core-state #x18103000)
+=> ((status . ready) (setup-status . ready)
+    (base . #x18103000)
+    (IOCTRL . #x00000000)
+    (RESETCTRL . #x00000001)
+    (RESETSTATUS . #x00000000)
+    (clock-enabled . #f)
+    (force-gated . #f)
+    (in-reset . #t)
+    (reset-busy . #f)
+    (core-up . #f)
+    (last-error) ...)
+
+(wifi-core-state #x18104000)
+=> ((status . ready) (setup-status . ready)
+    (base . #x18104000)
+    (IOCTRL . #x00000000)
+    (RESETCTRL . #x00000001)
+    (RESETSTATUS . #x00000000)
+    (clock-enabled . #f)
+    (force-gated . #f)
+    (in-reset . #t)
+    (reset-busy . #f)
+    (core-up . #f)
+    (last-error) ...)
+#+end_example
+
+For chip 43430, WHD's ARM wrapper base is =#x18103000= and SOCSRAM
+wrapper base is =#x18104000=. Both currently come up held in reset after
+our SDIO setup, which matches the state expected before the firmware
+download sequence starts manipulating cores.
+
 * Next actions
 
 1. Add REPL history and better editing across continuation lines.
