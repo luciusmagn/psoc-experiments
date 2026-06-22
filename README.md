@@ -10,6 +10,39 @@ Schematic: <https://www.infineon.com/dgdl/Infineon-CY8CPROTO-062-4343W_Schematic
 There are multiple binary crates in this repository.
 There are multiple cores in this SoC.
 
+### Repo-local tooling
+
+The active Lisp firmware can be built and flashed with Chez Scheme scripts
+under `tools/`:
+
+```sh
+tools/setup-modustoolbox.scm --check
+tools/build-lisp.scm
+tools/flash-lisp.scm
+```
+
+`tools/build-flash-lisp.scm` runs the build and flash steps together. The
+flashing script looks for Infineon OpenOCD in this order: `OPENOCD_ROOT`,
+`MODUSTOOLBOX_OPENOCD_ROOT`, `MODUSTOOLBOX_ROOT`, `.local/ModusToolbox`,
+and `/opt/ModusToolbox`.
+
+To keep the large vendor tools out of git, install ModusToolbox into the
+ignored `.local/ModusToolbox` directory:
+
+```sh
+tools/setup-modustoolbox.scm --archive /path/to/ModusToolbox-linux.tar.gz
+```
+
+If the download URL is directly accessible, `tools/setup-modustoolbox.scm
+--help` shows the fetch mode.
+
+For the serial console:
+
+```sh
+tools/serial-console.scm
+tools/send-lisp.scm '(wifi-setup-backplane)'
+```
+
 ### Prerequisites
 
 1. Install correct Rust targets for both cores.

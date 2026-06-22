@@ -1104,6 +1104,34 @@ setup against PDL/WHD HAL, especially byte-mode block-size/count handling
 and whether SDHC0 needs a different transfer-mode programming sequence for
 SDIO CMD53.
 
+* 2026-06-22 Chez Scheme tooling scripts
+
+Added repo-local scripts under =tools/=:
+
+1. =setup-modustoolbox.scm= checks or installs ModusToolbox/OpenOCD into
+   ignored local state.
+2. =build-lisp.scm= builds the CM4 Lisp app, packs it into the CM0+
+   bootloader payload, and rebuilds the bootloader.
+3. =flash-lisp.scm= flashes the current bootloader image with Infineon
+   OpenOCD.
+4. =build-flash-lisp.scm= runs build then flash.
+5. =serial-console.scm= opens =/dev/ttyACM0= or =$PSOC_SERIAL= at 115200
+   raw mode.
+6. =send-lisp.scm= sends one Lisp form to the console device.
+
+Validation:
+
+#+begin_example
+tools/setup-modustoolbox.scm --check
+=> OPENOCD_ROOT=/opt/ModusToolbox/tools_3.4/openocd
+
+tools/flash-lisp.scm --dry-run
+=> '/opt/ModusToolbox/tools_3.4/openocd/bin/openocd' ...
+
+tools/build-lisp.scm
+=> builds lisp-psoc-pc, updates app.bin, builds psoc6-cm0-bootloader
+#+end_example
+
 * Next actions
 
 1. Add REPL history and better editing across continuation lines.
