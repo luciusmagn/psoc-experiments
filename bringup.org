@@ -680,11 +680,82 @@ failure. Removing the post-=CMD0= command-line reset and waiting for
     ...)
 #+end_example
 
+* 2026-06-22 Raw microSD writes
+
+Added a Lisp diagnostic form that writes one 512-byte sector with a
+repeated 32-bit word:
+
+#+begin_example
+(sd-write-fill #x100 #x5aa55aa5)
+=> ((status . ready)
+    (init-status . ready-sdhc)
+    (sector . #x00000100)
+    (fill-word . #x5aa55aa5)
+    (RCA . #x00005048)
+    (OCR . #xc0ff8000)
+    (attempts . 2)
+    (CMD24.response . #x00000900)
+    (last-error)
+    (NORM_INT . #x00000000)
+    (ERR_INT . #x00000000)
+    (PSTATE . #x03f30000)
+    (BLOCK_SIZE . #x00000200)
+    (BLOCK_COUNT . #x00000000)
+    (XFER_MODE . #x00000002)
+    (CMD_R . #x0000183a)
+    (ARGUMENT . #x00000100))
+#+end_example
+
+Sector =#x100= is deliberately away from sector zero and before the
+observed partition start at =#x800=. The user confirmed the inserted
+card's contents can be overwritten, but the test still avoids the MBR.
+
+Readback confirmed that CMD24 wrote the card and CMD17 reads back the
+same bytes:
+
+#+begin_example
+(sd-read #x100)
+=> ((status . ready)
+    (init-status . ready-sdhc)
+    (sector . #x00000100)
+    (RCA . #x00005048)
+    (OCR . #xc0ff8000)
+    (attempts . 2)
+    (CMD17.response . #x00000900)
+    (last-error)
+    (first-words #x5aa55aa5 #x5aa55aa5 #x5aa55aa5 #x5aa55aa5
+                 #x5aa55aa5 #x5aa55aa5 #x5aa55aa5 #x5aa55aa5)
+    (MBR.sig . #x00005aa5)
+    (partition0.status . #x00000000)
+    (partition0.type . #x00000000)
+    (partition0.lba . #x00000000)
+    (partition0.sectors . #x00000000)
+    (NORM_INT . #x00000000)
+    (ERR_INT . #x00000000)
+    (PSTATE . #x03f30000)
+    (BLOCK_SIZE . #x00000200)
+    (BLOCK_COUNT . #x00000000)
+    (XFER_MODE . #x00000012)
+    (CMD_R . #x0000113a)
+    (ARGUMENT . #x00000100))
+#+end_example
+
+Implementation notes:
+
+1. The write path mirrors the working read path through card
+   identification, CMD2/CMD3/CMD7, optional CMD16 for SDSC cards, and
+   block-address conversion.
+2. Single-block write setup uses =BLOCK_SIZE= 512, =BLOCK_COUNT= 1,
+   =XFER_MODE= =#x0002=, and CMD24 with =data_present= set.
+3. The data path waits for =BUF_WR_READY=, streams 128 words through
+   =BUF_DATA_R=, waits for =XFER_COMPLETE=, and then waits for DAT idle.
+
 * Next actions
 
 1. Add REPL history and better editing across continuation lines.
 2. Add string support before file-path based microSD functions.
-3. Turn the working =sd-read= path into an internal block-device API.
+3. Turn the working raw =sd-read= and =sd-write-fill= paths into an
+   internal block-device API.
 4. Add a FAT/exFAT-aware storage layer after raw block reads work.
 5. Test the newer Infineon target =infineon/cy8cxxa.cfg= as a replacement
    for obsolete =target/psoc6_2m.cfg=.

@@ -47,6 +47,7 @@ pub trait Board {
     fn sd_clock(&mut self) -> SdClockReport;
     fn sd_init(&mut self) -> SdInitReport;
     fn sd_read(&mut self, sector: u32) -> SdReadReport;
+    fn sd_write_fill(&mut self, sector: u32, fill_word: u32) -> SdWriteReport;
     fn sdhc_registers(&mut self) -> SdhcReport;
     fn reboot(&mut self) -> !;
 }
@@ -178,6 +179,27 @@ pub struct SdReadReport {
     pub argument: u32,
 }
 
+#[derive(Clone, Copy)]
+pub struct SdWriteReport {
+    pub status: &'static [u8],
+    pub init_status: &'static [u8],
+    pub sector: u32,
+    pub fill_word: u32,
+    pub rca: u16,
+    pub ocr: u32,
+    pub acmd41_attempts: u16,
+    pub command_response: u32,
+    pub last_error: Option<SdCommandErrorReport>,
+    pub normal_int: u16,
+    pub error_int: u16,
+    pub pstate: u32,
+    pub block_size: u16,
+    pub block_count: u16,
+    pub xfer_mode: u16,
+    pub cmd: u16,
+    pub argument: u32,
+}
+
 type LispResult<T> = Result<T, Error>;
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -230,6 +252,7 @@ pub enum Primitive {
     SdInit,
     SdRead,
     SdRead0,
+    SdWriteFill,
     SdhcRegs,
     Heap,
     Gc,
@@ -276,6 +299,7 @@ impl Primitive {
             Self::SdInit => "sd-init",
             Self::SdRead => "sd-read",
             Self::SdRead0 => "sd-read0",
+            Self::SdWriteFill => "sd-write-fill",
             Self::SdhcRegs => "sdhc-regs",
             Self::Heap => "heap",
             Self::Gc => "gc",
@@ -470,6 +494,7 @@ impl Machine {
         self.install_primitive(b"sd-init", Primitive::SdInit)?;
         self.install_primitive(b"sd-read", Primitive::SdRead)?;
         self.install_primitive(b"sd-read0", Primitive::SdRead0)?;
+        self.install_primitive(b"sd-write-fill", Primitive::SdWriteFill)?;
         self.install_primitive(b"sdhc-regs", Primitive::SdhcRegs)?;
         self.install_primitive(b"heap", Primitive::Heap)?;
         self.install_primitive(b"gc", Primitive::Gc)?;
@@ -1084,6 +1109,12 @@ impl Machine {
                 self.expect_count(args, 0)?;
                 self.sd_read_report(board.sd_read(0))
             }
+            Primitive::SdWriteFill => {
+                self.expect_count(args, 2)?;
+                let sector = self.expect_u32(args[0])?;
+                let fill_word = self.expect_u32(args[1])?;
+                self.sd_write_report(board.sd_write_fill(sector, fill_word))
+            }
             Primitive::SdhcRegs => {
                 self.expect_count(args, 0)?;
                 self.sdhc_report(board.sdhc_registers())
@@ -1373,6 +1404,7 @@ impl Machine {
             b"sd-init",
             b"sd-read",
             b"sd-read0",
+            b"sd-write-fill",
             b"sdhc-regs",
             b"heap",
             b"gc",
@@ -1558,6 +1590,46 @@ impl Machine {
             partition_type,
             partition_lba_start,
             partition_sector_count,
+            normal_int,
+            error_int,
+            pstate,
+            block_size,
+            block_count,
+            xfer_mode,
+            cmd,
+            argument,
+        ];
+        self.make_list_from_values(&entries)
+    }
+
+    fn sd_write_report(&mut self, report: SdWriteReport) -> LispResult<Value> {
+        let status = self.symbol_entry(b"status", report.status)?;
+        let init_status = self.symbol_entry(b"init-status", report.init_status)?;
+        let sector = self.word_entry(b"sector", report.sector)?;
+        let fill_word = self.word_entry(b"fill-word", report.fill_word)?;
+        let rca = self.word_entry(b"RCA", report.rca as u32)?;
+        let ocr = self.word_entry(b"OCR", report.ocr)?;
+        let attempts = self.int_entry(b"attempts", report.acmd41_attempts as i32)?;
+        let response = self.word_entry(b"CMD24.response", report.command_response)?;
+        let last_error = self.sd_error_code_entry(b"last-error", report.last_error)?;
+        let normal_int = self.word_entry(b"NORM_INT", report.normal_int as u32)?;
+        let error_int = self.word_entry(b"ERR_INT", report.error_int as u32)?;
+        let pstate = self.word_entry(b"PSTATE", report.pstate)?;
+        let block_size = self.word_entry(b"BLOCK_SIZE", report.block_size as u32)?;
+        let block_count = self.word_entry(b"BLOCK_COUNT", report.block_count as u32)?;
+        let xfer_mode = self.word_entry(b"XFER_MODE", report.xfer_mode as u32)?;
+        let cmd = self.word_entry(b"CMD_R", report.cmd as u32)?;
+        let argument = self.word_entry(b"ARGUMENT", report.argument)?;
+        let entries = [
+            status,
+            init_status,
+            sector,
+            fill_word,
+            rca,
+            ocr,
+            attempts,
+            response,
+            last_error,
             normal_int,
             error_int,
             pstate,

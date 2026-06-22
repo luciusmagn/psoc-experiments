@@ -470,6 +470,29 @@ impl lisp::Board for PsocBoard<'_> {
         }
     }
 
+    fn sd_write_fill(&mut self, sector: u32, fill_word: u32) -> lisp::SdWriteReport {
+        let report = micro_sd::write_sector_fill(self.p, sector, fill_word);
+        lisp::SdWriteReport {
+            status: sd_write_status(report.status),
+            init_status: sd_init_status(report.init_status),
+            sector: report.sector,
+            fill_word: report.fill_word,
+            rca: report.rca,
+            ocr: report.ocr,
+            acmd41_attempts: report.acmd41_attempts,
+            command_response: report.command_response,
+            last_error: report.last_error.map(sd_command_error_report),
+            normal_int: report.normal_int,
+            error_int: report.error_int,
+            pstate: report.pstate,
+            block_size: report.block_size,
+            block_count: report.block_count,
+            xfer_mode: report.xfer_mode,
+            cmd: report.cmd,
+            argument: report.argument,
+        }
+    }
+
     fn sdhc_registers(&mut self) -> lisp::SdhcReport {
         micro_sd::enable_sdhc_controllers(self.p);
 
@@ -538,6 +561,24 @@ fn sd_read_status(status: micro_sd::ReadStatus) -> &'static [u8] {
         micro_sd::ReadStatus::BufferReadTimeout => b"buffer-read-timeout",
         micro_sd::ReadStatus::BufferEnableTimeout => b"buffer-enable-timeout",
         micro_sd::ReadStatus::TransferTimeout => b"transfer-timeout",
+    }
+}
+
+fn sd_write_status(status: micro_sd::WriteStatus) -> &'static [u8] {
+    match status {
+        micro_sd::WriteStatus::Ready => b"ready",
+        micro_sd::WriteStatus::InitFailed => b"init-failed",
+        micro_sd::WriteStatus::Cmd2Failed => b"cmd2-failed",
+        micro_sd::WriteStatus::Cmd3Failed => b"cmd3-failed",
+        micro_sd::WriteStatus::Cmd7Failed => b"cmd7-failed",
+        micro_sd::WriteStatus::Cmd16Failed => b"cmd16-failed",
+        micro_sd::WriteStatus::AddressOverflow => b"address-overflow",
+        micro_sd::WriteStatus::DataSetupBusy => b"data-setup-busy",
+        micro_sd::WriteStatus::Cmd24Failed => b"cmd24-failed",
+        micro_sd::WriteStatus::BufferWriteTimeout => b"buffer-write-timeout",
+        micro_sd::WriteStatus::BufferEnableTimeout => b"buffer-enable-timeout",
+        micro_sd::WriteStatus::TransferTimeout => b"transfer-timeout",
+        micro_sd::WriteStatus::DataLineBusy => b"data-line-busy",
     }
 }
 
