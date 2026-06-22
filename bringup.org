@@ -1337,6 +1337,36 @@ RESETCTRL =#x01=, and RESETSTATUS =#x00=, so the WLAN ARM core is currently
 held in reset. The SOCSRAM wrapper at =#x18104000= showed the same reset
 shape.
 
+* 2026-06-22 Wi-Fi backplane byte write
+
+Added =(wifi-backplane-write8 address value)= for the one-byte backplane
+writes used by WHD's core reset and IO-control paths. The implementation
+uses the same setup, ALP request, and backplane window sequence as
+=(wifi-backplane-read ...)=, then writes through CMD52 function 1 at the
+translated window address.
+
+The first live validation used an idempotent write: ARM reset-control was
+already =#x01=, so writing =#x01= back to =#x18103800= should leave the
+core held in reset.
+
+#+begin_example
+(wifi-backplane-read #x18103800 1)
+=> ((status . ready) ... (bytes #x00000001) ...)
+
+(wifi-backplane-write8 #x18103800 #x01)
+=> ((status . ready) (setup-status . ready)
+    (address . #x18103800) (value . #x00000001)
+    (window-base . #x18100000) (window-address . #x00003800)
+    (response . #x00001001) (last-error) ...)
+
+(wifi-backplane-read #x18103800 1)
+=> ((status . ready) ... (bytes #x00000001) ...)
+#+end_example
+
+This gives the firmware bring-up path the safe primitive needed to mirror
+WHD's =whd_disable_device_core= and =whd_reset_device_core= register
+sequence. Bulk firmware download still needs CMD53 write support.
+
 * Next actions
 
 1. Add REPL history and better editing across continuation lines.

@@ -198,6 +198,20 @@ pub enum WifiSdioBackplaneReadStatus {
 }
 
 #[derive(Clone, Copy)]
+pub enum WifiSdioBackplaneWrite8Status {
+    Ready,
+    SetupFailed,
+    AlpWriteFailed,
+    AlpReadFailed,
+    AlpTimeout,
+    AlpClearFailed,
+    WindowHighWriteFailed,
+    WindowMidWriteFailed,
+    WindowLowWriteFailed,
+    Cmd52Failed,
+}
+
+#[derive(Clone, Copy)]
 pub struct CommandError {
     pub code: CommandErrorCode,
     pub normal_int: u16,
@@ -355,6 +369,18 @@ pub struct WifiSdioBackplaneReadReport {
     pub window_address: u32,
     pub response: u32,
     pub bytes: [u8; SDIO_CMD53_PREVIEW_BYTES],
+    pub last_error: Option<CommandError>,
+    pub host: WifiSdioHostSnapshot,
+}
+
+pub struct WifiSdioBackplaneWrite8Report {
+    pub status: WifiSdioBackplaneWrite8Status,
+    pub setup_status: WifiSdioBackplaneStatus,
+    pub address: u32,
+    pub value: u8,
+    pub window_base: u32,
+    pub window_address: u32,
+    pub response: u32,
     pub last_error: Option<CommandError>,
     pub host: WifiSdioHostSnapshot,
 }
@@ -1362,6 +1388,86 @@ pub fn backplane_read(p: &Peripherals, address: u32, count: u8) -> WifiSdioBackp
     )
 }
 
+pub fn backplane_write8(p: &Peripherals, address: u32, value: u8) -> WifiSdioBackplaneWrite8Report {
+    let setup = setup_backplane(p);
+    if !matches!(setup.status, WifiSdioBackplaneStatus::Ready) {
+        return backplane_write8_report(
+            p,
+            WifiSdioBackplaneWrite8Status::SetupFailed,
+            setup.status,
+            address,
+            value,
+            0,
+            0,
+            0,
+            setup.last_error,
+        );
+    }
+
+    let core = &p.SDHC0.core;
+    let alp_response = match request_alp_clock(core) {
+        Ok(response) => response,
+        Err(error) => {
+            let (status, response, last_error) = backplane_write8_alp_error(error);
+            return backplane_write8_report(
+                p,
+                status,
+                setup.status,
+                address,
+                value,
+                0,
+                0,
+                response,
+                last_error,
+            );
+        }
+    };
+
+    let window_base = match set_backplane_window(core, address) {
+        Ok(window_base) => window_base,
+        Err(error) => {
+            let (status, last_error) = backplane_write8_window_error(error);
+            return backplane_write8_report(
+                p,
+                status,
+                setup.status,
+                address,
+                value,
+                backplane_window_base(address),
+                0,
+                alp_response,
+                Some(last_error),
+            );
+        }
+    };
+    let window_address = backplane_window_address(address, 1);
+
+    match cmd52_write_function_byte_selected(core, SDIO_BACKPLANE_FUNCTION, window_address, value) {
+        Ok(response) => backplane_write8_report(
+            p,
+            WifiSdioBackplaneWrite8Status::Ready,
+            setup.status,
+            address,
+            value,
+            window_base,
+            window_address,
+            response,
+            None,
+        ),
+        Err(error) => backplane_write8_report(
+            p,
+            WifiSdioBackplaneWrite8Status::Cmd52Failed,
+            setup.status,
+            address,
+            value,
+            window_base,
+            window_address,
+            0,
+            Some(error),
+        ),
+    }
+}
+
 pub fn cmd53_read(
     p: &Peripherals,
     function: u8,
@@ -1743,6 +1849,31 @@ fn backplane_read_alp_error(
     }
 }
 
+fn backplane_write8_alp_error(
+    error: AlpError,
+) -> (WifiSdioBackplaneWrite8Status, u32, Option<CommandError>) {
+    match error {
+        AlpError::Write(error) => (
+            WifiSdioBackplaneWrite8Status::AlpWriteFailed,
+            0,
+            Some(error),
+        ),
+        AlpError::Read { response, error } => (
+            WifiSdioBackplaneWrite8Status::AlpReadFailed,
+            response,
+            Some(error),
+        ),
+        AlpError::Timeout { response } => {
+            (WifiSdioBackplaneWrite8Status::AlpTimeout, response, None)
+        }
+        AlpError::Clear { response, error } => (
+            WifiSdioBackplaneWrite8Status::AlpClearFailed,
+            response,
+            Some(error),
+        ),
+    }
+}
+
 fn set_backplane_window(core: &sdhc0::CORE, address: u32) -> Result<u32, BackplaneWindowError> {
     let base = backplane_window_base(address);
     cmd52_write_function_byte_selected(
@@ -1781,6 +1912,22 @@ fn backplane_window_error(
         }
         BackplaneWindowError::Low(error) => {
             (WifiSdioBackplaneReadStatus::WindowLowWriteFailed, error)
+        }
+    }
+}
+
+fn backplane_write8_window_error(
+    error: BackplaneWindowError,
+) -> (WifiSdioBackplaneWrite8Status, CommandError) {
+    match error {
+        BackplaneWindowError::High(error) => {
+            (WifiSdioBackplaneWrite8Status::WindowHighWriteFailed, error)
+        }
+        BackplaneWindowError::Mid(error) => {
+            (WifiSdioBackplaneWrite8Status::WindowMidWriteFailed, error)
+        }
+        BackplaneWindowError::Low(error) => {
+            (WifiSdioBackplaneWrite8Status::WindowLowWriteFailed, error)
         }
     }
 }
@@ -2033,6 +2180,30 @@ fn backplane_read_report(
         window_address,
         response,
         bytes,
+        last_error,
+        host: host_snapshot(p),
+    }
+}
+
+fn backplane_write8_report(
+    p: &Peripherals,
+    status: WifiSdioBackplaneWrite8Status,
+    setup_status: WifiSdioBackplaneStatus,
+    address: u32,
+    value: u8,
+    window_base: u32,
+    window_address: u32,
+    response: u32,
+    last_error: Option<CommandError>,
+) -> WifiSdioBackplaneWrite8Report {
+    WifiSdioBackplaneWrite8Report {
+        status,
+        setup_status,
+        address,
+        value,
+        window_base,
+        window_address,
+        response,
         last_error,
         host: host_snapshot(p),
     }

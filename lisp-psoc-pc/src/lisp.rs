@@ -67,6 +67,7 @@ pub trait Board {
     fn wifi_cmd53_read(&mut self, function: u8, address: u32, count: u8)
         -> WifiSdioCmd53ReadReport;
     fn wifi_backplane_read(&mut self, address: u32, count: u8) -> WifiSdioBackplaneReadReport;
+    fn wifi_backplane_write8(&mut self, address: u32, value: u8) -> WifiSdioBackplaneWrite8Report;
     fn sdhc_registers(&mut self) -> SdhcReport;
     fn reboot(&mut self) -> !;
 }
@@ -396,6 +397,19 @@ pub struct WifiSdioBackplaneReadReport {
     pub host: WifiSdioHostReport,
 }
 
+#[derive(Clone, Copy)]
+pub struct WifiSdioBackplaneWrite8Report {
+    pub status: &'static [u8],
+    pub setup_status: &'static [u8],
+    pub address: u32,
+    pub value: u8,
+    pub window_base: u32,
+    pub window_address: u32,
+    pub response: u32,
+    pub last_error: Option<WifiSdioCommandErrorReport>,
+    pub host: WifiSdioHostReport,
+}
+
 type LispResult<T> = Result<T, Error>;
 
 #[derive(Clone, Copy)]
@@ -468,6 +482,7 @@ pub enum Primitive {
     WifiSetupBackplane,
     WifiCmd53Read,
     WifiBackplaneRead,
+    WifiBackplaneWrite8,
     SdhcRegs,
     Heap,
     Gc,
@@ -528,6 +543,7 @@ impl Primitive {
             Self::WifiSetupBackplane => "wifi-setup-backplane",
             Self::WifiCmd53Read => "wifi-cmd53-read",
             Self::WifiBackplaneRead => "wifi-backplane-read",
+            Self::WifiBackplaneWrite8 => "wifi-backplane-write8",
             Self::SdhcRegs => "sdhc-regs",
             Self::Heap => "heap",
             Self::Gc => "gc",
@@ -740,6 +756,7 @@ impl Machine {
         self.install_primitive(b"wifi-setup-backplane", Primitive::WifiSetupBackplane)?;
         self.install_primitive(b"wifi-cmd53-read", Primitive::WifiCmd53Read)?;
         self.install_primitive(b"wifi-backplane-read", Primitive::WifiBackplaneRead)?;
+        self.install_primitive(b"wifi-backplane-write8", Primitive::WifiBackplaneWrite8)?;
         self.install_primitive(b"sdhc-regs", Primitive::SdhcRegs)?;
         self.install_primitive(b"heap", Primitive::Heap)?;
         self.install_primitive(b"gc", Primitive::Gc)?;
@@ -1457,6 +1474,12 @@ impl Machine {
                 let count = self.expect_u8(args[1])?;
                 self.wifi_sdio_backplane_read_report(board.wifi_backplane_read(address, count))
             }
+            Primitive::WifiBackplaneWrite8 => {
+                self.expect_count(args, 2)?;
+                let address = self.expect_u32(args[0])?;
+                let value = self.expect_u8(args[1])?;
+                self.wifi_sdio_backplane_write8_report(board.wifi_backplane_write8(address, value))
+            }
             Primitive::SdhcRegs => {
                 self.expect_count(args, 0)?;
                 self.sdhc_report(board.sdhc_registers())
@@ -1818,6 +1841,7 @@ impl Machine {
             b"wifi-setup-backplane",
             b"wifi-cmd53-read",
             b"wifi-backplane-read",
+            b"wifi-backplane-write8",
             b"sdhc-regs",
             b"heap",
             b"gc",
@@ -2303,6 +2327,34 @@ impl Machine {
             window_address,
             response,
             bytes,
+            last_error,
+            host,
+        ];
+        self.make_list_from_values(&entries)
+    }
+
+    fn wifi_sdio_backplane_write8_report(
+        &mut self,
+        report: WifiSdioBackplaneWrite8Report,
+    ) -> LispResult<Value> {
+        let status = self.symbol_entry(b"status", report.status)?;
+        let setup_status = self.symbol_entry(b"setup-status", report.setup_status)?;
+        let address = self.word_entry(b"address", report.address)?;
+        let value = self.word_entry(b"value", report.value as u32)?;
+        let window_base = self.word_entry(b"window-base", report.window_base)?;
+        let window_address = self.word_entry(b"window-address", report.window_address)?;
+        let response = self.word_entry(b"response", report.response)?;
+        let last_error = self.wifi_sdio_error_entry(b"last-error", report.last_error)?;
+        let host = self.wifi_sdio_host_report(report.host)?;
+        let host = self.entry(b"SDHC0", host)?;
+        let entries = [
+            status,
+            setup_status,
+            address,
+            value,
+            window_base,
+            window_address,
+            response,
             last_error,
             host,
         ];

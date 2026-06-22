@@ -354,6 +354,14 @@ impl lisp::Board for PsocBoard<'_> {
         wifi_sdio_backplane_read_report(wifi_sdio::backplane_read(self.p, address, count))
     }
 
+    fn wifi_backplane_write8(
+        &mut self,
+        address: u32,
+        value: u8,
+    ) -> lisp::WifiSdioBackplaneWrite8Report {
+        wifi_sdio_backplane_write8_report(wifi_sdio::backplane_write8(self.p, address, value))
+    }
+
     fn sdhc_registers(&mut self) -> lisp::SdhcReport {
         micro_sd::enable_sdhc_controllers(self.p);
 
@@ -597,6 +605,29 @@ fn wifi_sdio_backplane_read_status(
     }
 }
 
+fn wifi_sdio_backplane_write8_status(
+    status: wifi_sdio::WifiSdioBackplaneWrite8Status,
+) -> &'static [u8] {
+    match status {
+        wifi_sdio::WifiSdioBackplaneWrite8Status::Ready => b"ready",
+        wifi_sdio::WifiSdioBackplaneWrite8Status::SetupFailed => b"setup-failed",
+        wifi_sdio::WifiSdioBackplaneWrite8Status::AlpWriteFailed => b"alp-write-failed",
+        wifi_sdio::WifiSdioBackplaneWrite8Status::AlpReadFailed => b"alp-read-failed",
+        wifi_sdio::WifiSdioBackplaneWrite8Status::AlpTimeout => b"alp-timeout",
+        wifi_sdio::WifiSdioBackplaneWrite8Status::AlpClearFailed => b"alp-clear-failed",
+        wifi_sdio::WifiSdioBackplaneWrite8Status::WindowHighWriteFailed => {
+            b"window-high-write-failed"
+        }
+        wifi_sdio::WifiSdioBackplaneWrite8Status::WindowMidWriteFailed => {
+            b"window-mid-write-failed"
+        }
+        wifi_sdio::WifiSdioBackplaneWrite8Status::WindowLowWriteFailed => {
+            b"window-low-write-failed"
+        }
+        wifi_sdio::WifiSdioBackplaneWrite8Status::Cmd52Failed => b"cmd52-failed",
+    }
+}
+
 fn wifi_sdio_command_error_report(
     error: wifi_sdio::CommandError,
 ) -> lisp::WifiSdioCommandErrorReport {
@@ -690,6 +721,22 @@ fn wifi_sdio_backplane_read_report(
         window_address: report.window_address,
         response: report.response,
         bytes: report.bytes,
+        last_error: report.last_error.map(wifi_sdio_command_error_report),
+        host: wifi_sdio_host_report(report.host),
+    }
+}
+
+fn wifi_sdio_backplane_write8_report(
+    report: wifi_sdio::WifiSdioBackplaneWrite8Report,
+) -> lisp::WifiSdioBackplaneWrite8Report {
+    lisp::WifiSdioBackplaneWrite8Report {
+        status: wifi_sdio_backplane_write8_status(report.status),
+        setup_status: wifi_sdio_backplane_status(report.setup_status),
+        address: report.address,
+        value: report.value,
+        window_base: report.window_base,
+        window_address: report.window_address,
+        response: report.response,
         last_error: report.last_error.map(wifi_sdio_command_error_report),
         host: wifi_sdio_host_report(report.host),
     }
