@@ -28,6 +28,12 @@ const SDIO_OCR_MEMORY_PRESENT: u32 = 1 << 27;
 const SDIO_OCR_FUNCTIONS_SHIFT: u8 = 28;
 const SD_RCA_SHIFT: u8 = 16;
 const SDIO_CMD5_MAX_ATTEMPTS: u16 = 1000;
+const SDIO_CMD52_RW_FLAG: u32 = 1 << 31;
+const SDIO_CMD52_FUNCTION_SHIFT: u8 = 28;
+const SDIO_CMD52_RAW_FLAG: u32 = 1 << 27;
+const SDIO_CMD52_ADDRESS_SHIFT: u8 = 9;
+const SDIO_CMD52_MAX_FUNCTION: u8 = 7;
+const SDIO_CMD52_MAX_ADDRESS: u32 = 0x1ffff;
 
 const P2_SDIO_DATA_MASK: u32 = 0x0f | (0x0f << 4) | (0x0f << 8) | (0x0f << 12);
 const P2_SDIO_DATA_CFG: u32 = DRIVE_STRONG_INPUT
@@ -68,6 +74,15 @@ pub enum CommandErrorCode {
     CommandLineBusy,
     CommandTimeout,
     CommandStatusError,
+}
+
+#[derive(Clone, Copy)]
+pub enum WifiSdioDirectStatus {
+    Ready,
+    InitFailed,
+    InvalidFunction,
+    InvalidAddress,
+    Cmd52Failed,
 }
 
 #[derive(Clone, Copy)]
@@ -149,6 +164,18 @@ pub struct WifiSdioReport {
     pub host: WifiSdioHostSnapshot,
     pub pins: WifiSdioPinSnapshot,
     pub clock: WifiSdioClockSnapshot,
+}
+
+pub struct WifiSdioDirectReport {
+    pub status: WifiSdioDirectStatus,
+    pub init_status: WifiSdioStatus,
+    pub function: u8,
+    pub address: u32,
+    pub write: bool,
+    pub data: u8,
+    pub response: u32,
+    pub last_error: Option<CommandError>,
+    pub host: WifiSdioHostSnapshot,
 }
 
 #[derive(Clone, Copy)]
@@ -329,6 +356,142 @@ pub fn initialize(p: &Peripherals) -> WifiSdioReport {
     )
 }
 
+pub fn cmd52_read(p: &Peripherals, function: u8, address: u32) -> WifiSdioDirectReport {
+    cmd52_transfer(p, false, function, address, 0, false)
+}
+
+pub fn cmd52_write(p: &Peripherals, function: u8, address: u32, data: u8) -> WifiSdioDirectReport {
+    cmd52_transfer(p, true, function, address, data, false)
+}
+
+fn cmd52_transfer(
+    p: &Peripherals,
+    write: bool,
+    function: u8,
+    address: u32,
+    data: u8,
+    raw: bool,
+) -> WifiSdioDirectReport {
+    if function > SDIO_CMD52_MAX_FUNCTION {
+        return direct_report(
+            p,
+            WifiSdioDirectStatus::InvalidFunction,
+            WifiSdioStatus::Ready,
+            function,
+            address,
+            write,
+            data,
+            0,
+            None,
+        );
+    }
+
+    if address > SDIO_CMD52_MAX_ADDRESS {
+        return direct_report(
+            p,
+            WifiSdioDirectStatus::InvalidAddress,
+            WifiSdioStatus::Ready,
+            function,
+            address,
+            write,
+            data,
+            0,
+            None,
+        );
+    }
+
+    let init = initialize(p);
+    if !matches!(init.status, WifiSdioStatus::Ready) {
+        return direct_report(
+            p,
+            WifiSdioDirectStatus::InitFailed,
+            init.status,
+            function,
+            address,
+            write,
+            data,
+            0,
+            init.last_error,
+        );
+    }
+
+    let argument = cmd52_argument(write, function, raw, address, data);
+    match send_command(
+        &p.SDHC0.core,
+        Command {
+            index: 52,
+            argument,
+            response: ResponseType::Len48,
+            command_type: CommandType::Normal,
+            data_present: false,
+            crc_check: true,
+            index_check: true,
+        },
+    ) {
+        Ok(response) => direct_report(
+            p,
+            WifiSdioDirectStatus::Ready,
+            init.status,
+            function,
+            address,
+            write,
+            (response & 0xff) as u8,
+            response,
+            None,
+        ),
+        Err(error) => direct_report(
+            p,
+            WifiSdioDirectStatus::Cmd52Failed,
+            init.status,
+            function,
+            address,
+            write,
+            data,
+            0,
+            Some(error),
+        ),
+    }
+}
+
+fn cmd52_argument(write: bool, function: u8, raw: bool, address: u32, data: u8) -> u32 {
+    let mut argument = ((function as u32) & 0x07) << SDIO_CMD52_FUNCTION_SHIFT;
+    argument |= (address & SDIO_CMD52_MAX_ADDRESS) << SDIO_CMD52_ADDRESS_SHIFT;
+    argument |= data as u32;
+
+    if write {
+        argument |= SDIO_CMD52_RW_FLAG;
+    }
+    if raw {
+        argument |= SDIO_CMD52_RAW_FLAG;
+    }
+
+    argument
+}
+
+fn direct_report(
+    p: &Peripherals,
+    status: WifiSdioDirectStatus,
+    init_status: WifiSdioStatus,
+    function: u8,
+    address: u32,
+    write: bool,
+    data: u8,
+    response: u32,
+    last_error: Option<CommandError>,
+) -> WifiSdioDirectReport {
+    WifiSdioDirectReport {
+        status,
+        init_status,
+        function,
+        address,
+        write,
+        data,
+        response,
+        last_error,
+        host: host_snapshot(p),
+    }
+}
+
 fn report(
     p: &Peripherals,
     status: WifiSdioStatus,
@@ -346,31 +509,7 @@ fn report(
         function_count: ((cmd5_response >> SDIO_OCR_FUNCTIONS_SHIFT) & 0x07) as u8,
         memory_present: cmd5_response & SDIO_OCR_MEMORY_PRESENT != 0,
         last_error,
-        host: WifiSdioHostSnapshot {
-            wrap_ctl: p.SDHC0.wrap.ctl.read().bits(),
-            gp_out: core.gp_out_r.read().bits(),
-            gp_in: core.gp_in_r.read().bits(),
-            xfer_mode: core.xfer_mode_r.read().bits(),
-            host_ctrl1: core.host_ctrl1_r.read().bits(),
-            host_ctrl2: core.host_ctrl2_r.read().bits(),
-            tout_ctrl: core.tout_ctrl_r.read().bits(),
-            clk_ctrl: core.clk_ctrl_r.read().bits(),
-            pwr_ctrl: core.pwr_ctrl_r.read().bits(),
-            sw_rst: core.sw_rst_r.read().bits(),
-            normal_int: core.normal_int_stat_r.read().bits(),
-            error_int: core.error_int_stat_r.read().bits(),
-            normal_int_stat_en: core.normal_int_stat_en_r.read().bits(),
-            error_int_stat_en: core.error_int_stat_en_r.read().bits(),
-            normal_int_signal_en: core.normal_int_signal_en_r.read().bits(),
-            error_int_signal_en: core.error_int_signal_en_r.read().bits(),
-            pstate: core.pstate_reg.read().bits(),
-            cmd: core.cmd_r.read().bits(),
-            argument: core.argument_r.read().bits(),
-            response01: core.resp01_r.read().bits(),
-            response23: core.resp23_r.read().bits(),
-            response45: core.resp45_r.read().bits(),
-            response67: core.resp67_r.read().bits(),
-        },
+        host: host_snapshot(p),
         pins: WifiSdioPinSnapshot {
             p2_sel0: p.HSIOM.prt2.port_sel0.read().bits(),
             p2_sel1: p.HSIOM.prt2.port_sel1.read().bits(),
@@ -389,6 +528,35 @@ fn report(
             fll_config2: p.SRSS.clk_fll_config2.read().bits(),
             fll_status: p.SRSS.clk_fll_status.read().bits(),
         },
+    }
+}
+
+fn host_snapshot(p: &Peripherals) -> WifiSdioHostSnapshot {
+    let core = &p.SDHC0.core;
+    WifiSdioHostSnapshot {
+        wrap_ctl: p.SDHC0.wrap.ctl.read().bits(),
+        gp_out: core.gp_out_r.read().bits(),
+        gp_in: core.gp_in_r.read().bits(),
+        xfer_mode: core.xfer_mode_r.read().bits(),
+        host_ctrl1: core.host_ctrl1_r.read().bits(),
+        host_ctrl2: core.host_ctrl2_r.read().bits(),
+        tout_ctrl: core.tout_ctrl_r.read().bits(),
+        clk_ctrl: core.clk_ctrl_r.read().bits(),
+        pwr_ctrl: core.pwr_ctrl_r.read().bits(),
+        sw_rst: core.sw_rst_r.read().bits(),
+        normal_int: core.normal_int_stat_r.read().bits(),
+        error_int: core.error_int_stat_r.read().bits(),
+        normal_int_stat_en: core.normal_int_stat_en_r.read().bits(),
+        error_int_stat_en: core.error_int_stat_en_r.read().bits(),
+        normal_int_signal_en: core.normal_int_signal_en_r.read().bits(),
+        error_int_signal_en: core.error_int_signal_en_r.read().bits(),
+        pstate: core.pstate_reg.read().bits(),
+        cmd: core.cmd_r.read().bits(),
+        argument: core.argument_r.read().bits(),
+        response01: core.resp01_r.read().bits(),
+        response23: core.resp23_r.read().bits(),
+        response45: core.resp45_r.read().bits(),
+        response67: core.resp67_r.read().bits(),
     }
 }
 

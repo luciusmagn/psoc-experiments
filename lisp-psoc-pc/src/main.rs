@@ -541,6 +541,19 @@ impl lisp::Board for PsocBoard<'_> {
         }
     }
 
+    fn wifi_cmd52_read(&mut self, function: u8, address: u32) -> lisp::WifiSdioDirectReport {
+        wifi_sdio_direct_report(wifi_sdio::cmd52_read(self.p, function, address))
+    }
+
+    fn wifi_cmd52_write(
+        &mut self,
+        function: u8,
+        address: u32,
+        data: u8,
+    ) -> lisp::WifiSdioDirectReport {
+        wifi_sdio_direct_report(wifi_sdio::cmd52_write(self.p, function, address, data))
+    }
+
     fn sdhc_registers(&mut self) -> lisp::SdhcReport {
         micro_sd::enable_sdhc_controllers(self.p);
 
@@ -669,6 +682,16 @@ fn wifi_sdio_command_error(code: wifi_sdio::CommandErrorCode) -> &'static [u8] {
     }
 }
 
+fn wifi_sdio_direct_status(status: wifi_sdio::WifiSdioDirectStatus) -> &'static [u8] {
+    match status {
+        wifi_sdio::WifiSdioDirectStatus::Ready => b"ready",
+        wifi_sdio::WifiSdioDirectStatus::InitFailed => b"init-failed",
+        wifi_sdio::WifiSdioDirectStatus::InvalidFunction => b"invalid-function",
+        wifi_sdio::WifiSdioDirectStatus::InvalidAddress => b"invalid-address",
+        wifi_sdio::WifiSdioDirectStatus::Cmd52Failed => b"cmd52-failed",
+    }
+}
+
 fn wifi_sdio_command_error_report(
     error: wifi_sdio::CommandError,
 ) -> lisp::WifiSdioCommandErrorReport {
@@ -682,6 +705,20 @@ fn wifi_sdio_command_error_report(
         pstate_after_write: error.pstate_after_write,
         normal_int_after_write: error.normal_int_after_write,
         error_int_after_write: error.error_int_after_write,
+    }
+}
+
+fn wifi_sdio_direct_report(report: wifi_sdio::WifiSdioDirectReport) -> lisp::WifiSdioDirectReport {
+    lisp::WifiSdioDirectReport {
+        status: wifi_sdio_direct_status(report.status),
+        init_status: wifi_sdio_status(report.init_status),
+        function: report.function,
+        address: report.address,
+        write: report.write,
+        data: report.data,
+        response: report.response,
+        last_error: report.last_error.map(wifi_sdio_command_error_report),
+        host: wifi_sdio_host_report(report.host),
     }
 }
 

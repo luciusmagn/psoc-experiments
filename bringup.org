@@ -894,6 +894,66 @@ two I/O functions and no memory function. The next Wi-Fi milestone is not
 TCP/IP yet; it is CMD52/CMD53 access to CCCR/FBR and then the Broadcom/WHD
 mailbox/firmware protocol.
 
+* 2026-06-22 Wi-Fi CMD52 diagnostics
+
+Added Lisp diagnostics for SDIO CMD52 direct byte transfers:
+
+1. =(wifi-cmd52-read function address)=
+2. =(wifi-cmd52-write function address byte)=
+
+These forms currently initialize/select the CYW4343W at the start of each
+call. That makes individual diagnostics repeatable, but it also means a
+separate read after a write does not observe the previous call's enabled
+state; the later read starts from a fresh CMD0/CMD5/CMD3/CMD7 sequence.
+The next form should be a higher-level operation that enables functions
+and polls ready within one selected-card session.
+
+Read-only smoke tests:
+
+#+begin_example
+(wifi-cmd52-read 0 #x00)
+=> ((status . ready)
+    (init-status . ready)
+    (function . 0)
+    (address . #x00000000)
+    (write . #f)
+    (data . #x00000032)
+    (response . #x00001032)
+    (last-error)
+    ...)
+
+(wifi-cmd52-read 0 #x02)
+=> ... (data . #x00000000) ...
+
+(wifi-cmd52-read 0 #x03)
+=> ... (data . #x00000000) ...
+
+(wifi-cmd52-read 0 #x100)
+=> ... (data . #x00000000) ...
+
+(wifi-cmd52-read 0 #x200)
+=> ... (data . #x00000000) ...
+#+end_example
+
+Controlled write smoke test:
+
+#+begin_example
+(wifi-cmd52-write 0 #x02 #x06)
+=> ((status . ready)
+    (init-status . ready)
+    (function . 0)
+    (address . #x00000002)
+    (write . #t)
+    (data . #x00000006)
+    (response . #x00001006)
+    (last-error)
+    ...)
+#+end_example
+
+=#x02= is CCCR I/O Enable, and =#x06= requests functions 1 and 2. The CMD52
+transaction itself is working; the follow-up readiness polling needs to
+happen in one firmware operation rather than as separate REPL forms.
+
 * Next actions
 
 1. Add REPL history and better editing across continuation lines.
@@ -902,6 +962,7 @@ mailbox/firmware protocol.
 3. Add a FAT/exFAT-aware storage layer after raw block reads/writes work.
 4. Test the newer Infineon target =infineon/cy8cxxa.cfg= as a replacement
    for obsolete =target/psoc6_2m.cfg=.
-5. Add CMD52/CMD53 Lisp diagnostics on top of =hal::wifi_sdio=.
-6. Start Wi-Fi from a known-good Infineon or Zephyr sample before trying
+5. Add a single-form Wi-Fi function enable/poll diagnostic.
+6. Add CMD53 diagnostics on top of =hal::wifi_sdio=.
+7. Start Wi-Fi from a known-good Infineon or Zephyr sample before trying
    to hand-port CYW4343W support.
