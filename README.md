@@ -7,13 +7,15 @@ Schematic: <https://www.infineon.com/dgdl/Infineon-CY8CPROTO-062-4343W_Schematic
 
 ## Building
 
-There are multiple binary crates in this repository.
-There are multiple cores in this SoC.
+The active firmware is split across the two cores in the PSoC 6:
 
-### Repo-local tooling
+- `lisp-psoc-pc/` builds the CM4 serial-console Lisp firmware.
+- `psoc6-cm0-bootloader/` builds the CM0+ bootloader that packages and
+  releases the CM4 application.
+- `psoc6-pac/` provides the generated peripheral access API.
 
-The active Lisp firmware can be built and flashed with Chez Scheme scripts
-under `tools/`:
+Build and flash the active firmware with the Chez Scheme scripts under
+`tools/`:
 
 ```sh
 tools/setup-modustoolbox.scm --check
@@ -66,76 +68,12 @@ tools/send-lisp.scm '(wifi-setup-backplane)'
     Please make sure this is available to all shell/terminal processes,
     so it is good to set this in your "rc".
 
-### Run a Cortex-M4F binary
-
-1. Open terminal
-
-    ```sh
-    # The scripts path might be different depending on whether you
-    # have built and installed Infineons openocd yourself or if
-    # have downloaded the pre-built Cypress toolset. This tutorial
-    # assumes the latter.
-
-    # Make sure you are in this repo
-    cd /path/to/checkout/of/psoc-experiments
-
-    ${OPENOCD_ROOT}/bin/openocd -s ${OPENOCD_ROOT}/scripts
-    ```
-
-2. Open another terminal
-
-    ```sh
-    # Make sure you are in this repo
-    cd /path/to/checkout/of/psoc-experiments
-
-    # If you have another installation of GDB,
-    # e.g. Ubuntu calls its GDB `gdb-multiarch`, set
-    # `export RUST_GDB=gdb-multiarch`
-    export RUST_GDB=arm-none-eabi-gdb
-
-    cd psoc6-cm4-hello-world
-    cargo run --release
-    ```
-
-### Run a Cortex-M0+ binary
-
-1. Open terminal
-
-    ```sh
-    # The scripts path might be different depending on whether you
-    # have built and installed Infineons openocd yourself or if
-    # have downloaded the pre-built Cypress toolset. This tutorial
-    # assumes the latter.
-
-    # Make sure you are in this repo
-    cd /path/to/checkout/of/psoc-experiments
-
-    ${OPENOCD_ROOT}/bin/openocd -s ${OPENOCD_ROOT}/scripts
-    ```
-
-2. Open another terminal
-  
-    ```sh
-    # Make sure you are in this repo
-    cd /path/to/checkout/of/psoc-experiments
-
-    # If you have another installation of GDB,
-    # e.g. Ubuntu calls its GDB `gdb-multiarch`, set
-    # `export RUST_GDB=gdb-multiarch`
-    export RUST_GDB=arm-none-eabi-gdb
-
-    cd psoc6-cm0-hello-world
-    cargo run --release
-    ```
-
-So if you want your code to run outside of the debugger, compile it for the
-Cortex-M0+ (thumbv6m-none-eabi). Also if you want your code to run outside of
-the debugger, you can't use semihosting.
-
-### Run bootloader application
+### Bootloader application
 
 Check out [psoc6-cm0-bootloader/README.md](./psoc6-cm0-bootloader/README.md)
-for instructions.
+for the manual bootloader packaging flow. Prefer `tools/build-lisp.scm` for
+normal work because it performs the CM4 build, `app.bin` packaging, and CM0+
+bootloader build together.
 
 ## Misc. notes
 

@@ -17,10 +17,10 @@ use panic_halt as _;
 /// Build this with
 ///
 /// ```console
-/// pushd ../psoc6-cm4-rtic
+/// pushd ../lisp-psoc-pc
 /// cargo build --release --features=use-bootloader
 /// popd
-/// arm-none-eabi-objcopy -O binary ../psoc6-cm4-rtic/target/thumbv7em-none-eabihf/release/psoc6-cm4-rtic ./src/app.bin
+/// arm-none-eabi-objcopy -O binary ../lisp-psoc-pc/target/thumbv7em-none-eabihf/release/lisp-psoc-pc ./src/app.bin
 /// ```
 #[link_section = ".app_flash"]
 #[used]

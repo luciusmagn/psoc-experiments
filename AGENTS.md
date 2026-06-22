@@ -20,9 +20,6 @@ and commands that are known to work on the attached board.
 - `lisp-psoc-pc/`: current CM4 serial console firmware. This is the
   active place for the tiny Lisp machine work unless a better split is
   deliberately introduced.
-- `morse-code*/`, `psoc6-cm*-*`, `simple-db/`: older experiments and
-  reference crates. Do not churn them while working on the console Lisp
-  machine unless the task explicitly needs it.
 - `probe-rs-targets/`: local probe-rs target metadata and compatibility
   notes.
 - `backups/`: flash and firmware backups captured before risky changes.
