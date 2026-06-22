@@ -383,6 +383,12 @@ pub struct WifiSdioCmd53ReadReport {
 
 type LispResult<T> = Result<T, Error>;
 
+#[derive(Clone, Copy)]
+pub enum LoadFileOutcome {
+    Loaded(Value),
+    NotReady(StoreReadReport),
+}
+
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub enum Value {
     Nil,
@@ -758,6 +764,21 @@ impl Machine {
 
         self.collect_garbage();
         Ok(())
+    }
+
+    pub fn load_file<B: Board>(
+        &mut self,
+        path: StringBytes,
+        board: &mut B,
+    ) -> LispResult<LoadFileOutcome> {
+        self.collect_garbage();
+        let result = self.load_file_in_env(path, Value::Nil, board, 0);
+        self.collect_garbage();
+        result
+    }
+
+    pub fn write_value_to<W: Write>(&self, value: Value, output: &mut W) -> fmt::Result {
+        self.write_value(value, output)
     }
 
     fn reset_heap(&mut self) {
@@ -1360,18 +1381,10 @@ impl Machine {
             Primitive::Load => {
                 self.expect_count(args, 1)?;
                 let path = self.expect_string(args[0])?;
-                let report = board.read_file(path);
-                if !report.ready {
-                    return self.store_read_report(report);
+                match self.load_file_in_env(path, env, board, depth + 1)? {
+                    LoadFileOutcome::Loaded(value) => Ok(value),
+                    LoadFileOutcome::NotReady(report) => self.store_read_report(report),
                 }
-
-                let input = &report.content.bytes[..report.content.len as usize];
-                let expression = self.read(input)?;
-                let previous_expression = self.active_expression;
-                self.active_expression = expression;
-                let result = self.eval(expression, env, board, depth + 1);
-                self.active_expression = previous_expression;
-                result
             }
             Primitive::Ls => {
                 self.expect_count(args, 0)?;
@@ -1457,6 +1470,27 @@ impl Machine {
             index += 1;
         }
         Ok(Value::Int(result))
+    }
+
+    fn load_file_in_env<B: Board>(
+        &mut self,
+        path: StringBytes,
+        env: Value,
+        board: &mut B,
+        depth: u8,
+    ) -> LispResult<LoadFileOutcome> {
+        let report = board.read_file(path);
+        if !report.ready {
+            return Ok(LoadFileOutcome::NotReady(report));
+        }
+
+        let input = &report.content.bytes[..report.content.len as usize];
+        let expression = self.read(input)?;
+        let previous_expression = self.active_expression;
+        self.active_expression = expression;
+        let result = self.eval(expression, env, board, depth);
+        self.active_expression = previous_expression;
+        result.map(LoadFileOutcome::Loaded)
     }
 
     fn primitive_subtract(&self, args: &[Value]) -> LispResult<Value> {

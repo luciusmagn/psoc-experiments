@@ -1,7 +1,7 @@
 #![no_std]
 #![no_main]
 
-use core::fmt::Write;
+use core::fmt::{self, Write};
 
 use cortex_m_rt::entry;
 use hal::{board, console};
@@ -46,7 +46,11 @@ fn main() -> ! {
         console::UART_BAUD
     )
     .ok();
-    writeln!(console, "Try: (help), (led off), (regs), (+ 1 2 3)").ok();
+    {
+        let mut board = board_state.lisp_board(&p);
+        load_boot_file(&mut machine, &mut board, &mut console).ok();
+    }
+    writeln!(console, "Try: (help), (ls), (cat \"boot.lisp\"), (+ 1 2 3)").ok();
     console.prompt();
 
     let mut line = [0u8; 384];
@@ -105,6 +109,50 @@ fn main() -> ! {
         delay.delay_ms(1);
         board_state.tick_ms(&p);
     }
+}
+
+fn load_boot_file<B: lisp::Board, W: Write>(
+    machine: &mut lisp::Machine,
+    board: &mut B,
+    output: &mut W,
+) -> fmt::Result {
+    let path = string_bytes(b"boot.lisp");
+    match machine.load_file(path, board) {
+        Ok(lisp::LoadFileOutcome::Loaded(value)) => {
+            write!(output, "boot.lisp => ")?;
+            machine.write_value_to(value, output)?;
+            writeln!(output)
+        }
+        Ok(lisp::LoadFileOutcome::NotReady(report)) => {
+            if report.status != b"not-found" {
+                write!(output, "boot.lisp: ")?;
+                write_ascii(report.status, output)?;
+                writeln!(output)?;
+            }
+            Ok(())
+        }
+        Err(error) => writeln!(output, "boot.lisp error: {}", error.message()),
+    }
+}
+
+fn string_bytes(value: &[u8]) -> lisp::StringBytes {
+    let mut bytes = [0u8; lisp::MAX_STRING_BYTES];
+    let mut index = 0usize;
+    while index < value.len() && index < lisp::MAX_STRING_BYTES {
+        bytes[index] = value[index];
+        index += 1;
+    }
+    lisp::StringBytes {
+        len: index as u8,
+        bytes,
+    }
+}
+
+fn write_ascii<W: Write>(value: &[u8], output: &mut W) -> fmt::Result {
+    for &byte in value {
+        output.write_char(byte as char)?;
+    }
+    Ok(())
 }
 
 fn input_needs_more(input: &[u8]) -> bool {

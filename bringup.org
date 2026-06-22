@@ -1184,13 +1184,37 @@ Implementation stratification:
 2. =hal::board= translates the store report into Lisp-facing data.
 3. =lisp.rs= exposes =(ls)= and =(cat ...)= as normal Lisp primitives.
 
+* 2026-06-22 Boot file auto-load
+
+Added startup loading for =boot.lisp= from the raw Lisp store. The boot
+path is intentionally conservative:
+
+1. Missing =boot.lisp= is silent, so a blank card still boots to the REPL.
+2. Storage failures print one =boot.lisp: STATUS= line.
+3. Reader/evaluator failures print one =boot.lisp error: MESSAGE= line.
+4. Successful loads print the returned value and continue to the prompt.
+
+The existing =(load "path")= primitive and boot loading now share the same
+reader/evaluator helper inside =lisp.rs=, so active-expression tracking and
+GC behavior stay consistent.
+
+Live validation after flashing and rebooting with the earlier test file on
+the card:
+
+#+begin_example
+PSoC6 lisp-psoc-pc
+UART: SCB5 P5.1 TX / P5.0 RX, 115200 8N1
+boot.lisp => 42
+Try: (help), (ls), (cat "boot.lisp"), (+ 1 2 3)
+
+lisp>
+#+end_example
+
 * Next actions
 
 1. Add REPL history and better editing across continuation lines.
-2. Add automatic =(load "boot.lisp")= during boot once the failure mode is
-   boring enough.
-3. Add a FAT/exFAT-aware storage layer after raw block reads/writes work.
-4. Test the newer Infineon target =infineon/cy8cxxa.cfg= as a replacement
+2. Add a FAT/exFAT-aware storage layer after raw block reads/writes work.
+3. Test the newer Infineon target =infineon/cy8cxxa.cfg= as a replacement
    for obsolete =target/psoc6_2m.cfg=.
-5. Start Wi-Fi from a known-good Infineon or Zephyr sample before trying
+4. Start Wi-Fi from a known-good Infineon or Zephyr sample before trying
    to hand-port CYW4343W support.
