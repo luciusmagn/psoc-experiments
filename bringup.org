@@ -830,6 +830,70 @@ directory data is treated as an empty store on write and =not-found= on
 read. This means the earlier fill-pattern test sector was safely replaced
 by the store directory during the first =save-file=.
 
+* 2026-06-22 Wi-Fi SDIO bring-up
+
+Started the Wi-Fi work as the first explicit HAL split:
+
+- =hal::wifi_sdio= owns CYW4343W power sequencing, P2 SDIO pin muxing,
+  SDHC0 clocking, SDHC0 command traffic, and low-level register snapshots.
+- =main.rs= maps HAL reports into Lisp-facing report structs.
+- =lisp.rs= exposes the diagnostic as =(wifi-sdio-init)= and prints only
+  association lists.
+
+The first SDIO attempts configured P2 correctly but CMD0 timed out. The
+diagnostic report showed =SW_RST = #x2= after the timeout, meaning SDHC0's
+command reset could not clear. Infineon's HAL source maps SDHC clocks for
+this device family as:
+
+| Controller | HF root |
+|------------+---------|
+| SDHC0      | CLK_HF4 |
+| SDHC1      | CLK_HF2 |
+
+The working microSD path had configured =CLK_HF2= for SDHC1. The Wi-Fi path
+had not configured =CLK_HF4= for SDHC0. After enabling =CLK_HF4= from
+=CLK_PATH0= with divide-by-2, SDIO enumeration worked:
+
+#+begin_example
+(wifi-sdio-init)
+=> ((status . ready)
+    (CMD5.OCR . #xa0ffff00)
+    (attempts . 2)
+    (RCA . #x00000001)
+    (functions . 2)
+    (memory-present . #f)
+    (last-error)
+    (SDHC0
+      (WRAP.CTL . #x80000000)
+      (GP_OUT . #x0000003b)
+      (CLK_CTRL . #x00003e0f)
+      (SW_RST . #x00000000)
+      (PSTATE . #x03f30000)
+      (CMD_R . #x00000703)
+      (ARGUMENT . #x00010000)
+      (RESP01 . #x00001e00))
+    (P2
+      (P2.SEL0 . #x1a1a1a1a)
+      (P2.SEL1 . #x00001a1a)
+      (P2.CFG . #x06eeeeee)
+      (P2.OUT . #x00000070)
+      (P2.IN . #x0000011f))
+    (clock
+      (CLK_HF4 . #x80000010)))
+#+end_example
+
+The CYW4343W now answers the SDIO card-identification sequence:
+
+1. CMD0 go-idle.
+2. CMD5 IO OCR polling.
+3. CMD3 RCA assignment.
+4. CMD7 card select.
+
+The reported OCR =#xa0ffff00= means the module is an SDIO-only card with
+two I/O functions and no memory function. The next Wi-Fi milestone is not
+TCP/IP yet; it is CMD52/CMD53 access to CCCR/FBR and then the Broadcom/WHD
+mailbox/firmware protocol.
+
 * Next actions
 
 1. Add REPL history and better editing across continuation lines.
@@ -838,5 +902,6 @@ by the store directory during the first =save-file=.
 3. Add a FAT/exFAT-aware storage layer after raw block reads/writes work.
 4. Test the newer Infineon target =infineon/cy8cxxa.cfg= as a replacement
    for obsolete =target/psoc6_2m.cfg=.
-5. Start Wi-Fi from a known-good Infineon or Zephyr sample before trying
+5. Add CMD52/CMD53 Lisp diagnostics on top of =hal::wifi_sdio=.
+6. Start Wi-Fi from a known-good Infineon or Zephyr sample before trying
    to hand-port CYW4343W support.

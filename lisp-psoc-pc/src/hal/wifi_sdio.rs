@@ -1,0 +1,658 @@
+use psoc6_pac::{sdhc0, Peripherals};
+
+const HSIOM_SEL_SDHC: u32 = 26;
+const DRIVE_STRONG: u32 = 0x06;
+const DRIVE_STRONG_INPUT: u32 = 0x0e;
+
+const NORMAL_INT_ALL: u16 = 0x1fff;
+const ERROR_INT_ALL: u16 = 0x07ff;
+const NORMAL_INT_CMD_COMPLETE: u16 = 1 << 0;
+const NORMAL_INT_XFER_COMPLETE: u16 = 1 << 1;
+const NORMAL_INT_ERROR: u16 = 1 << 15;
+const PSTATE_CMD_INHIBIT: u32 = 1 << 0;
+const CLK_CTRL_INTERNAL_CLK_EN: u16 = 1 << 0;
+const CLK_CTRL_INTERNAL_CLK_STABLE: u16 = 1 << 1;
+const CLK_CTRL_SD_CLK_EN: u16 = 1 << 2;
+const CLK_CTRL_PLL_ENABLE: u16 = 1 << 3;
+const HOST_CTRL1_CARD_DETECT_TEST_LEVEL: u8 = 1 << 6;
+const HOST_CTRL1_CARD_DETECT_SIGNAL_SELECT: u8 = 1 << 7;
+const HOST_CTRL2_HOST_VERSION_4_ENABLE: u16 = 1 << 12;
+const GP_OUT_BASIC_SD: u32 = (1 << 0) | (1 << 1) | (1 << 3) | (1 << 4) | (1 << 5);
+
+const SDHC_INPUT_CLOCK_HZ: u32 = 50_000_000;
+const SD_INIT_CLOCK_HZ: u32 = 400_000;
+const SD_INIT_CLOCK_DIVIDER: u16 = ((SDHC_INPUT_CLOCK_HZ / SD_INIT_CLOCK_HZ) >> 1) as u16;
+const SDIO_OCR_VOLTAGE_MASK: u32 = 0x00ff_8000;
+const SDIO_OCR_BUSY: u32 = 1 << 31;
+const SDIO_OCR_MEMORY_PRESENT: u32 = 1 << 27;
+const SDIO_OCR_FUNCTIONS_SHIFT: u8 = 28;
+const SD_RCA_SHIFT: u8 = 16;
+const SDIO_CMD5_MAX_ATTEMPTS: u16 = 1000;
+
+const P2_SDIO_DATA_MASK: u32 = 0x0f | (0x0f << 4) | (0x0f << 8) | (0x0f << 12);
+const P2_SDIO_DATA_CFG: u32 = DRIVE_STRONG_INPUT
+    | (DRIVE_STRONG_INPUT << 4)
+    | (DRIVE_STRONG_INPUT << 8)
+    | (DRIVE_STRONG_INPUT << 12);
+const P2_SDIO_CMD_CLK_MASK: u32 = (0x0f << 16) | (0x0f << 20);
+const P2_SDIO_CMD_CLK_CFG: u32 = (DRIVE_STRONG_INPUT << 16) | (DRIVE_STRONG_INPUT << 20);
+const P2_WIFI_REG_ON_MASK: u32 = 0x0f << 24;
+const P2_WIFI_REG_ON_CFG: u32 = DRIVE_STRONG << 24;
+
+const P2_SDIO_DATA_HSIOM_MASK: u32 = 0xff | (0xff << 8) | (0xff << 16) | (0xff << 24);
+const P2_SDIO_DATA_HSIOM: u32 =
+    HSIOM_SEL_SDHC | (HSIOM_SEL_SDHC << 8) | (HSIOM_SEL_SDHC << 16) | (HSIOM_SEL_SDHC << 24);
+const P2_SDIO_CMD_CLK_HSIOM_MASK: u32 = 0xff | (0xff << 8);
+const P2_SDIO_CMD_CLK_HSIOM: u32 = HSIOM_SEL_SDHC | (HSIOM_SEL_SDHC << 8);
+
+const CLK_ROOT_ENABLE: u32 = 1 << 31;
+const CLK_ROOT_MUX_PATH0: u32 = 0;
+const CLK_ROOT_DIV_BY_2: u32 = 1 << 4;
+const SDHC0_HF_CLOCK_INDEX: usize = 4;
+
+#[derive(Clone, Copy)]
+pub enum WifiSdioStatus {
+    Ready,
+    ClockNotStable,
+    ResetTimeout,
+    Cmd0Failed,
+    Cmd5Failed,
+    Cmd5Busy,
+    Cmd3Failed,
+    Cmd7Failed,
+    SelectBusy,
+}
+
+#[derive(Clone, Copy)]
+pub enum CommandErrorCode {
+    CommandLineBusy,
+    CommandTimeout,
+    CommandStatusError,
+}
+
+#[derive(Clone, Copy)]
+pub struct CommandError {
+    pub code: CommandErrorCode,
+    pub normal_int: u16,
+    pub error_int: u16,
+    pub pstate: u32,
+    pub command: u16,
+    pub argument: u32,
+    pub pstate_after_write: u32,
+    pub normal_int_after_write: u16,
+    pub error_int_after_write: u16,
+}
+
+#[derive(Clone, Copy)]
+struct CommandTrace {
+    command: u16,
+    argument: u32,
+    pstate_after_write: u32,
+    normal_int_after_write: u16,
+    error_int_after_write: u16,
+}
+
+pub struct WifiSdioHostSnapshot {
+    pub wrap_ctl: u32,
+    pub gp_out: u32,
+    pub gp_in: u32,
+    pub xfer_mode: u16,
+    pub host_ctrl1: u8,
+    pub host_ctrl2: u16,
+    pub tout_ctrl: u8,
+    pub clk_ctrl: u16,
+    pub pwr_ctrl: u8,
+    pub sw_rst: u8,
+    pub normal_int: u16,
+    pub error_int: u16,
+    pub normal_int_stat_en: u16,
+    pub error_int_stat_en: u16,
+    pub normal_int_signal_en: u16,
+    pub error_int_signal_en: u16,
+    pub pstate: u32,
+    pub cmd: u16,
+    pub argument: u32,
+    pub response01: u32,
+    pub response23: u32,
+    pub response45: u32,
+    pub response67: u32,
+}
+
+pub struct WifiSdioPinSnapshot {
+    pub p2_sel0: u32,
+    pub p2_sel1: u32,
+    pub p2_cfg: u32,
+    pub p2_out: u32,
+    pub p2_in: u32,
+}
+
+pub struct WifiSdioClockSnapshot {
+    pub path0: u32,
+    pub root0: u32,
+    pub root1: u32,
+    pub root2: u32,
+    pub root3: u32,
+    pub root4: u32,
+    pub fll_config: u32,
+    pub fll_config2: u32,
+    pub fll_status: u32,
+}
+
+pub struct WifiSdioReport {
+    pub status: WifiSdioStatus,
+    pub cmd5_response: u32,
+    pub cmd5_attempts: u16,
+    pub rca: u16,
+    pub function_count: u8,
+    pub memory_present: bool,
+    pub last_error: Option<CommandError>,
+    pub host: WifiSdioHostSnapshot,
+    pub pins: WifiSdioPinSnapshot,
+    pub clock: WifiSdioClockSnapshot,
+}
+
+#[derive(Clone, Copy)]
+enum ResponseType {
+    None = 0,
+    Len48 = 2,
+    Len48Busy = 3,
+}
+
+#[derive(Clone, Copy)]
+enum CommandType {
+    Normal = 0,
+}
+
+#[derive(Clone, Copy)]
+struct Command {
+    index: u8,
+    argument: u32,
+    response: ResponseType,
+    command_type: CommandType,
+    data_present: bool,
+    crc_check: bool,
+    index_check: bool,
+}
+
+pub fn initialize(p: &Peripherals) -> WifiSdioReport {
+    configure_wifi_power_pin(p);
+    wifi_power_off(p);
+    delay_ms(10);
+    wifi_power_on(p);
+    delay_ms(200);
+
+    configure_sdhc0_clock(p);
+    configure_sdio_pins(p);
+    p.SDHC0.wrap.ctl.write(|w| w.enable().set_bit());
+    let core = &p.SDHC0.core;
+
+    if !enable_internal_clock(core) {
+        return report(p, WifiSdioStatus::ClockNotStable, 0, 0, 0, None);
+    }
+    if !software_reset_all(core) {
+        return report(p, WifiSdioStatus::ResetTimeout, 0, 0, 0, None);
+    }
+
+    configure_host_for_identification(core);
+    enable_card_power(core);
+    change_card_clock(core, SD_INIT_CLOCK_DIVIDER);
+    delay_ms(1000);
+    clear_interrupts(core);
+
+    if let Err(error) = send_command(
+        core,
+        Command {
+            index: 0,
+            argument: 0,
+            response: ResponseType::None,
+            command_type: CommandType::Normal,
+            data_present: false,
+            crc_check: false,
+            index_check: false,
+        },
+    ) {
+        return report(p, WifiSdioStatus::Cmd0Failed, 0, 0, 0, Some(error));
+    }
+
+    let mut cmd5_response = 0;
+    let mut cmd5_attempts = 0;
+    while cmd5_attempts < SDIO_CMD5_MAX_ATTEMPTS {
+        cmd5_attempts += 1;
+        cmd5_response = match send_command(
+            core,
+            Command {
+                index: 5,
+                argument: SDIO_OCR_VOLTAGE_MASK,
+                response: ResponseType::Len48,
+                command_type: CommandType::Normal,
+                data_present: false,
+                crc_check: false,
+                index_check: false,
+            },
+        ) {
+            Ok(response) => response,
+            Err(error) => {
+                return report(
+                    p,
+                    WifiSdioStatus::Cmd5Failed,
+                    cmd5_response,
+                    cmd5_attempts,
+                    0,
+                    Some(error),
+                );
+            }
+        };
+
+        if cmd5_response & SDIO_OCR_BUSY != 0 {
+            break;
+        }
+        delay_ms(1);
+    }
+
+    if cmd5_response & SDIO_OCR_BUSY == 0 {
+        return report(
+            p,
+            WifiSdioStatus::Cmd5Busy,
+            cmd5_response,
+            cmd5_attempts,
+            0,
+            None,
+        );
+    }
+
+    let rca_response = match send_command(
+        core,
+        Command {
+            index: 3,
+            argument: 0,
+            response: ResponseType::Len48,
+            command_type: CommandType::Normal,
+            data_present: false,
+            crc_check: true,
+            index_check: true,
+        },
+    ) {
+        Ok(response) => response,
+        Err(error) => {
+            return report(
+                p,
+                WifiSdioStatus::Cmd3Failed,
+                cmd5_response,
+                cmd5_attempts,
+                0,
+                Some(error),
+            );
+        }
+    };
+    let rca = (rca_response >> SD_RCA_SHIFT) as u16;
+
+    if let Err(error) = send_command(
+        core,
+        Command {
+            index: 7,
+            argument: (rca as u32) << SD_RCA_SHIFT,
+            response: ResponseType::Len48Busy,
+            command_type: CommandType::Normal,
+            data_present: false,
+            crc_check: false,
+            index_check: false,
+        },
+    ) {
+        return report(
+            p,
+            WifiSdioStatus::Cmd7Failed,
+            cmd5_response,
+            cmd5_attempts,
+            rca,
+            Some(error),
+        );
+    }
+
+    if !wait_transfer_complete(core) {
+        return report(
+            p,
+            WifiSdioStatus::SelectBusy,
+            cmd5_response,
+            cmd5_attempts,
+            rca,
+            None,
+        );
+    }
+
+    report(
+        p,
+        WifiSdioStatus::Ready,
+        cmd5_response,
+        cmd5_attempts,
+        rca,
+        None,
+    )
+}
+
+fn report(
+    p: &Peripherals,
+    status: WifiSdioStatus,
+    cmd5_response: u32,
+    cmd5_attempts: u16,
+    rca: u16,
+    last_error: Option<CommandError>,
+) -> WifiSdioReport {
+    let core = &p.SDHC0.core;
+    WifiSdioReport {
+        status,
+        cmd5_response,
+        cmd5_attempts,
+        rca,
+        function_count: ((cmd5_response >> SDIO_OCR_FUNCTIONS_SHIFT) & 0x07) as u8,
+        memory_present: cmd5_response & SDIO_OCR_MEMORY_PRESENT != 0,
+        last_error,
+        host: WifiSdioHostSnapshot {
+            wrap_ctl: p.SDHC0.wrap.ctl.read().bits(),
+            gp_out: core.gp_out_r.read().bits(),
+            gp_in: core.gp_in_r.read().bits(),
+            xfer_mode: core.xfer_mode_r.read().bits(),
+            host_ctrl1: core.host_ctrl1_r.read().bits(),
+            host_ctrl2: core.host_ctrl2_r.read().bits(),
+            tout_ctrl: core.tout_ctrl_r.read().bits(),
+            clk_ctrl: core.clk_ctrl_r.read().bits(),
+            pwr_ctrl: core.pwr_ctrl_r.read().bits(),
+            sw_rst: core.sw_rst_r.read().bits(),
+            normal_int: core.normal_int_stat_r.read().bits(),
+            error_int: core.error_int_stat_r.read().bits(),
+            normal_int_stat_en: core.normal_int_stat_en_r.read().bits(),
+            error_int_stat_en: core.error_int_stat_en_r.read().bits(),
+            normal_int_signal_en: core.normal_int_signal_en_r.read().bits(),
+            error_int_signal_en: core.error_int_signal_en_r.read().bits(),
+            pstate: core.pstate_reg.read().bits(),
+            cmd: core.cmd_r.read().bits(),
+            argument: core.argument_r.read().bits(),
+            response01: core.resp01_r.read().bits(),
+            response23: core.resp23_r.read().bits(),
+            response45: core.resp45_r.read().bits(),
+            response67: core.resp67_r.read().bits(),
+        },
+        pins: WifiSdioPinSnapshot {
+            p2_sel0: p.HSIOM.prt2.port_sel0.read().bits(),
+            p2_sel1: p.HSIOM.prt2.port_sel1.read().bits(),
+            p2_cfg: p.GPIO.prt2.cfg.read().bits(),
+            p2_out: p.GPIO.prt2.out.read().bits(),
+            p2_in: p.GPIO.prt2.in_.read().bits(),
+        },
+        clock: WifiSdioClockSnapshot {
+            path0: p.SRSS.clk_path_select[0].read().bits(),
+            root0: p.SRSS.clk_root_select[0].read().bits(),
+            root1: p.SRSS.clk_root_select[1].read().bits(),
+            root2: p.SRSS.clk_root_select[2].read().bits(),
+            root3: p.SRSS.clk_root_select[3].read().bits(),
+            root4: p.SRSS.clk_root_select[4].read().bits(),
+            fll_config: p.SRSS.clk_fll_config.read().bits(),
+            fll_config2: p.SRSS.clk_fll_config2.read().bits(),
+            fll_status: p.SRSS.clk_fll_status.read().bits(),
+        },
+    }
+}
+
+fn configure_wifi_power_pin(p: &Peripherals) {
+    p.GPIO.prt2.out_clr.write(|w| w.out6().set_bit());
+    p.GPIO.prt2.cfg.modify(|r, w| unsafe {
+        let mut bits = r.bits();
+        bits &= !P2_WIFI_REG_ON_MASK;
+        bits |= P2_WIFI_REG_ON_CFG;
+        w.bits(bits)
+    });
+}
+
+fn wifi_power_off(p: &Peripherals) {
+    p.GPIO.prt2.out_clr.write(|w| w.out6().set_bit());
+}
+
+fn wifi_power_on(p: &Peripherals) {
+    p.GPIO.prt2.out_set.write(|w| w.out6().set_bit());
+}
+
+fn configure_sdio_pins(p: &Peripherals) {
+    p.GPIO.prt2.out_set.write(|w| unsafe { w.bits(0x30) });
+
+    p.HSIOM.prt2.port_sel0.modify(|r, w| unsafe {
+        let mut bits = r.bits();
+        bits &= !P2_SDIO_DATA_HSIOM_MASK;
+        bits |= P2_SDIO_DATA_HSIOM;
+        w.bits(bits)
+    });
+    p.HSIOM.prt2.port_sel1.modify(|r, w| unsafe {
+        let mut bits = r.bits();
+        bits &= !P2_SDIO_CMD_CLK_HSIOM_MASK;
+        bits |= P2_SDIO_CMD_CLK_HSIOM;
+        w.bits(bits)
+    });
+
+    p.GPIO.prt2.cfg.modify(|r, w| unsafe {
+        let mut bits = r.bits();
+        bits &= !(P2_SDIO_DATA_MASK | P2_SDIO_CMD_CLK_MASK);
+        bits |= P2_SDIO_DATA_CFG | P2_SDIO_CMD_CLK_CFG;
+        w.bits(bits)
+    });
+}
+
+fn configure_sdhc0_clock(p: &Peripherals) {
+    p.SRSS.clk_root_select[SDHC0_HF_CLOCK_INDEX]
+        .write(|w| unsafe { w.bits(CLK_ROOT_ENABLE | CLK_ROOT_MUX_PATH0 | CLK_ROOT_DIV_BY_2) });
+}
+
+fn configure_host_for_identification(core: &sdhc0::CORE) {
+    core.gp_out_r.write(|w| unsafe { w.bits(GP_OUT_BASIC_SD) });
+    core.xfer_mode_r.write(|w| unsafe { w.bits(0) });
+    core.host_ctrl1_r.write(|w| unsafe {
+        w.bits(HOST_CTRL1_CARD_DETECT_TEST_LEVEL | HOST_CTRL1_CARD_DETECT_SIGNAL_SELECT)
+    });
+    core.tout_ctrl_r.write(|w| unsafe { w.bits(0x0e) });
+    core.normal_int_stat_en_r
+        .write(|w| unsafe { w.bits(NORMAL_INT_ALL) });
+    core.error_int_stat_en_r
+        .write(|w| unsafe { w.bits(ERROR_INT_ALL) });
+    core.normal_int_signal_en_r.write(|w| unsafe { w.bits(0) });
+    core.error_int_signal_en_r.write(|w| unsafe { w.bits(0) });
+    core.host_ctrl2_r
+        .write(|w| unsafe { w.bits(HOST_CTRL2_HOST_VERSION_4_ENABLE) });
+}
+
+fn enable_card_power(core: &sdhc0::CORE) {
+    core.pwr_ctrl_r.write(|w| unsafe { w.bits(1) });
+}
+
+fn enable_internal_clock(core: &sdhc0::CORE) -> bool {
+    core.clk_ctrl_r
+        .modify(|r, w| unsafe { w.bits(r.bits() | CLK_CTRL_INTERNAL_CLK_EN) });
+    wait_for_clock_stable(core)
+}
+
+fn wait_for_clock_stable(core: &sdhc0::CORE) -> bool {
+    for _ in 0..1000 {
+        if core.clk_ctrl_r.read().bits() & CLK_CTRL_INTERNAL_CLK_STABLE != 0 {
+            return true;
+        }
+        delay_us(3);
+    }
+    false
+}
+
+fn software_reset_all(core: &sdhc0::CORE) -> bool {
+    core.clk_ctrl_r.write(|w| unsafe { w.bits(0) });
+    delay_us(10);
+    core.sw_rst_r.write(|w| w.sw_rst_all().set_bit());
+
+    for _ in 0..1000 {
+        if core.sw_rst_r.read().sw_rst_all().bit_is_clear() {
+            core.clk_ctrl_r
+                .write(|w| unsafe { w.bits(CLK_CTRL_INTERNAL_CLK_EN) });
+            return wait_for_clock_stable(core);
+        }
+        delay_us(3);
+    }
+    false
+}
+
+fn software_reset_command_line(core: &sdhc0::CORE) -> bool {
+    core.sw_rst_r.write(|w| w.sw_rst_cmd().set_bit());
+    for _ in 0..1000 {
+        if core.sw_rst_r.read().sw_rst_cmd().bit_is_clear() {
+            return true;
+        }
+        delay_us(3);
+    }
+    false
+}
+
+fn change_card_clock(core: &sdhc0::CORE, divider: u16) {
+    let mut clk_ctrl = core.clk_ctrl_r.read().bits() & !(CLK_CTRL_SD_CLK_EN | CLK_CTRL_PLL_ENABLE);
+    core.clk_ctrl_r.write(|w| unsafe { w.bits(clk_ctrl) });
+
+    clk_ctrl &= !((0xff << 8) | (0x03 << 6));
+    clk_ctrl |= (divider & 0xff) << 8;
+    clk_ctrl |= ((divider >> 8) & 0x03) << 6;
+    core.clk_ctrl_r.write(|w| unsafe { w.bits(clk_ctrl) });
+
+    delay_us(10);
+    core.clk_ctrl_r
+        .write(|w| unsafe { w.bits(clk_ctrl | CLK_CTRL_PLL_ENABLE | CLK_CTRL_SD_CLK_EN) });
+}
+
+fn wait_transfer_complete(core: &sdhc0::CORE) -> bool {
+    for _ in 0..1000 {
+        let normal_int = core.normal_int_stat_r.read().bits();
+        let error_int = core.error_int_stat_r.read().bits();
+        if error_int != 0 || normal_int & NORMAL_INT_ERROR != 0 {
+            return false;
+        }
+        if normal_int & NORMAL_INT_XFER_COMPLETE != 0 {
+            core.normal_int_stat_r
+                .write(|w| unsafe { w.bits(NORMAL_INT_XFER_COMPLETE) });
+            return true;
+        }
+        delay_us(250);
+    }
+    false
+}
+
+fn send_command(core: &sdhc0::CORE, command: Command) -> Result<u32, CommandError> {
+    poll_command_line_free(core)?;
+    clear_interrupts(core);
+
+    let command_value = command_register_value(command);
+    core.argument_r
+        .write(|w| unsafe { w.bits(command.argument) });
+    core.cmd_r.write(|w| unsafe { w.bits(command_value) });
+    let trace = CommandTrace {
+        command: command_value,
+        argument: command.argument,
+        pstate_after_write: core.pstate_reg.read().bits(),
+        normal_int_after_write: core.normal_int_stat_r.read().bits(),
+        error_int_after_write: core.error_int_stat_r.read().bits(),
+    };
+    delay_us(50);
+
+    wait_command_complete(core, trace)?;
+    delay_us(20);
+
+    Ok(core.resp01_r.read().bits())
+}
+
+fn command_register_value(command: Command) -> u16 {
+    let mut bits = ((command.index as u16) & 0x3f) << 8;
+    bits |= (command.response as u16) & 0x03;
+    bits |= ((command.command_type as u16) & 0x03) << 6;
+
+    if command.crc_check {
+        bits |= 1 << 3;
+    }
+    if command.index_check {
+        bits |= 1 << 4;
+    }
+    if command.data_present {
+        bits |= 1 << 5;
+    }
+    bits
+}
+
+fn poll_command_line_free(core: &sdhc0::CORE) -> Result<(), CommandError> {
+    for _ in 0..1000 {
+        if core.pstate_reg.read().bits() & PSTATE_CMD_INHIBIT == 0 {
+            return Ok(());
+        }
+        delay_us(3);
+    }
+    Err(command_error(
+        core,
+        CommandErrorCode::CommandLineBusy,
+        CommandTrace::from_registers(core),
+    ))
+}
+
+fn wait_command_complete(core: &sdhc0::CORE, trace: CommandTrace) -> Result<(), CommandError> {
+    for _ in 0..1000 {
+        let normal_int = core.normal_int_stat_r.read().bits();
+        let error_int = core.error_int_stat_r.read().bits();
+        if error_int != 0 || normal_int & NORMAL_INT_ERROR != 0 {
+            let error = command_error(core, CommandErrorCode::CommandStatusError, trace);
+            clear_interrupts(core);
+            let _ = software_reset_command_line(core);
+            return Err(error);
+        }
+
+        if normal_int & NORMAL_INT_CMD_COMPLETE != 0 {
+            core.normal_int_stat_r
+                .write(|w| unsafe { w.bits(NORMAL_INT_CMD_COMPLETE) });
+            return Ok(());
+        }
+        delay_us(3);
+    }
+
+    let error = command_error(core, CommandErrorCode::CommandTimeout, trace);
+    let _ = software_reset_command_line(core);
+    Err(error)
+}
+
+fn clear_interrupts(core: &sdhc0::CORE) {
+    core.normal_int_stat_r
+        .write(|w| unsafe { w.bits(NORMAL_INT_ALL) });
+    core.error_int_stat_r
+        .write(|w| unsafe { w.bits(ERROR_INT_ALL) });
+}
+
+fn command_error(core: &sdhc0::CORE, code: CommandErrorCode, trace: CommandTrace) -> CommandError {
+    CommandError {
+        code,
+        normal_int: core.normal_int_stat_r.read().bits(),
+        error_int: core.error_int_stat_r.read().bits(),
+        pstate: core.pstate_reg.read().bits(),
+        command: trace.command,
+        argument: trace.argument,
+        pstate_after_write: trace.pstate_after_write,
+        normal_int_after_write: trace.normal_int_after_write,
+        error_int_after_write: trace.error_int_after_write,
+    }
+}
+
+impl CommandTrace {
+    fn from_registers(core: &sdhc0::CORE) -> Self {
+        Self {
+            command: core.cmd_r.read().bits(),
+            argument: core.argument_r.read().bits(),
+            pstate_after_write: core.pstate_reg.read().bits(),
+            normal_int_after_write: core.normal_int_stat_r.read().bits(),
+            error_int_after_write: core.error_int_stat_r.read().bits(),
+        }
+    }
+}
+
+fn delay_ms(ms: u32) {
+    for _ in 0..ms {
+        delay_us(1000);
+    }
+}
+
+fn delay_us(us: u32) {
+    for _ in 0..us {
+        cortex_m::asm::delay(50);
+    }
+}

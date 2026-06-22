@@ -5,9 +5,11 @@ use core::fmt::{self, Write};
 use core::ptr::{read_volatile, write_volatile};
 
 use cortex_m_rt::entry;
+use hal::wifi_sdio;
 use panic_halt as _;
 use psoc6_pac::{Peripherals, SCB5};
 
+mod hal;
 mod lisp;
 mod lisp_store;
 mod micro_sd;
@@ -523,6 +525,22 @@ impl lisp::Board for PsocBoard<'_> {
         }
     }
 
+    fn wifi_sdio_init(&mut self) -> lisp::WifiSdioReport {
+        let report = wifi_sdio::initialize(self.p);
+        lisp::WifiSdioReport {
+            status: wifi_sdio_status(report.status),
+            cmd5_response: report.cmd5_response,
+            cmd5_attempts: report.cmd5_attempts,
+            rca: report.rca,
+            function_count: report.function_count,
+            memory_present: report.memory_present,
+            last_error: report.last_error.map(wifi_sdio_command_error_report),
+            host: wifi_sdio_host_report(report.host),
+            pins: wifi_sdio_pins_report(report.pins),
+            clock: wifi_sdio_clock_report(report.clock),
+        }
+    }
+
     fn sdhc_registers(&mut self) -> lisp::SdhcReport {
         micro_sd::enable_sdhc_controllers(self.p);
 
@@ -626,6 +644,96 @@ fn store_status(status: lisp_store::StoreStatus) -> &'static [u8] {
         lisp_store::StoreStatus::DataWriteFailed => b"data-write-failed",
         lisp_store::StoreStatus::CorruptData => b"corrupt-data",
         lisp_store::StoreStatus::ChecksumMismatch => b"checksum-mismatch",
+    }
+}
+
+fn wifi_sdio_status(status: wifi_sdio::WifiSdioStatus) -> &'static [u8] {
+    match status {
+        wifi_sdio::WifiSdioStatus::Ready => b"ready",
+        wifi_sdio::WifiSdioStatus::ClockNotStable => b"clock-not-stable",
+        wifi_sdio::WifiSdioStatus::ResetTimeout => b"reset-timeout",
+        wifi_sdio::WifiSdioStatus::Cmd0Failed => b"cmd0-failed",
+        wifi_sdio::WifiSdioStatus::Cmd5Failed => b"cmd5-failed",
+        wifi_sdio::WifiSdioStatus::Cmd5Busy => b"cmd5-busy",
+        wifi_sdio::WifiSdioStatus::Cmd3Failed => b"cmd3-failed",
+        wifi_sdio::WifiSdioStatus::Cmd7Failed => b"cmd7-failed",
+        wifi_sdio::WifiSdioStatus::SelectBusy => b"select-busy",
+    }
+}
+
+fn wifi_sdio_command_error(code: wifi_sdio::CommandErrorCode) -> &'static [u8] {
+    match code {
+        wifi_sdio::CommandErrorCode::CommandLineBusy => b"command-line-busy",
+        wifi_sdio::CommandErrorCode::CommandTimeout => b"command-timeout",
+        wifi_sdio::CommandErrorCode::CommandStatusError => b"command-status-error",
+    }
+}
+
+fn wifi_sdio_command_error_report(
+    error: wifi_sdio::CommandError,
+) -> lisp::WifiSdioCommandErrorReport {
+    lisp::WifiSdioCommandErrorReport {
+        code: wifi_sdio_command_error(error.code),
+        normal_int: error.normal_int,
+        error_int: error.error_int,
+        pstate: error.pstate,
+        command: error.command,
+        argument: error.argument,
+        pstate_after_write: error.pstate_after_write,
+        normal_int_after_write: error.normal_int_after_write,
+        error_int_after_write: error.error_int_after_write,
+    }
+}
+
+fn wifi_sdio_host_report(snapshot: wifi_sdio::WifiSdioHostSnapshot) -> lisp::WifiSdioHostReport {
+    lisp::WifiSdioHostReport {
+        wrap_ctl: snapshot.wrap_ctl,
+        gp_out: snapshot.gp_out,
+        gp_in: snapshot.gp_in,
+        xfer_mode: snapshot.xfer_mode,
+        host_ctrl1: snapshot.host_ctrl1,
+        host_ctrl2: snapshot.host_ctrl2,
+        tout_ctrl: snapshot.tout_ctrl,
+        clk_ctrl: snapshot.clk_ctrl,
+        pwr_ctrl: snapshot.pwr_ctrl,
+        sw_rst: snapshot.sw_rst,
+        normal_int: snapshot.normal_int,
+        error_int: snapshot.error_int,
+        normal_int_stat_en: snapshot.normal_int_stat_en,
+        error_int_stat_en: snapshot.error_int_stat_en,
+        normal_int_signal_en: snapshot.normal_int_signal_en,
+        error_int_signal_en: snapshot.error_int_signal_en,
+        pstate: snapshot.pstate,
+        cmd: snapshot.cmd,
+        argument: snapshot.argument,
+        response01: snapshot.response01,
+        response23: snapshot.response23,
+        response45: snapshot.response45,
+        response67: snapshot.response67,
+    }
+}
+
+fn wifi_sdio_pins_report(snapshot: wifi_sdio::WifiSdioPinSnapshot) -> lisp::WifiSdioPinsReport {
+    lisp::WifiSdioPinsReport {
+        p2_sel0: snapshot.p2_sel0,
+        p2_sel1: snapshot.p2_sel1,
+        p2_cfg: snapshot.p2_cfg,
+        p2_out: snapshot.p2_out,
+        p2_in: snapshot.p2_in,
+    }
+}
+
+fn wifi_sdio_clock_report(snapshot: wifi_sdio::WifiSdioClockSnapshot) -> lisp::WifiSdioClockReport {
+    lisp::WifiSdioClockReport {
+        path0: snapshot.path0,
+        root0: snapshot.root0,
+        root1: snapshot.root1,
+        root2: snapshot.root2,
+        root3: snapshot.root3,
+        root4: snapshot.root4,
+        fll_config: snapshot.fll_config,
+        fll_config2: snapshot.fll_config2,
+        fll_status: snapshot.fll_status,
     }
 }
 

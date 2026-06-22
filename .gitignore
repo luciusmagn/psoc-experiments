@@ -3,6 +3,9 @@
 .gdb_history
 */target/
 
+# local-only generated files; may include Wi-Fi credentials
+.local/
+
 # editor files
 .vscode/*
 !.vscode/*.md

@@ -57,6 +57,7 @@ pub trait Board {
     fn sd_write_fill(&mut self, sector: u32, fill_word: u32) -> SdWriteReport;
     fn save_file(&mut self, path: StringBytes, content: StringBytes) -> StoreWriteReport;
     fn read_file(&mut self, path: StringBytes) -> StoreReadReport;
+    fn wifi_sdio_init(&mut self) -> WifiSdioReport;
     fn sdhc_registers(&mut self) -> SdhcReport;
     fn reboot(&mut self) -> !;
 }
@@ -230,6 +231,82 @@ pub struct StoreReadReport {
     pub content: StringBytes,
 }
 
+#[derive(Clone, Copy)]
+pub struct WifiSdioCommandErrorReport {
+    pub code: &'static [u8],
+    pub normal_int: u16,
+    pub error_int: u16,
+    pub pstate: u32,
+    pub command: u16,
+    pub argument: u32,
+    pub pstate_after_write: u32,
+    pub normal_int_after_write: u16,
+    pub error_int_after_write: u16,
+}
+
+#[derive(Clone, Copy)]
+pub struct WifiSdioHostReport {
+    pub wrap_ctl: u32,
+    pub gp_out: u32,
+    pub gp_in: u32,
+    pub xfer_mode: u16,
+    pub host_ctrl1: u8,
+    pub host_ctrl2: u16,
+    pub tout_ctrl: u8,
+    pub clk_ctrl: u16,
+    pub pwr_ctrl: u8,
+    pub sw_rst: u8,
+    pub normal_int: u16,
+    pub error_int: u16,
+    pub normal_int_stat_en: u16,
+    pub error_int_stat_en: u16,
+    pub normal_int_signal_en: u16,
+    pub error_int_signal_en: u16,
+    pub pstate: u32,
+    pub cmd: u16,
+    pub argument: u32,
+    pub response01: u32,
+    pub response23: u32,
+    pub response45: u32,
+    pub response67: u32,
+}
+
+#[derive(Clone, Copy)]
+pub struct WifiSdioPinsReport {
+    pub p2_sel0: u32,
+    pub p2_sel1: u32,
+    pub p2_cfg: u32,
+    pub p2_out: u32,
+    pub p2_in: u32,
+}
+
+#[derive(Clone, Copy)]
+pub struct WifiSdioClockReport {
+    pub path0: u32,
+    pub root0: u32,
+    pub root1: u32,
+    pub root2: u32,
+    pub root3: u32,
+    pub root4: u32,
+    pub fll_config: u32,
+    pub fll_config2: u32,
+    pub fll_status: u32,
+}
+
+#[derive(Clone, Copy)]
+pub struct WifiSdioReport {
+    pub status: &'static [u8],
+    pub cmd5_response: u32,
+    pub cmd5_attempts: u16,
+    pub rca: u16,
+    pub function_count: u8,
+    pub memory_present: bool,
+    pub last_error: Option<WifiSdioCommandErrorReport>,
+    pub host: WifiSdioHostReport,
+    pub pins: WifiSdioPinsReport,
+    pub clock: WifiSdioClockReport,
+}
+
 type LispResult<T> = Result<T, Error>;
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -287,6 +364,7 @@ pub enum Primitive {
     SaveFile,
     ReadFile,
     Load,
+    WifiSdioInit,
     SdhcRegs,
     Heap,
     Gc,
@@ -338,6 +416,7 @@ impl Primitive {
             Self::SaveFile => "save-file",
             Self::ReadFile => "read-file",
             Self::Load => "load",
+            Self::WifiSdioInit => "wifi-sdio-init",
             Self::SdhcRegs => "sdhc-regs",
             Self::Heap => "heap",
             Self::Gc => "gc",
@@ -541,6 +620,7 @@ impl Machine {
         self.install_primitive(b"save-file", Primitive::SaveFile)?;
         self.install_primitive(b"read-file", Primitive::ReadFile)?;
         self.install_primitive(b"load", Primitive::Load)?;
+        self.install_primitive(b"wifi-sdio-init", Primitive::WifiSdioInit)?;
         self.install_primitive(b"sdhc-regs", Primitive::SdhcRegs)?;
         self.install_primitive(b"heap", Primitive::Heap)?;
         self.install_primitive(b"gc", Primitive::Gc)?;
@@ -1198,6 +1278,10 @@ impl Machine {
                 self.active_expression = previous_expression;
                 result
             }
+            Primitive::WifiSdioInit => {
+                self.expect_count(args, 0)?;
+                self.wifi_sdio_report(board.wifi_sdio_init())
+            }
             Primitive::SdhcRegs => {
                 self.expect_count(args, 0)?;
                 self.sdhc_report(board.sdhc_registers())
@@ -1520,6 +1604,7 @@ impl Machine {
             b"save-file",
             b"read-file",
             b"load",
+            b"wifi-sdio-init",
             b"sdhc-regs",
             b"heap",
             b"gc",
@@ -1802,6 +1887,162 @@ impl Machine {
 
     fn string_value(&mut self, value: StringBytes) -> LispResult<Value> {
         self.alloc_string(&value.bytes[..value.len as usize])
+    }
+
+    fn wifi_sdio_report(&mut self, report: WifiSdioReport) -> LispResult<Value> {
+        let status = self.symbol_entry(b"status", report.status)?;
+        let cmd5 = self.word_entry(b"CMD5.OCR", report.cmd5_response)?;
+        let attempts = self.int_entry(b"attempts", report.cmd5_attempts as i32)?;
+        let rca = self.word_entry(b"RCA", report.rca as u32)?;
+        let function_count = self.int_entry(b"functions", report.function_count as i32)?;
+        let memory_present = self.bool_entry(b"memory-present", report.memory_present)?;
+        let last_error = self.wifi_sdio_error_entry(b"last-error", report.last_error)?;
+        let host = self.wifi_sdio_host_report(report.host)?;
+        let pins = self.wifi_sdio_pins_report(report.pins)?;
+        let clock = self.wifi_sdio_clock_report(report.clock)?;
+        let host = self.entry(b"SDHC0", host)?;
+        let pins = self.entry(b"P2", pins)?;
+        let clock = self.entry(b"clock", clock)?;
+        let entries = [
+            status,
+            cmd5,
+            attempts,
+            rca,
+            function_count,
+            memory_present,
+            last_error,
+            host,
+            pins,
+            clock,
+        ];
+        self.make_list_from_values(&entries)
+    }
+
+    fn wifi_sdio_host_report(&mut self, report: WifiSdioHostReport) -> LispResult<Value> {
+        let wrap_ctl = self.word_entry(b"WRAP.CTL", report.wrap_ctl)?;
+        let gp_out = self.word_entry(b"GP_OUT", report.gp_out)?;
+        let gp_in = self.word_entry(b"GP_IN", report.gp_in)?;
+        let xfer_mode = self.word_entry(b"XFER_MODE", report.xfer_mode as u32)?;
+        let host_ctrl1 = self.word_entry(b"HOST_CTRL1", report.host_ctrl1 as u32)?;
+        let host_ctrl2 = self.word_entry(b"HOST_CTRL2", report.host_ctrl2 as u32)?;
+        let tout_ctrl = self.word_entry(b"TOUT_CTRL", report.tout_ctrl as u32)?;
+        let clk_ctrl = self.word_entry(b"CLK_CTRL", report.clk_ctrl as u32)?;
+        let pwr_ctrl = self.word_entry(b"PWR_CTRL", report.pwr_ctrl as u32)?;
+        let sw_rst = self.word_entry(b"SW_RST", report.sw_rst as u32)?;
+        let normal_int = self.word_entry(b"NORM_INT", report.normal_int as u32)?;
+        let error_int = self.word_entry(b"ERR_INT", report.error_int as u32)?;
+        let normal_int_stat_en =
+            self.word_entry(b"NORM_INT_STAT_EN", report.normal_int_stat_en as u32)?;
+        let error_int_stat_en =
+            self.word_entry(b"ERR_INT_STAT_EN", report.error_int_stat_en as u32)?;
+        let normal_int_signal_en =
+            self.word_entry(b"NORM_INT_SIGNAL_EN", report.normal_int_signal_en as u32)?;
+        let error_int_signal_en =
+            self.word_entry(b"ERR_INT_SIGNAL_EN", report.error_int_signal_en as u32)?;
+        let pstate = self.word_entry(b"PSTATE", report.pstate)?;
+        let cmd = self.word_entry(b"CMD_R", report.cmd as u32)?;
+        let argument = self.word_entry(b"ARGUMENT", report.argument)?;
+        let response01 = self.word_entry(b"RESP01", report.response01)?;
+        let response23 = self.word_entry(b"RESP23", report.response23)?;
+        let response45 = self.word_entry(b"RESP45", report.response45)?;
+        let response67 = self.word_entry(b"RESP67", report.response67)?;
+        let entries = [
+            wrap_ctl,
+            gp_out,
+            gp_in,
+            xfer_mode,
+            host_ctrl1,
+            host_ctrl2,
+            tout_ctrl,
+            clk_ctrl,
+            pwr_ctrl,
+            sw_rst,
+            normal_int,
+            error_int,
+            normal_int_stat_en,
+            error_int_stat_en,
+            normal_int_signal_en,
+            error_int_signal_en,
+            pstate,
+            cmd,
+            argument,
+            response01,
+            response23,
+            response45,
+            response67,
+        ];
+        self.make_list_from_values(&entries)
+    }
+
+    fn wifi_sdio_pins_report(&mut self, report: WifiSdioPinsReport) -> LispResult<Value> {
+        let p2_sel0 = self.word_entry(b"P2.SEL0", report.p2_sel0)?;
+        let p2_sel1 = self.word_entry(b"P2.SEL1", report.p2_sel1)?;
+        let p2_cfg = self.word_entry(b"P2.CFG", report.p2_cfg)?;
+        let p2_out = self.word_entry(b"P2.OUT", report.p2_out)?;
+        let p2_in = self.word_entry(b"P2.IN", report.p2_in)?;
+        let entries = [p2_sel0, p2_sel1, p2_cfg, p2_out, p2_in];
+        self.make_list_from_values(&entries)
+    }
+
+    fn wifi_sdio_clock_report(&mut self, report: WifiSdioClockReport) -> LispResult<Value> {
+        let path0 = self.word_entry(b"CLK_PATH0", report.path0)?;
+        let root0 = self.word_entry(b"CLK_HF0", report.root0)?;
+        let root1 = self.word_entry(b"CLK_HF1", report.root1)?;
+        let root2 = self.word_entry(b"CLK_HF2", report.root2)?;
+        let root3 = self.word_entry(b"CLK_HF3", report.root3)?;
+        let root4 = self.word_entry(b"CLK_HF4", report.root4)?;
+        let fll_config = self.word_entry(b"FLL_CONFIG", report.fll_config)?;
+        let fll_config2 = self.word_entry(b"FLL_CONFIG2", report.fll_config2)?;
+        let fll_status = self.word_entry(b"FLL_STATUS", report.fll_status)?;
+        let entries = [
+            path0,
+            root0,
+            root1,
+            root2,
+            root3,
+            root4,
+            fll_config,
+            fll_config2,
+            fll_status,
+        ];
+        self.make_list_from_values(&entries)
+    }
+
+    fn wifi_sdio_error_entry(
+        &mut self,
+        name: &[u8],
+        report: Option<WifiSdioCommandErrorReport>,
+    ) -> LispResult<Value> {
+        match report {
+            Some(error) => {
+                let code = self.symbol_entry(b"code", error.code)?;
+                let normal_int = self.word_entry(b"NORM_INT", error.normal_int as u32)?;
+                let error_int = self.word_entry(b"ERR_INT", error.error_int as u32)?;
+                let pstate = self.word_entry(b"PSTATE", error.pstate)?;
+                let command = self.word_entry(b"CMD_R", error.command as u32)?;
+                let argument = self.word_entry(b"ARGUMENT", error.argument)?;
+                let pstate_after_write =
+                    self.word_entry(b"PSTATE.after-write", error.pstate_after_write)?;
+                let normal_int_after_write =
+                    self.word_entry(b"NORM_INT.after-write", error.normal_int_after_write as u32)?;
+                let error_int_after_write =
+                    self.word_entry(b"ERR_INT.after-write", error.error_int_after_write as u32)?;
+                let entries = [
+                    code,
+                    normal_int,
+                    error_int,
+                    pstate,
+                    command,
+                    argument,
+                    pstate_after_write,
+                    normal_int_after_write,
+                    error_int_after_write,
+                ];
+                let details = self.make_list_from_values(&entries)?;
+                self.entry(name, details)
+            }
+            None => self.entry(name, Value::Nil),
+        }
     }
 
     fn sd_word_list_entry(&mut self, name: &[u8], words: &[u32]) -> LispResult<Value> {
