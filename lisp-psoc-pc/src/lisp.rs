@@ -1,8 +1,8 @@
 use core::fmt::{self, Write};
 
 const MAX_OBJECTS: usize = 384;
-const MAX_SYMBOLS: usize = 160;
-const MAX_GLOBALS: usize = 96;
+const MAX_SYMBOLS: usize = 176;
+const MAX_GLOBALS: usize = 104;
 const MAX_SYMBOL_BYTES: usize = 32;
 const MAX_CALL_ARGS: usize = 16;
 const MAX_EVAL_DEPTH: u8 = 128;
@@ -44,6 +44,7 @@ pub trait Board {
     fn sd_status(&mut self) -> SdStatusReport;
     fn sd_pins(&mut self) -> SdPinsReport;
     fn sd_pinmux(&mut self) -> SdPinsReport;
+    fn sd_clock(&mut self) -> SdClockReport;
     fn sd_init(&mut self) -> SdInitReport;
     fn sdhc_registers(&mut self) -> SdhcReport;
     fn reboot(&mut self) -> !;
@@ -92,6 +93,17 @@ pub struct SdhcReport {
     pub sdhc0: SdhcCoreReport,
     pub sdhc1: SdhcCoreReport,
     pub pins: SdPinsReport,
+}
+
+#[derive(Clone, Copy)]
+pub struct SdClockReport {
+    pub path0: u32,
+    pub root0: u32,
+    pub root2: u32,
+    pub fll_config: u32,
+    pub fll_config2: u32,
+    pub fll_status: u32,
+    pub selected_hf_hz: u32,
 }
 
 #[derive(Clone, Copy)]
@@ -187,6 +199,7 @@ pub enum Primitive {
     SdStatus,
     SdPins,
     SdPinmux,
+    SdClock,
     SdInit,
     SdhcRegs,
     Heap,
@@ -230,6 +243,7 @@ impl Primitive {
             Self::SdStatus => "sd-status",
             Self::SdPins => "sd-pins",
             Self::SdPinmux => "sd-pinmux",
+            Self::SdClock => "sd-clock",
             Self::SdInit => "sd-init",
             Self::SdhcRegs => "sdhc-regs",
             Self::Heap => "heap",
@@ -421,6 +435,7 @@ impl Machine {
         self.install_primitive(b"sd-status", Primitive::SdStatus)?;
         self.install_primitive(b"sd-pins", Primitive::SdPins)?;
         self.install_primitive(b"sd-pinmux", Primitive::SdPinmux)?;
+        self.install_primitive(b"sd-clock", Primitive::SdClock)?;
         self.install_primitive(b"sd-init", Primitive::SdInit)?;
         self.install_primitive(b"sdhc-regs", Primitive::SdhcRegs)?;
         self.install_primitive(b"heap", Primitive::Heap)?;
@@ -1019,6 +1034,10 @@ impl Machine {
                 self.expect_count(args, 0)?;
                 self.sd_pins_report(board.sd_pinmux())
             }
+            Primitive::SdClock => {
+                self.expect_count(args, 0)?;
+                self.sd_clock_report(board.sd_clock())
+            }
             Primitive::SdInit => {
                 self.expect_count(args, 0)?;
                 self.sd_init_report(board.sd_init())
@@ -1308,6 +1327,7 @@ impl Machine {
             b"sd-status",
             b"sd-pins",
             b"sd-pinmux",
+            b"sd-clock",
             b"sd-init",
             b"sdhc-regs",
             b"heap",
@@ -1382,105 +1402,92 @@ impl Machine {
         self.make_list_from_values(&entries)
     }
 
+    fn sd_clock_report(&mut self, report: SdClockReport) -> LispResult<Value> {
+        let path0 = self.word_entry(b"CLK_PATH0", report.path0)?;
+        let root0 = self.word_entry(b"CLK_HF0", report.root0)?;
+        let root2 = self.word_entry(b"CLK_HF2", report.root2)?;
+        let fll_config = self.word_entry(b"FLL_CONFIG", report.fll_config)?;
+        let fll_config2 = self.word_entry(b"FLL_CONFIG2", report.fll_config2)?;
+        let fll_status = self.word_entry(b"FLL_STATUS", report.fll_status)?;
+        let selected_hf_hz = self.word_entry(b"selected-HF-Hz", report.selected_hf_hz)?;
+        let entries = [
+            path0,
+            root0,
+            root2,
+            fll_config,
+            fll_config2,
+            fll_status,
+            selected_hf_hz,
+        ];
+        self.make_list_from_values(&entries)
+    }
+
     fn sd_init_report(&mut self, report: SdInitReport) -> LispResult<Value> {
         let status = self.symbol_entry(b"status", report.status)?;
         let cmd8 = self.word_entry(b"CMD8", report.cmd8_response)?;
-        let cmd8_error = self.sd_command_error_entry(b"CMD8.error", report.cmd8_error)?;
+        let cmd8_error = self.sd_error_code_entry(b"CMD8.error", report.cmd8_error)?;
         let acmd41_ocr = self.word_entry(b"ACMD41.OCR", report.acmd41_ocr)?;
         let attempts = self.int_entry(b"attempts", report.acmd41_attempts as i32)?;
-        let gp_out = self.word_entry(b"GP_OUT", report.gp_out)?;
-        let gp_in = self.word_entry(b"GP_IN", report.gp_in)?;
-        let host_ctrl1 = self.word_entry(b"HOST_CTRL1", report.host_ctrl1 as u32)?;
-        let host_ctrl2 = self.word_entry(b"HOST_CTRL2", report.host_ctrl2 as u32)?;
-        let xfer_mode = self.word_entry(b"XFER_MODE", report.xfer_mode as u32)?;
-        let tout_ctrl = self.word_entry(b"TOUT_CTRL", report.tout_ctrl as u32)?;
         let clk_ctrl = self.word_entry(b"CLK_CTRL", report.clk_ctrl as u32)?;
-        let pwr_ctrl = self.word_entry(b"PWR_CTRL", report.pwr_ctrl as u32)?;
-        let sw_rst = self.word_entry(b"SW_RST", report.sw_rst as u32)?;
         let normal_int = self.word_entry(b"NORM_INT", report.normal_int as u32)?;
         let error_int = self.word_entry(b"ERR_INT", report.error_int as u32)?;
-        let normal_int_stat_en =
-            self.word_entry(b"NORM_INT_STAT_EN", report.normal_int_stat_en as u32)?;
-        let error_int_stat_en =
-            self.word_entry(b"ERR_INT_STAT_EN", report.error_int_stat_en as u32)?;
-        let normal_int_signal_en =
-            self.word_entry(b"NORM_INT_SIG_EN", report.normal_int_signal_en as u32)?;
-        let error_int_signal_en =
-            self.word_entry(b"ERR_INT_SIG_EN", report.error_int_signal_en as u32)?;
         let pstate = self.word_entry(b"PSTATE", report.pstate)?;
         let cmd = self.word_entry(b"CMD_R", report.cmd as u32)?;
         let argument = self.word_entry(b"ARGUMENT", report.argument)?;
-        let response01 = self.word_entry(b"RESP01", report.response01)?;
-        let response23 = self.word_entry(b"RESP23", report.response23)?;
-        let response45 = self.word_entry(b"RESP45", report.response45)?;
-        let response67 = self.word_entry(b"RESP67", report.response67)?;
-        let last_error = self.sd_command_error_entry(b"last-error", report.last_error)?;
+        let last_error = self.sd_error_code_entry(b"last-error", report.last_error)?;
+        let pstate_error =
+            self.sd_error_word_entry(b"PSTATE.error", report.last_error.map(|error| error.pstate))?;
+        let pstate_after_write = self.sd_error_word_entry(
+            b"PSTATE.after-write",
+            report.last_error.map(|error| error.pstate_after_write),
+        )?;
+        let normal_int_after_write = self.sd_error_word_entry(
+            b"NORM_INT.after-write",
+            report
+                .last_error
+                .map(|error| error.normal_int_after_write as u32),
+        )?;
+        let error_int_after_write = self.sd_error_word_entry(
+            b"ERR_INT.after-write",
+            report
+                .last_error
+                .map(|error| error.error_int_after_write as u32),
+        )?;
         let entries = [
             status,
             cmd8,
             cmd8_error,
             acmd41_ocr,
             attempts,
-            gp_out,
-            gp_in,
-            host_ctrl1,
-            host_ctrl2,
-            xfer_mode,
-            tout_ctrl,
             clk_ctrl,
-            pwr_ctrl,
-            sw_rst,
             normal_int,
             error_int,
-            normal_int_stat_en,
-            error_int_stat_en,
-            normal_int_signal_en,
-            error_int_signal_en,
             pstate,
             cmd,
             argument,
-            response01,
-            response23,
-            response45,
-            response67,
             last_error,
+            pstate_error,
+            pstate_after_write,
+            normal_int_after_write,
+            error_int_after_write,
         ];
         self.make_list_from_values(&entries)
     }
 
-    fn sd_command_error_entry(
+    fn sd_error_code_entry(
         &mut self,
         name: &[u8],
         report: Option<SdCommandErrorReport>,
     ) -> LispResult<Value> {
         match report {
-            Some(error) => {
-                let code = self.symbol_entry(b"code", error.code)?;
-                let normal_int = self.word_entry(b"NORM_INT", error.normal_int as u32)?;
-                let error_int = self.word_entry(b"ERR_INT", error.error_int as u32)?;
-                let pstate = self.word_entry(b"PSTATE", error.pstate)?;
-                let cmd_r = self.word_entry(b"CMD_R", error.command as u32)?;
-                let argument = self.word_entry(b"ARGUMENT", error.argument)?;
-                let pstate_after_write =
-                    self.word_entry(b"PSTATE.after-write", error.pstate_after_write)?;
-                let normal_int_after_write =
-                    self.word_entry(b"NORM_INT.after-write", error.normal_int_after_write as u32)?;
-                let error_int_after_write =
-                    self.word_entry(b"ERR_INT.after-write", error.error_int_after_write as u32)?;
-                let entries = [
-                    code,
-                    normal_int,
-                    error_int,
-                    pstate,
-                    cmd_r,
-                    argument,
-                    pstate_after_write,
-                    normal_int_after_write,
-                    error_int_after_write,
-                ];
-                let error_list = self.make_list_from_values(&entries)?;
-                self.entry(name, error_list)
-            }
+            Some(error) => self.symbol_entry(name, error.code),
+            None => self.entry(name, Value::Nil),
+        }
+    }
+
+    fn sd_error_word_entry(&mut self, name: &[u8], value: Option<u32>) -> LispResult<Value> {
+        match value {
+            Some(value) => self.word_entry(name, value),
             None => self.entry(name, Value::Nil),
         }
     }

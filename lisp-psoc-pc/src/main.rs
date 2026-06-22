@@ -394,6 +394,20 @@ impl lisp::Board for PsocBoard<'_> {
         sd_pins_report(micro_sd::pin_snapshot(self.p))
     }
 
+    fn sd_clock(&mut self) -> lisp::SdClockReport {
+        micro_sd::enable_sdhc_controllers(self.p);
+        let snapshot = micro_sd::sdhc1_clock_snapshot(self.p);
+        lisp::SdClockReport {
+            path0: snapshot.path0,
+            root0: snapshot.root0,
+            root2: snapshot.root2,
+            fll_config: snapshot.fll_config,
+            fll_config2: snapshot.fll_config2,
+            fll_status: snapshot.fll_status,
+            selected_hf_hz: snapshot.selected_hf_hz,
+        }
+    }
+
     fn sd_init(&mut self) -> lisp::SdInitReport {
         let report = micro_sd::initialize_card(self.p);
         lisp::SdInitReport {

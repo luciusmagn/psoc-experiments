@@ -14,12 +14,13 @@ const PSTATE_CMD_INHIBIT: u32 = 1 << 0;
 const CLK_CTRL_INTERNAL_CLK_EN: u16 = 1 << 0;
 const CLK_CTRL_INTERNAL_CLK_STABLE: u16 = 1 << 1;
 const CLK_CTRL_SD_CLK_EN: u16 = 1 << 2;
+const CLK_CTRL_PLL_ENABLE: u16 = 1 << 3;
 const HOST_CTRL1_CARD_DETECT_TEST_LEVEL: u8 = 1 << 6;
 const HOST_CTRL1_CARD_DETECT_SIGNAL_SELECT: u8 = 1 << 7;
 const HOST_CTRL2_HOST_VERSION_4_ENABLE: u16 = 1 << 12;
 const GP_OUT_BASIC_SD: u32 = (1 << 0) | (1 << 1) | (1 << 3) | (1 << 4) | (1 << 5);
 
-const SDHC_INPUT_CLOCK_HZ: u32 = 100_000_000;
+const SDHC_INPUT_CLOCK_HZ: u32 = 50_000_000;
 const SD_INIT_CLOCK_HZ: u32 = 400_000;
 const SD_INIT_CLOCK_DIVIDER: u16 = ((SDHC_INPUT_CLOCK_HZ / SD_INIT_CLOCK_HZ) >> 1) as u16;
 const SD_BUS_RAMP_UP_MS: u32 = 1000;
@@ -54,6 +55,12 @@ const P13_SDHC_HSIOM_MASK: u32 = 0xff | (0xff << 8) | (0xff << 16) | (0xff << 24
 const P13_SDHC_HSIOM: u32 =
     HSIOM_SEL_SDHC | (HSIOM_SEL_SDHC << 8) | (HSIOM_SEL_SDHC << 16) | (HSIOM_SEL_SDHC << 24);
 
+const CLK_ROOT_ENABLE: u32 = 1 << 31;
+const CLK_ROOT_MUX_PATH0: u32 = 0;
+const CLK_ROOT_DIV_BY_2: u32 = 1 << 4;
+const SDHC1_HF_CLOCK_INDEX: usize = 2;
+const SDHC1_HF_CLOCK_HZ: u32 = 50_000_000;
+
 pub struct CardDetectSnapshot {
     pub is_low: bool,
     pub prt13_in: u32,
@@ -73,6 +80,16 @@ pub struct SdhcSnapshot {
     pub cap1: u32,
     pub cap2: u32,
     pub pstate: u32,
+}
+
+pub struct SdhcClockSnapshot {
+    pub path0: u32,
+    pub root0: u32,
+    pub root2: u32,
+    pub fll_config: u32,
+    pub fll_config2: u32,
+    pub fll_status: u32,
+    pub selected_hf_hz: u32,
 }
 
 #[derive(Clone, Copy)]
@@ -232,6 +249,7 @@ pub fn pin_snapshot(p: &Peripherals) -> PinSnapshot {
 }
 
 pub fn enable_sdhc_controllers(p: &Peripherals) {
+    configure_sdhc1_clock(p);
     p.SDHC0.wrap.ctl.write(|w| w.enable().set_bit());
     p.SDHC1.wrap.ctl.write(|w| w.enable().set_bit());
     for _ in 0..1024 {
@@ -240,6 +258,7 @@ pub fn enable_sdhc_controllers(p: &Peripherals) {
 }
 
 pub fn initialize_card(p: &Peripherals) -> InitReport {
+    configure_sdhc1_clock(p);
     configure_card_detect(p);
     configure_sdhc1_pins(p);
 
@@ -414,6 +433,23 @@ pub fn sdhc1_snapshot(p: &Peripherals) -> SdhcSnapshot {
     }
 }
 
+pub fn sdhc1_clock_snapshot(p: &Peripherals) -> SdhcClockSnapshot {
+    SdhcClockSnapshot {
+        path0: p.SRSS.clk_path_select[0].read().bits(),
+        root0: p.SRSS.clk_root_select[0].read().bits(),
+        root2: p.SRSS.clk_root_select[SDHC1_HF_CLOCK_INDEX].read().bits(),
+        fll_config: p.SRSS.clk_fll_config.read().bits(),
+        fll_config2: p.SRSS.clk_fll_config2.read().bits(),
+        fll_status: p.SRSS.clk_fll_status.read().bits(),
+        selected_hf_hz: SDHC1_HF_CLOCK_HZ,
+    }
+}
+
+fn configure_sdhc1_clock(p: &Peripherals) {
+    p.SRSS.clk_root_select[SDHC1_HF_CLOCK_INDEX]
+        .write(|w| unsafe { w.bits(CLK_ROOT_ENABLE | CLK_ROOT_MUX_PATH0 | CLK_ROOT_DIV_BY_2) });
+}
+
 fn init_report(
     p: &Peripherals,
     status: InitStatus,
@@ -526,7 +562,7 @@ fn software_reset_command_line(core: &sdhc0::CORE) -> bool {
 }
 
 fn change_card_clock(core: &sdhc0::CORE, divider: u16) {
-    let mut clk_ctrl = core.clk_ctrl_r.read().bits() & !CLK_CTRL_SD_CLK_EN;
+    let mut clk_ctrl = core.clk_ctrl_r.read().bits() & !(CLK_CTRL_SD_CLK_EN | CLK_CTRL_PLL_ENABLE);
     core.clk_ctrl_r.write(|w| unsafe { w.bits(clk_ctrl) });
 
     clk_ctrl &= !((0xff << 8) | (0x03 << 6));
@@ -536,7 +572,7 @@ fn change_card_clock(core: &sdhc0::CORE, divider: u16) {
 
     delay_us(10);
     core.clk_ctrl_r
-        .write(|w| unsafe { w.bits(clk_ctrl | CLK_CTRL_SD_CLK_EN) });
+        .write(|w| unsafe { w.bits(clk_ctrl | CLK_CTRL_PLL_ENABLE | CLK_CTRL_SD_CLK_EN) });
 }
 
 fn send_app_command(core: &sdhc0::CORE) -> Result<u32, CommandError> {
@@ -643,7 +679,9 @@ fn wait_command_complete(
         delay_us(3);
     }
 
-    Err(command_error(core, CommandErrorCode::CommandTimeout, trace))
+    let error = command_error(core, CommandErrorCode::CommandTimeout, trace);
+    let _ = software_reset_command_line(core);
+    Err(error)
 }
 
 fn clear_interrupts(core: &sdhc0::CORE) {

@@ -319,22 +319,26 @@ backups/flash-10000000-40000-before-console-echo.bin
 
 ** probe-rs
 
-=probe-rs= was checked because the installed copy was old.
+=probe-rs= was checked and upgraded because the installed copy was old.
 
-Findings:
-
-- =probe-rs-tools 0.31.0= is the latest checked release.
-- =probe-rs 0.31.0= fails against this KitProg3 with a CMSIS-DAP =Info=
-  response mismatch.
-- =probe-rs 0.30.0= can enumerate the probe and inspect the AP layout.
-- =probe-rs 0.30.0= dry-runs the local PSoC62 target YAML.
-- Real flashing with =probe-rs 0.30.0= still failed at reset/halt.
-
-Current working version:
+Current installed version:
 
 #+begin_example
-probe-rs 0.30.0 (git commit: crates.io)
+probe-rs 0.31.0 (git commit: crates.io)
 #+end_example
+
+=probe-rs list= sees the KitProg3 probe:
+
+#+begin_example
+The following debug probes were found:
+[0]: KitProg3 CMSIS-DAP -- 04b4:f155-1:1F110B1D03201400 (CMSIS-DAP)
+#+end_example
+
+Earlier =probe-rs 0.30.0= could enumerate the probe, inspect the AP
+layout, and dry-run the local PSoC62 target YAML, but real flashing still
+failed at reset/halt. Retest the local target YAML with 0.31.0 before
+depending on =probe-rs= for programming. Infineon OpenOCD remains the
+known working flashing path.
 
 Local probe-rs target file:
 
@@ -451,8 +455,8 @@ Implemented REPL surface:
   =symbol?=, =bool?=
 - lists: =cons=, =car=, =cdr=, =list=
 - board primitives: =led=, =heartbeat=, =button=, =millis=, =reg32=,
-  =poke32=, =regs=, =sd-status=, =sd-pins=, =sd-pinmux=, =sd-init=,
-  =sdhc-regs=, =heap=, =gc=, =reboot=
+  =poke32=, =regs=, =sd-status=, =sd-pins=, =sd-pinmux=, =sd-clock=,
+  =sd-init=, =sdhc-regs=, =heap=, =gc=, =reboot=
 
 Hardware diagnostics are Lisp forms now, not a separate command parser.
 For example:
@@ -494,6 +498,7 @@ forms while keeping the board quiet:
 (led status)
 (sd-status)
 (sd-pins)
+(sd-clock)
 (sd-init)
 (sdhc-regs)
 (reg32 #x40471024)
@@ -520,71 +525,56 @@ strong-input drive on CMD, CLK, and DAT0..3:
     (P13.CFG . #x6080eeee))
 #+end_example
 
-=sd-init= now records a richer failure report and waits 1000 ms after
-power and 400 kHz clock setup, matching the Infineon PDL bus-ramp delay.
-The current result:
+=sd-clock= confirms that firmware now enables the SDHC1 high-frequency
+root clock from PATH0/FLL with a divide-by-two root divider:
+
+#+begin_example
+(sd-clock)
+=> ((CLK_PATH0 . #x00000000)
+    (CLK_HF0 . #x80000000)
+    (CLK_HF2 . #x80000010)
+    (FLL_CONFIG . #x810000a3)
+    (FLL_CONFIG2 . #x0000000d)
+    (FLL_STATUS . #x00000007)
+    (selected-HF-Hz . #x02faf080))
+#+end_example
+
+=CLK_HF2= is the SDHC1 root on this PSoC6 package. =#x80000010= means
+enabled, sourced from PATH0/FLL, and divided by two, so the SDHC1 input
+clock is 50 MHz. The 400 kHz identification divider is therefore =#x3e=.
+
+=sd-init= now uses that 50 MHz root, sets the SDHC internal PLL-enable
+bit when enabling the card clock, emits a compact failure report that the
+serial bridge can carry reliably, and resets the command line after a
+timeout. The current result:
 
 #+begin_example
 (sd-init)
-=> ((status . acmd41-failed)
+=> ((status . cmd0-failed)
     (CMD8 . #x00000000)
-    (CMD8.error
-      (code . command-timeout)
-      (NORM_INT . #x00000000)
-      (ERR_INT . #x00000000)
-      (PSTATE . #x03f30000)
-      (CMD_R . #x0000081a)
-      (ARGUMENT . #x000001aa)
-      (PSTATE.after-write . #x03f30000)
-      (NORM_INT.after-write . #x00000000)
-      (ERR_INT.after-write . #x00000000))
+    (CMD8.error)
     (ACMD41.OCR . #x00000000)
-    (attempts . 1)
-    (GP_OUT . #x0000003b)
-    (GP_IN . #x00000000)
-    (HOST_CTRL1 . #x000000c0)
-    (HOST_CTRL2 . #x00001000)
-    (XFER_MODE . #x00000000)
-    (TOUT_CTRL . #x0000000e)
-    (CLK_CTRL . #x00007d07)
-    (PWR_CTRL . #x00000001)
-    (SW_RST . #x00000000)
+    (attempts . 0)
+    (CLK_CTRL . #x00003e0f)
     (NORM_INT . #x00000000)
     (ERR_INT . #x00000000)
-    (NORM_INT_STAT_EN . #x00001fff)
-    (ERR_INT_STAT_EN . #x000007ff)
-    (NORM_INT_SIG_EN . #x00000000)
-    (ERR_INT_SIG_EN . #x00000000)
-    (PSTATE . #x03f30000)
-    (CMD_R . #x0000371a)
+    (PSTATE . #x03f30001)
+    (CMD_R . #x000000c0)
     (ARGUMENT . #x00000000)
-    (RESP01 . #x00000000)
-    (RESP23 . #x00000000)
-    (RESP45 . #x00000000)
-    (RESP67 . #x00000000)
-    (last-error
-      (code . command-timeout)
-      (NORM_INT . #x00000000)
-      (ERR_INT . #x00000000)
-      (PSTATE . #x03f30000)
-      (CMD_R . #x0000371a)
-      (ARGUMENT . #x00000000)
-      (PSTATE.after-write . #x03f30000)
-      (NORM_INT.after-write . #x00000000)
-      (ERR_INT.after-write . #x00000000)))
+    (last-error . command-timeout)
+    (PSTATE.error . #x03f30001)
+    (PSTATE.after-write . #x03f30000)
+    (NORM_INT.after-write . #x00000000)
+    (ERR_INT.after-write . #x00000000))
 #+end_example
 
-The host setup values match the non-LED parts of the Infineon PDL path:
-=GP_OUT= is =#x3b=, =HOST_CTRL1= uses card-detect test mode, the timeout
-and interrupt status-enable registers are set, SD clock is enabled, and
-=PWR_CTRL= only sets the VDD1 bus-power bit, as PDL does.
-
-The important observation is that command writes land in =CMD_R= and
-=ARGUMENT=, but =PSTATE= does not show command inhibit after the write and
-no normal or error status bit appears. A manual combined 32-bit write to
-=XFER_MODE_R/CMD_R= behaved the same way. This points at the SDHC command
-engine not launching or not being clocked/gated, not merely an SD card
-response timeout.
+The host setup now gets further than the previous trace. Writing =CMD0=
+sets =CMD_INHIBIT= in =PSTATE=, so the command engine starts. The
+remaining failure is that no command-complete bit and no command-error
+bit appears in the normal/error interrupt status registers before the
+timeout. A later =(sdhc-regs)= read shows =SDHC1.PSTATE= back at
+=#x03f30000=, so the command line is not permanently wedged after the
+timeout path.
 
 * Next actions
 
