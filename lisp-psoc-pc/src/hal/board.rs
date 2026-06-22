@@ -346,6 +346,14 @@ impl lisp::Board for PsocBoard<'_> {
         wifi_sdio_cmd53_read_report(wifi_sdio::cmd53_read(self.p, function, address, count))
     }
 
+    fn wifi_backplane_read(
+        &mut self,
+        address: u32,
+        count: u8,
+    ) -> lisp::WifiSdioBackplaneReadReport {
+        wifi_sdio_backplane_read_report(wifi_sdio::backplane_read(self.p, address, count))
+    }
+
     fn sdhc_registers(&mut self) -> lisp::SdhcReport {
         micro_sd::enable_sdhc_controllers(self.p);
 
@@ -563,6 +571,31 @@ fn wifi_sdio_cmd53_read_status(status: wifi_sdio::WifiSdioCmd53ReadStatus) -> &'
     }
 }
 
+fn wifi_sdio_backplane_read_status(
+    status: wifi_sdio::WifiSdioBackplaneReadStatus,
+) -> &'static [u8] {
+    match status {
+        wifi_sdio::WifiSdioBackplaneReadStatus::Ready => b"ready",
+        wifi_sdio::WifiSdioBackplaneReadStatus::SetupFailed => b"setup-failed",
+        wifi_sdio::WifiSdioBackplaneReadStatus::InvalidAddress => b"invalid-address",
+        wifi_sdio::WifiSdioBackplaneReadStatus::InvalidCount => b"invalid-count",
+        wifi_sdio::WifiSdioBackplaneReadStatus::AlpWriteFailed => b"alp-write-failed",
+        wifi_sdio::WifiSdioBackplaneReadStatus::AlpReadFailed => b"alp-read-failed",
+        wifi_sdio::WifiSdioBackplaneReadStatus::AlpTimeout => b"alp-timeout",
+        wifi_sdio::WifiSdioBackplaneReadStatus::AlpClearFailed => b"alp-clear-failed",
+        wifi_sdio::WifiSdioBackplaneReadStatus::WindowHighWriteFailed => {
+            b"window-high-write-failed"
+        }
+        wifi_sdio::WifiSdioBackplaneReadStatus::WindowMidWriteFailed => b"window-mid-write-failed",
+        wifi_sdio::WifiSdioBackplaneReadStatus::WindowLowWriteFailed => b"window-low-write-failed",
+        wifi_sdio::WifiSdioBackplaneReadStatus::DataSetupBusy => b"data-setup-busy",
+        wifi_sdio::WifiSdioBackplaneReadStatus::Cmd53Failed => b"cmd53-failed",
+        wifi_sdio::WifiSdioBackplaneReadStatus::BufferReadTimeout => b"buffer-read-timeout",
+        wifi_sdio::WifiSdioBackplaneReadStatus::BufferEnableTimeout => b"buffer-enable-timeout",
+        wifi_sdio::WifiSdioBackplaneReadStatus::TransferTimeout => b"transfer-timeout",
+    }
+}
+
 fn wifi_sdio_command_error_report(
     error: wifi_sdio::CommandError,
 ) -> lisp::WifiSdioCommandErrorReport {
@@ -637,6 +670,23 @@ fn wifi_sdio_cmd53_read_report(
         function: report.function,
         address: report.address,
         count: report.count,
+        response: report.response,
+        bytes: report.bytes,
+        last_error: report.last_error.map(wifi_sdio_command_error_report),
+        host: wifi_sdio_host_report(report.host),
+    }
+}
+
+fn wifi_sdio_backplane_read_report(
+    report: wifi_sdio::WifiSdioBackplaneReadReport,
+) -> lisp::WifiSdioBackplaneReadReport {
+    lisp::WifiSdioBackplaneReadReport {
+        status: wifi_sdio_backplane_read_status(report.status),
+        setup_status: wifi_sdio_backplane_status(report.setup_status),
+        address: report.address,
+        count: report.count,
+        window_base: report.window_base,
+        window_address: report.window_address,
         response: report.response,
         bytes: report.bytes,
         last_error: report.last_error.map(wifi_sdio_command_error_report),

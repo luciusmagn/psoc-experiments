@@ -58,6 +58,10 @@ const SDIO_CCCR_F1_BLOCK_SIZE_LOW: u32 = 0x110;
 const SDIO_CCCR_F1_BLOCK_SIZE_HIGH: u32 = 0x111;
 const SDIO_CCCR_F2_BLOCK_SIZE_LOW: u32 = 0x210;
 const SDIO_CCCR_F2_BLOCK_SIZE_HIGH: u32 = 0x211;
+const SDIO_BACKPLANE_FUNCTION: u8 = 1;
+const SDIO_BACKPLANE_ADDRESS_LOW: u32 = 0x1000a;
+const SDIO_BACKPLANE_ADDRESS_MID: u32 = 0x1000b;
+const SDIO_BACKPLANE_ADDRESS_HIGH: u32 = 0x1000c;
 const SDIO_CHIP_CLOCK_CSR: u32 = 0x1000e;
 const SDIO_FUNCTION_ENABLE_1: u8 = 0x02;
 const SDIO_FUNCTION_READY_1: u8 = 0x02;
@@ -72,6 +76,8 @@ const SBSDIO_FORCE_ALP: u8 = 0x01;
 const SBSDIO_ALP_AVAIL_REQ: u8 = 0x08;
 const SBSDIO_FORCE_HW_CLKREQ_OFF: u8 = 0x20;
 const SBSDIO_ALP_AVAIL: u8 = 0x40;
+const SBSDIO_SB_OFT_ADDR_MASK: u32 = 0x07fff;
+const SBSDIO_SB_ACCESS_2_4B_FLAG: u32 = 0x08000;
 const XFER_MODE_BLOCK_COUNT_ENABLE: u16 = 1 << 1;
 const XFER_MODE_READ: u16 = 1 << 4;
 
@@ -171,6 +177,26 @@ pub enum WifiSdioCmd53ReadStatus {
 }
 
 #[derive(Clone, Copy)]
+pub enum WifiSdioBackplaneReadStatus {
+    Ready,
+    SetupFailed,
+    InvalidAddress,
+    InvalidCount,
+    AlpWriteFailed,
+    AlpReadFailed,
+    AlpTimeout,
+    AlpClearFailed,
+    WindowHighWriteFailed,
+    WindowMidWriteFailed,
+    WindowLowWriteFailed,
+    DataSetupBusy,
+    Cmd53Failed,
+    BufferReadTimeout,
+    BufferEnableTimeout,
+    TransferTimeout,
+}
+
+#[derive(Clone, Copy)]
 pub struct CommandError {
     pub code: CommandErrorCode,
     pub normal_int: u16,
@@ -190,6 +216,21 @@ struct CommandTrace {
     pstate_after_write: u32,
     normal_int_after_write: u16,
     error_int_after_write: u16,
+}
+
+#[derive(Clone, Copy)]
+enum AlpError {
+    Write(CommandError),
+    Read { response: u32, error: CommandError },
+    Timeout { response: u32 },
+    Clear { response: u32, error: CommandError },
+}
+
+#[derive(Clone, Copy)]
+enum BackplaneWindowError {
+    High(CommandError),
+    Mid(CommandError),
+    Low(CommandError),
 }
 
 pub struct WifiSdioHostSnapshot {
@@ -298,6 +339,19 @@ pub struct WifiSdioCmd53ReadReport {
     pub function: u8,
     pub address: u32,
     pub count: u8,
+    pub response: u32,
+    pub bytes: [u8; SDIO_CMD53_PREVIEW_BYTES],
+    pub last_error: Option<CommandError>,
+    pub host: WifiSdioHostSnapshot,
+}
+
+pub struct WifiSdioBackplaneReadReport {
+    pub status: WifiSdioBackplaneReadStatus,
+    pub setup_status: WifiSdioBackplaneStatus,
+    pub address: u32,
+    pub count: u8,
+    pub window_base: u32,
+    pub window_address: u32,
     pub response: u32,
     pub bytes: [u8; SDIO_CMD53_PREVIEW_BYTES],
     pub last_error: Option<CommandError>,
@@ -1099,6 +1153,177 @@ pub fn setup_backplane(p: &Peripherals) -> WifiSdioBackplaneReport {
     )
 }
 
+pub fn backplane_read(p: &Peripherals, address: u32, count: u8) -> WifiSdioBackplaneReadReport {
+    if !is_valid_backplane_read_count(count) {
+        return backplane_read_report(
+            p,
+            WifiSdioBackplaneReadStatus::InvalidCount,
+            WifiSdioBackplaneStatus::Ready,
+            address,
+            count,
+            0,
+            0,
+            0,
+            [0; SDIO_CMD53_PREVIEW_BYTES],
+            None,
+        );
+    }
+
+    if backplane_read_crosses_window(address, count) {
+        return backplane_read_report(
+            p,
+            WifiSdioBackplaneReadStatus::InvalidAddress,
+            WifiSdioBackplaneStatus::Ready,
+            address,
+            count,
+            0,
+            0,
+            0,
+            [0; SDIO_CMD53_PREVIEW_BYTES],
+            None,
+        );
+    }
+
+    let setup = setup_backplane(p);
+    if !matches!(setup.status, WifiSdioBackplaneStatus::Ready) {
+        return backplane_read_report(
+            p,
+            WifiSdioBackplaneReadStatus::SetupFailed,
+            setup.status,
+            address,
+            count,
+            0,
+            0,
+            0,
+            [0; SDIO_CMD53_PREVIEW_BYTES],
+            setup.last_error,
+        );
+    }
+
+    let core = &p.SDHC0.core;
+    let alp_response = match request_alp_clock(core) {
+        Ok(response) => response,
+        Err(error) => {
+            let (status, response, last_error) = backplane_read_alp_error(error);
+            return backplane_read_report(
+                p,
+                status,
+                setup.status,
+                address,
+                count,
+                0,
+                0,
+                response,
+                [0; SDIO_CMD53_PREVIEW_BYTES],
+                last_error,
+            );
+        }
+    };
+
+    let window_base = match set_backplane_window(core, address) {
+        Ok(window_base) => window_base,
+        Err(error) => {
+            let (status, last_error) = backplane_window_error(error);
+            return backplane_read_report(
+                p,
+                status,
+                setup.status,
+                address,
+                count,
+                backplane_window_base(address),
+                0,
+                alp_response,
+                [0; SDIO_CMD53_PREVIEW_BYTES],
+                Some(last_error),
+            );
+        }
+    };
+    let window_address = backplane_window_address(address, count);
+
+    if !configure_cmd53_read(core, count, false) {
+        return backplane_read_report(
+            p,
+            WifiSdioBackplaneReadStatus::DataSetupBusy,
+            setup.status,
+            address,
+            count,
+            window_base,
+            window_address,
+            0,
+            [0; SDIO_CMD53_PREVIEW_BYTES],
+            None,
+        );
+    }
+
+    let argument = cmd53_argument(
+        false,
+        SDIO_BACKPLANE_FUNCTION,
+        false,
+        true,
+        window_address,
+        count as u16,
+    );
+    let response = match send_command(
+        core,
+        Command {
+            index: 53,
+            argument,
+            response: ResponseType::Len48,
+            command_type: CommandType::Normal,
+            data_present: true,
+            crc_check: true,
+            index_check: true,
+        },
+    ) {
+        Ok(response) => response,
+        Err(error) => {
+            return backplane_read_report(
+                p,
+                WifiSdioBackplaneReadStatus::Cmd53Failed,
+                setup.status,
+                address,
+                count,
+                window_base,
+                window_address,
+                0,
+                [0; SDIO_CMD53_PREVIEW_BYTES],
+                Some(error),
+            )
+        }
+    };
+
+    let bytes = match read_cmd53_bytes(core, count) {
+        Ok(bytes) => bytes,
+        Err(status) => {
+            return backplane_read_report(
+                p,
+                backplane_read_data_status(status),
+                setup.status,
+                address,
+                count,
+                window_base,
+                window_address,
+                response,
+                [0; SDIO_CMD53_PREVIEW_BYTES],
+                None,
+            )
+        }
+    };
+
+    backplane_read_report(
+        p,
+        WifiSdioBackplaneReadStatus::Ready,
+        setup.status,
+        address,
+        count,
+        window_base,
+        window_address,
+        response,
+        bytes,
+        None,
+    )
+}
+
 pub fn cmd53_read(
     p: &Peripherals,
     function: u8,
@@ -1163,80 +1388,23 @@ pub fn cmd53_read(
     }
 
     let core = &p.SDHC0.core;
-    let alp_request = SBSDIO_FORCE_HW_CLKREQ_OFF | SBSDIO_ALP_AVAIL_REQ | SBSDIO_FORCE_ALP;
-    let mut alp_response =
-        match cmd52_write_function_byte_selected(core, 1, SDIO_CHIP_CLOCK_CSR, alp_request) {
-            Ok(response) => response,
-            Err(error) => {
-                return cmd53_read_report(
-                    p,
-                    WifiSdioCmd53ReadStatus::AlpWriteFailed,
-                    setup.status,
-                    function,
-                    address,
-                    count,
-                    0,
-                    [0; SDIO_CMD53_PREVIEW_BYTES],
-                    Some(error),
-                )
-            }
-        };
-
-    let mut alp_attempts = 0;
-    let mut clock_csr = 0;
-    while alp_attempts < SDIO_ALP_AVAIL_MAX_ATTEMPTS {
-        alp_attempts += 1;
-        let read = match cmd52_read_function_byte_selected(core, 1, SDIO_CHIP_CLOCK_CSR) {
-            Ok(read) => read,
-            Err(error) => {
-                return cmd53_read_report(
-                    p,
-                    WifiSdioCmd53ReadStatus::AlpReadFailed,
-                    setup.status,
-                    function,
-                    address,
-                    count,
-                    alp_response,
-                    [0; SDIO_CMD53_PREVIEW_BYTES],
-                    Some(error),
-                )
-            }
-        };
-        clock_csr = read.0;
-        alp_response = read.1;
-        if clock_csr & SBSDIO_ALP_AVAIL != 0 {
-            break;
+    let alp_response = match request_alp_clock(core) {
+        Ok(response) => response,
+        Err(error) => {
+            let (status, response, last_error) = cmd53_read_alp_error(error);
+            return cmd53_read_report(
+                p,
+                status,
+                setup.status,
+                function,
+                address,
+                count,
+                response,
+                [0; SDIO_CMD53_PREVIEW_BYTES],
+                last_error,
+            );
         }
-        delay_ms(1);
-    }
-
-    if clock_csr & SBSDIO_ALP_AVAIL == 0 {
-        return cmd53_read_report(
-            p,
-            WifiSdioCmd53ReadStatus::AlpTimeout,
-            setup.status,
-            function,
-            address,
-            count,
-            alp_response,
-            [0; SDIO_CMD53_PREVIEW_BYTES],
-            None,
-        );
-    }
-
-    if let Err(error) = cmd52_write_function_byte_selected(core, 1, SDIO_CHIP_CLOCK_CSR, 0) {
-        return cmd53_read_report(
-            p,
-            WifiSdioCmd53ReadStatus::AlpClearFailed,
-            setup.status,
-            function,
-            address,
-            count,
-            alp_response,
-            [0; SDIO_CMD53_PREVIEW_BYTES],
-            Some(error),
-        );
-    }
+    };
 
     let block_mode = count as u16 == SDIO_CMD53_BLOCK_BYTES;
     if !configure_cmd53_read(core, count, block_mode) {
@@ -1458,10 +1626,150 @@ fn cmd53_argument(
     argument
 }
 
+fn request_alp_clock(core: &sdhc0::CORE) -> Result<u32, AlpError> {
+    let alp_request = SBSDIO_FORCE_HW_CLKREQ_OFF | SBSDIO_ALP_AVAIL_REQ | SBSDIO_FORCE_ALP;
+    let mut alp_response = cmd52_write_function_byte_selected(
+        core,
+        SDIO_BACKPLANE_FUNCTION,
+        SDIO_CHIP_CLOCK_CSR,
+        alp_request,
+    )
+    .map_err(AlpError::Write)?;
+
+    let mut attempts = 0;
+    let mut clock_csr = 0;
+    while attempts < SDIO_ALP_AVAIL_MAX_ATTEMPTS {
+        attempts += 1;
+        let read =
+            cmd52_read_function_byte_selected(core, SDIO_BACKPLANE_FUNCTION, SDIO_CHIP_CLOCK_CSR)
+                .map_err(|error| AlpError::Read {
+                response: alp_response,
+                error,
+            })?;
+        clock_csr = read.0;
+        alp_response = read.1;
+        if clock_csr & SBSDIO_ALP_AVAIL != 0 {
+            break;
+        }
+        delay_ms(1);
+    }
+
+    if clock_csr & SBSDIO_ALP_AVAIL == 0 {
+        return Err(AlpError::Timeout {
+            response: alp_response,
+        });
+    }
+
+    cmd52_write_function_byte_selected(core, SDIO_BACKPLANE_FUNCTION, SDIO_CHIP_CLOCK_CSR, 0)
+        .map_err(|error| AlpError::Clear {
+            response: alp_response,
+            error,
+        })?;
+
+    Ok(alp_response)
+}
+
+fn cmd53_read_alp_error(error: AlpError) -> (WifiSdioCmd53ReadStatus, u32, Option<CommandError>) {
+    match error {
+        AlpError::Write(error) => (WifiSdioCmd53ReadStatus::AlpWriteFailed, 0, Some(error)),
+        AlpError::Read { response, error } => (
+            WifiSdioCmd53ReadStatus::AlpReadFailed,
+            response,
+            Some(error),
+        ),
+        AlpError::Timeout { response } => (WifiSdioCmd53ReadStatus::AlpTimeout, response, None),
+        AlpError::Clear { response, error } => (
+            WifiSdioCmd53ReadStatus::AlpClearFailed,
+            response,
+            Some(error),
+        ),
+    }
+}
+
+fn backplane_read_alp_error(
+    error: AlpError,
+) -> (WifiSdioBackplaneReadStatus, u32, Option<CommandError>) {
+    match error {
+        AlpError::Write(error) => (WifiSdioBackplaneReadStatus::AlpWriteFailed, 0, Some(error)),
+        AlpError::Read { response, error } => (
+            WifiSdioBackplaneReadStatus::AlpReadFailed,
+            response,
+            Some(error),
+        ),
+        AlpError::Timeout { response } => (WifiSdioBackplaneReadStatus::AlpTimeout, response, None),
+        AlpError::Clear { response, error } => (
+            WifiSdioBackplaneReadStatus::AlpClearFailed,
+            response,
+            Some(error),
+        ),
+    }
+}
+
+fn set_backplane_window(core: &sdhc0::CORE, address: u32) -> Result<u32, BackplaneWindowError> {
+    let base = backplane_window_base(address);
+    cmd52_write_function_byte_selected(
+        core,
+        SDIO_BACKPLANE_FUNCTION,
+        SDIO_BACKPLANE_ADDRESS_HIGH,
+        (base >> 24) as u8,
+    )
+    .map_err(BackplaneWindowError::High)?;
+    cmd52_write_function_byte_selected(
+        core,
+        SDIO_BACKPLANE_FUNCTION,
+        SDIO_BACKPLANE_ADDRESS_MID,
+        (base >> 16) as u8,
+    )
+    .map_err(BackplaneWindowError::Mid)?;
+    cmd52_write_function_byte_selected(
+        core,
+        SDIO_BACKPLANE_FUNCTION,
+        SDIO_BACKPLANE_ADDRESS_LOW,
+        (base >> 8) as u8,
+    )
+    .map_err(BackplaneWindowError::Low)?;
+    Ok(base)
+}
+
+fn backplane_window_error(
+    error: BackplaneWindowError,
+) -> (WifiSdioBackplaneReadStatus, CommandError) {
+    match error {
+        BackplaneWindowError::High(error) => {
+            (WifiSdioBackplaneReadStatus::WindowHighWriteFailed, error)
+        }
+        BackplaneWindowError::Mid(error) => {
+            (WifiSdioBackplaneReadStatus::WindowMidWriteFailed, error)
+        }
+        BackplaneWindowError::Low(error) => {
+            (WifiSdioBackplaneReadStatus::WindowLowWriteFailed, error)
+        }
+    }
+}
+
+fn backplane_window_base(address: u32) -> u32 {
+    address & !SBSDIO_SB_OFT_ADDR_MASK
+}
+
+fn backplane_window_address(address: u32, count: u8) -> u32 {
+    let mut window_address = address & SBSDIO_SB_OFT_ADDR_MASK;
+    if count == 4 {
+        window_address |= SBSDIO_SB_ACCESS_2_4B_FLAG;
+    }
+    window_address
+}
+
+fn is_valid_backplane_read_count(count: u8) -> bool {
+    count == 2 || count == 4
+}
+
+fn backplane_read_crosses_window(address: u32, count: u8) -> bool {
+    (address & SBSDIO_SB_OFT_ADDR_MASK) + count as u32 > SBSDIO_SB_OFT_ADDR_MASK + 1
+}
+
 fn is_valid_cmd53_read_count(count: u8) -> bool {
-    count > 0
-        && count as u16 <= SDIO_CMD53_MAX_READ_BYTES
-        && count as u16 % SDIO_CMD53_WORD_BYTES == 0
+    count == 2
+        || (count as u16 <= SDIO_CMD53_MAX_READ_BYTES && count as u16 % SDIO_CMD53_WORD_BYTES == 0)
 }
 
 fn configure_cmd53_read(core: &sdhc0::CORE, count: u8, block_mode: bool) -> bool {
@@ -1509,7 +1817,8 @@ fn read_cmd53_bytes(
     }
 
     let mut bytes = [0u8; SDIO_CMD53_PREVIEW_BYTES];
-    let word_count = count as usize / SDIO_CMD53_WORD_BYTES as usize;
+    let word_count =
+        (count as usize + SDIO_CMD53_WORD_BYTES as usize - 1) / SDIO_CMD53_WORD_BYTES as usize;
     for word_index in 0..word_count {
         if !wait_buffer_read_enable(core) {
             let _ = software_reset_data_line(core);
@@ -1647,6 +1956,45 @@ fn backplane_report(
         interrupt_enable,
         attempts,
         last_response,
+        last_error,
+        host: host_snapshot(p),
+    }
+}
+
+fn backplane_read_data_status(status: WifiSdioCmd53ReadStatus) -> WifiSdioBackplaneReadStatus {
+    match status {
+        WifiSdioCmd53ReadStatus::BufferReadTimeout => {
+            WifiSdioBackplaneReadStatus::BufferReadTimeout
+        }
+        WifiSdioCmd53ReadStatus::BufferEnableTimeout => {
+            WifiSdioBackplaneReadStatus::BufferEnableTimeout
+        }
+        WifiSdioCmd53ReadStatus::TransferTimeout => WifiSdioBackplaneReadStatus::TransferTimeout,
+        _ => WifiSdioBackplaneReadStatus::Cmd53Failed,
+    }
+}
+
+fn backplane_read_report(
+    p: &Peripherals,
+    status: WifiSdioBackplaneReadStatus,
+    setup_status: WifiSdioBackplaneStatus,
+    address: u32,
+    count: u8,
+    window_base: u32,
+    window_address: u32,
+    response: u32,
+    bytes: [u8; SDIO_CMD53_PREVIEW_BYTES],
+    last_error: Option<CommandError>,
+) -> WifiSdioBackplaneReadReport {
+    WifiSdioBackplaneReadReport {
+        status,
+        setup_status,
+        address,
+        count,
+        window_base,
+        window_address,
+        response,
+        bytes,
         last_error,
         host: host_snapshot(p),
     }
