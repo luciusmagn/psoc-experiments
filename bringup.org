@@ -1013,6 +1013,24 @@ Working hypothesis: function 1 is the first useful CYW4343W backplane
 function. Function 2 should not be treated as a blocker until function 1
 register access, firmware download, and mailbox setup are understood.
 
+* 2026-06-22 Firmware stratification
+
+Moved the active firmware toward explicit layers:
+
+1. =hal::console= owns SCB5 UART setup and byte I/O.
+2. =hal::board= owns LED/button GPIO, raw register access policy, uptime
+   and heartbeat state, and conversion from hardware reports into the
+   Lisp-facing board trait.
+3. =hal::micro_sd= and =hal::wifi_sdio= own SDHC register sequences for
+   the microSD socket and CYW4343W SDIO bus.
+4. =lisp_store= stays above the HAL and uses sector reads/writes instead
+   of direct SDHC register access.
+5. =main= is now startup plus the REPL loop.
+
+This should keep new Wi-Fi and storage diagnostics as Lisp forms built on
+HAL operations, without growing command parsing or direct register writes
+inside the evaluator.
+
 * Next actions
 
 1. Add REPL history and better editing across continuation lines.

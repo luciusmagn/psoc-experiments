@@ -1,6 +1,6 @@
 use psoc6_pac::Peripherals;
 
-use crate::{lisp, micro_sd};
+use crate::{hal::micro_sd, lisp};
 
 pub const DIRECTORY_SECTOR: u32 = 0x100;
 const DATA_START_SECTOR: u32 = 0x101;
