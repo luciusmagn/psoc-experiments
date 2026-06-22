@@ -1243,6 +1243,40 @@ git check-ignore -v .local/wifi/selected.env
 => .gitignore:7:.local/ .local/wifi/selected.env
 #+end_example
 
+* 2026-06-22 Wi-Fi CMD53 block read diagnostic
+
+Extended =(wifi-cmd53-read function address count)= so =count= may be 64.
+The 64-byte path configures SDHC data transfer as one 64-byte block and
+keeps the Lisp report compact by returning only the first 16 bytes. Smaller
+counts continue to use byte mode.
+
+Live validation after flashing:
+
+#+begin_example
+(led off)
+=> off
+
+(wifi-cmd53-read 1 #x1000c 4)
+=> ((status . buffer-read-timeout) ... (response . #x00001100) ...)
+
+(wifi-cmd53-read 1 #x1000c 64)
+=> ((status . buffer-read-timeout) ... (response . #x00001100) ...)
+#+end_example
+
+Both byte-mode and block-mode attempts receive the same R5 response before
+the data phase stalls. The =#x00001100= response is a useful clue: the card
+is answering CMD53, but appears to be rejecting the direct address being
+read. The next Wi-Fi diagnostic should follow the WHD backplane sequence
+instead of reading function 1 backplane window registers as normal CMD53
+data addresses:
+
+1. request ALP;
+2. write the backplane window with CMD52 to =#x1000a=, =#x1000b=, and
+   =#x1000c=;
+3. mask the target address with =#x07fff=;
+4. set the four-byte access flag =#x08000= only for four-byte reads;
+5. read through CMD53 function 1.
+
 * Next actions
 
 1. Add REPL history and better editing across continuation lines.

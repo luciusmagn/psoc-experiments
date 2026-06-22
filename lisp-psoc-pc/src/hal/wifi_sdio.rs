@@ -44,8 +44,10 @@ const SDIO_CMD53_FUNCTION_SHIFT: u8 = 28;
 const SDIO_CMD53_BLOCK_MODE: u32 = 1 << 27;
 const SDIO_CMD53_INCREMENTING_ADDRESS: u32 = 1 << 26;
 const SDIO_CMD53_ADDRESS_SHIFT: u8 = 9;
-const SDIO_CMD53_MAX_COUNT: u16 = 16;
+const SDIO_CMD53_PREVIEW_BYTES: usize = 16;
+const SDIO_CMD53_MAX_READ_BYTES: u16 = 64;
 const SDIO_CMD53_WORD_BYTES: u16 = 4;
+const SDIO_CMD53_BLOCK_BYTES: u16 = 64;
 const SDIO_CCCR_IO_ENABLE: u32 = 0x02;
 const SDIO_CCCR_IO_READY: u32 = 0x03;
 const SDIO_CCCR_INTERRUPT_ENABLE: u32 = 0x04;
@@ -297,7 +299,7 @@ pub struct WifiSdioCmd53ReadReport {
     pub address: u32,
     pub count: u8,
     pub response: u32,
-    pub bytes: [u8; SDIO_CMD53_MAX_COUNT as usize],
+    pub bytes: [u8; SDIO_CMD53_PREVIEW_BYTES],
     pub last_error: Option<CommandError>,
     pub host: WifiSdioHostSnapshot,
 }
@@ -1112,7 +1114,7 @@ pub fn cmd53_read(
             address,
             count,
             0,
-            [0; SDIO_CMD53_MAX_COUNT as usize],
+            [0; SDIO_CMD53_PREVIEW_BYTES],
             None,
         );
     }
@@ -1126,7 +1128,7 @@ pub fn cmd53_read(
             address,
             count,
             0,
-            [0; SDIO_CMD53_MAX_COUNT as usize],
+            [0; SDIO_CMD53_PREVIEW_BYTES],
             None,
         );
     }
@@ -1140,7 +1142,7 @@ pub fn cmd53_read(
             address,
             count,
             0,
-            [0; SDIO_CMD53_MAX_COUNT as usize],
+            [0; SDIO_CMD53_PREVIEW_BYTES],
             None,
         );
     }
@@ -1155,7 +1157,7 @@ pub fn cmd53_read(
             address,
             count,
             0,
-            [0; SDIO_CMD53_MAX_COUNT as usize],
+            [0; SDIO_CMD53_PREVIEW_BYTES],
             setup.last_error,
         );
     }
@@ -1174,7 +1176,7 @@ pub fn cmd53_read(
                     address,
                     count,
                     0,
-                    [0; SDIO_CMD53_MAX_COUNT as usize],
+                    [0; SDIO_CMD53_PREVIEW_BYTES],
                     Some(error),
                 )
             }
@@ -1195,7 +1197,7 @@ pub fn cmd53_read(
                     address,
                     count,
                     alp_response,
-                    [0; SDIO_CMD53_MAX_COUNT as usize],
+                    [0; SDIO_CMD53_PREVIEW_BYTES],
                     Some(error),
                 )
             }
@@ -1217,7 +1219,7 @@ pub fn cmd53_read(
             address,
             count,
             alp_response,
-            [0; SDIO_CMD53_MAX_COUNT as usize],
+            [0; SDIO_CMD53_PREVIEW_BYTES],
             None,
         );
     }
@@ -1231,12 +1233,13 @@ pub fn cmd53_read(
             address,
             count,
             alp_response,
-            [0; SDIO_CMD53_MAX_COUNT as usize],
+            [0; SDIO_CMD53_PREVIEW_BYTES],
             Some(error),
         );
     }
 
-    if !configure_cmd53_byte_read(core, count) {
+    let block_mode = count as u16 == SDIO_CMD53_BLOCK_BYTES;
+    if !configure_cmd53_read(core, count, block_mode) {
         return cmd53_read_report(
             p,
             WifiSdioCmd53ReadStatus::DataSetupBusy,
@@ -1245,12 +1248,18 @@ pub fn cmd53_read(
             address,
             count,
             0,
-            [0; SDIO_CMD53_MAX_COUNT as usize],
+            [0; SDIO_CMD53_PREVIEW_BYTES],
             None,
         );
     }
 
-    let argument = cmd53_argument(false, function, false, true, address, count as u16);
+    let command_count = if block_mode { 1 } else { count as u16 };
+    let transfer_bytes = if block_mode {
+        SDIO_CMD53_BLOCK_BYTES as u8
+    } else {
+        count
+    };
+    let argument = cmd53_argument(false, function, block_mode, true, address, command_count);
     let response = match send_command(
         core,
         Command {
@@ -1273,13 +1282,13 @@ pub fn cmd53_read(
                 address,
                 count,
                 0,
-                [0; SDIO_CMD53_MAX_COUNT as usize],
+                [0; SDIO_CMD53_PREVIEW_BYTES],
                 Some(error),
             )
         }
     };
 
-    let bytes = match read_cmd53_bytes(core, count) {
+    let bytes = match read_cmd53_bytes(core, transfer_bytes) {
         Ok(bytes) => bytes,
         Err(status) => {
             return cmd53_read_report(
@@ -1290,7 +1299,7 @@ pub fn cmd53_read(
                 address,
                 count,
                 response,
-                [0; SDIO_CMD53_MAX_COUNT as usize],
+                [0; SDIO_CMD53_PREVIEW_BYTES],
                 None,
             )
         }
@@ -1450,15 +1459,22 @@ fn cmd53_argument(
 }
 
 fn is_valid_cmd53_read_count(count: u8) -> bool {
-    count > 0 && count as u16 <= SDIO_CMD53_MAX_COUNT && count as u16 % SDIO_CMD53_WORD_BYTES == 0
+    count > 0
+        && count as u16 <= SDIO_CMD53_MAX_READ_BYTES
+        && count as u16 % SDIO_CMD53_WORD_BYTES == 0
 }
 
-fn configure_cmd53_byte_read(core: &sdhc0::CORE, count: u8) -> bool {
+fn configure_cmd53_read(core: &sdhc0::CORE, count: u8, block_mode: bool) -> bool {
     if !wait_command_and_data_lines_free(core) {
         return false;
     }
 
-    core.blocksize_r.write(|w| unsafe { w.bits(count as u16) });
+    let block_size = if block_mode {
+        SDIO_CMD53_BLOCK_BYTES
+    } else {
+        count as u16
+    };
+    core.blocksize_r.write(|w| unsafe { w.bits(block_size) });
     core.blockcount_r.write(|w| unsafe { w.bits(1) });
     core.sdmasa_r.write(|w| unsafe { w.bits(1) });
     core.bgap_ctrl_r.write(|w| unsafe { w.bits(0) });
@@ -1486,13 +1502,13 @@ fn wait_command_and_data_lines_free(core: &sdhc0::CORE) -> bool {
 fn read_cmd53_bytes(
     core: &sdhc0::CORE,
     count: u8,
-) -> Result<[u8; SDIO_CMD53_MAX_COUNT as usize], WifiSdioCmd53ReadStatus> {
+) -> Result<[u8; SDIO_CMD53_PREVIEW_BYTES], WifiSdioCmd53ReadStatus> {
     if !wait_buffer_read_ready(core) {
         let _ = software_reset_data_line(core);
         return Err(WifiSdioCmd53ReadStatus::BufferReadTimeout);
     }
 
-    let mut bytes = [0u8; SDIO_CMD53_MAX_COUNT as usize];
+    let mut bytes = [0u8; SDIO_CMD53_PREVIEW_BYTES];
     let word_count = count as usize / SDIO_CMD53_WORD_BYTES as usize;
     for word_index in 0..word_count {
         if !wait_buffer_read_enable(core) {
@@ -1502,10 +1518,12 @@ fn read_cmd53_bytes(
 
         let word = core.buf_data_r.read().bits();
         let offset = word_index * 4;
-        bytes[offset] = word as u8;
-        bytes[offset + 1] = (word >> 8) as u8;
-        bytes[offset + 2] = (word >> 16) as u8;
-        bytes[offset + 3] = (word >> 24) as u8;
+        if offset < SDIO_CMD53_PREVIEW_BYTES {
+            bytes[offset] = word as u8;
+            bytes[offset + 1] = (word >> 8) as u8;
+            bytes[offset + 2] = (word >> 16) as u8;
+            bytes[offset + 3] = (word >> 24) as u8;
+        }
     }
 
     if !wait_transfer_complete(core) {
@@ -1642,7 +1660,7 @@ fn cmd53_read_report(
     address: u32,
     count: u8,
     response: u32,
-    bytes: [u8; SDIO_CMD53_MAX_COUNT as usize],
+    bytes: [u8; SDIO_CMD53_PREVIEW_BYTES],
     last_error: Option<CommandError>,
 ) -> WifiSdioCmd53ReadReport {
     WifiSdioCmd53ReadReport {
