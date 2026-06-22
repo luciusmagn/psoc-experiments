@@ -610,7 +610,10 @@ Live sector-zero result:
     (first-words #x00000000 #x00000000 #x00000000 #x00000000
                  #x00000000 #x00000000 #x00000000 #x00000000)
     (MBR.sig . #x0000aa55)
+    (partition0.status . #x00000000)
     (partition0.type . #x00000083)
+    (partition0.lba . #x00000800)
+    (partition0.sectors . #x039a3800)
     (NORM_INT . #x00000000)
     (ERR_INT . #x00000000)
     (PSTATE . #x03f30000)
@@ -622,26 +625,31 @@ Live sector-zero result:
 #+end_example
 
 =MBR.sig=#xaa55= and partition type =#x83= prove that firmware is reading
-actual sector data from the inserted card. The first eight words are zero
+actual sector data from the inserted card. The first partition starts at
+LBA =#x800= and spans =#x039a3800= sectors. The first eight words are zero
 because this card's MBR boot-code area starts with zero-filled bytes.
 
 =sd-read0= returns the same report for sector zero. A nonzero read also
-works; this confirms that the Lisp argument is reaching =CMD17=:
+works; this confirms that the Lisp argument is reaching =CMD17=. Reading
+the first partition sector:
 
 #+begin_example
-(sd-read 1)
+(sd-read #x800)
 => ((status . ready)
     (init-status . ready-sdhc)
-    (sector . #x00000001)
+    (sector . #x00000800)
     (RCA . #x00005048)
     (OCR . #xc0ff8000)
     (attempts . 2)
     (CMD17.response . #x00000900)
     (last-error)
-    (first-words #x594c5242 #x00000054 #x00000001 #x00000800
-                 #x00000800 #x42424242 #x00010008 #x00000800)
-    (MBR.sig . #x0000ffff)
-    (partition0.type . #x000000ff)
+    (first-words #x00000000 #x00000000 #x00000000 #x00000000
+                 #x00000000 #x00000000 #x00000000 #x00000000)
+    (MBR.sig . #x00000000)
+    (partition0.status . #x00000000)
+    (partition0.type . #x00000000)
+    (partition0.lba . #x00000000)
+    (partition0.sectors . #x00000000)
     (NORM_INT . #x00000000)
     (ERR_INT . #x00000000)
     (PSTATE . #x03f30000)
@@ -649,7 +657,27 @@ works; this confirms that the Lisp argument is reaching =CMD17=:
     (BLOCK_COUNT . #x00000000)
     (XFER_MODE . #x00000012)
     (CMD_R . #x0000113a)
-    (ARGUMENT . #x00000001))
+    (ARGUMENT . #x00000800))
+#+end_example
+
+The generic sector report only fills =partition0.*= fields when the read
+sector has the MBR signature. This keeps arbitrary sector reads from
+displaying random payload bytes as partition metadata.
+
+During this slice, one post-flash read exposed an initialization race: the
+driver reset the command line immediately after a successful normal
+=CMD0=. That reset was a leftover from the earlier =CMD_TYPE=ABORT=
+failure. Removing the post-=CMD0= command-line reset and waiting for
+=CMD_COMPLETE= made =sd-init= return =ready-sdhc= again:
+
+#+begin_example
+(sd-init)
+=> ((status . ready-sdhc)
+    (CMD8 . #x000001aa)
+    (CMD8.error)
+    (ACMD41.OCR . #xc0ff8000)
+    (attempts . 1)
+    ...)
 #+end_example
 
 * Next actions

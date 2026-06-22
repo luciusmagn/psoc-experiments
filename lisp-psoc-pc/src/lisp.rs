@@ -164,7 +164,10 @@ pub struct SdReadReport {
     pub last_error: Option<SdCommandErrorReport>,
     pub first_words: [u32; 8],
     pub mbr_signature: u16,
+    pub partition_status: u8,
     pub partition_type: u8,
+    pub partition_lba_start: u32,
+    pub partition_sector_count: u32,
     pub normal_int: u16,
     pub error_int: u16,
     pub pstate: u32,
@@ -1526,7 +1529,12 @@ impl Machine {
         let last_error = self.sd_error_code_entry(b"last-error", report.last_error)?;
         let first_words = self.sd_word_list_entry(b"first-words", &report.first_words)?;
         let mbr_signature = self.word_entry(b"MBR.sig", report.mbr_signature as u32)?;
+        let partition_status =
+            self.word_entry(b"partition0.status", report.partition_status as u32)?;
         let partition_type = self.word_entry(b"partition0.type", report.partition_type as u32)?;
+        let partition_lba_start = self.word_entry(b"partition0.lba", report.partition_lba_start)?;
+        let partition_sector_count =
+            self.word_entry(b"partition0.sectors", report.partition_sector_count)?;
         let normal_int = self.word_entry(b"NORM_INT", report.normal_int as u32)?;
         let error_int = self.word_entry(b"ERR_INT", report.error_int as u32)?;
         let pstate = self.word_entry(b"PSTATE", report.pstate)?;
@@ -1546,7 +1554,10 @@ impl Machine {
             last_error,
             first_words,
             mbr_signature,
+            partition_status,
             partition_type,
+            partition_lba_start,
+            partition_sector_count,
             normal_int,
             error_int,
             pstate,

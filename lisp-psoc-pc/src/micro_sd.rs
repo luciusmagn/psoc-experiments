@@ -203,7 +203,10 @@ pub struct SectorReport {
     pub last_error: Option<CommandError>,
     pub first_words: [u32; SD_SECTOR_PREVIEW_WORDS],
     pub mbr_signature: u16,
+    pub partition_status: u8,
     pub partition_type: u8,
+    pub partition_lba_start: u32,
+    pub partition_sector_count: u32,
     pub normal_int: u16,
     pub error_int: u16,
     pub pstate: u32,
@@ -352,6 +355,9 @@ pub fn read_sector(p: &Peripherals, sector: u32) -> SectorReport {
                 0,
                 report.last_error,
                 [0; SD_SECTOR_PREVIEW_WORDS],
+                0,
+                0,
+                0,
                 0,
                 0,
             )
@@ -522,7 +528,10 @@ pub fn read_sector(p: &Peripherals, sector: u32) -> SectorReport {
         None,
         read.first_words,
         read.mbr_signature,
+        read.partition_status,
         read.partition_type,
+        read.partition_lba_start,
+        read.partition_sector_count,
     )
 }
 
@@ -602,8 +611,6 @@ fn identify_card(p: &Peripherals) -> Result<IdentifiedCard, InitReport> {
             Some(error),
         ));
     }
-
-    let _ = software_reset_command_line(core);
 
     let mut cmd8_error = None;
     let mut cmd8_is_valid = false;
@@ -801,7 +808,10 @@ fn init_report(
 struct ReadBlockPreview {
     first_words: [u32; SD_SECTOR_PREVIEW_WORDS],
     mbr_signature: u16,
+    partition_status: u8,
     partition_type: u8,
+    partition_lba_start: u32,
+    partition_sector_count: u32,
 }
 
 fn sector_report_for_card(
@@ -826,6 +836,9 @@ fn sector_report_for_card(
         [0; SD_SECTOR_PREVIEW_WORDS],
         0,
         0,
+        0,
+        0,
+        0,
     )
 }
 
@@ -841,7 +854,10 @@ fn sector_report(
     last_error: Option<CommandError>,
     first_words: [u32; SD_SECTOR_PREVIEW_WORDS],
     mbr_signature: u16,
+    partition_status: u8,
     partition_type: u8,
+    partition_lba_start: u32,
+    partition_sector_count: u32,
 ) -> SectorReport {
     let core = &p.SDHC1.core;
 
@@ -856,7 +872,10 @@ fn sector_report(
         last_error,
         first_words,
         mbr_signature,
+        partition_status,
         partition_type,
+        partition_lba_start,
+        partition_sector_count,
         normal_int: core.normal_int_stat_r.read().bits(),
         error_int: core.error_int_stat_r.read().bits(),
         pstate: core.pstate_reg.read().bits(),
@@ -1001,7 +1020,7 @@ fn read_single_block_preview(core: &sdhc0::CORE) -> Result<ReadBlockPreview, Rea
 
     let mut first_words = [0; SD_SECTOR_PREVIEW_WORDS];
     let mut signature_word = 0;
-    let mut partition_word = 0;
+    let mut partition_words = [0; 5];
 
     for index in 0..SD_BLOCK_WORDS {
         if !wait_buffer_read_enable(core) {
@@ -1013,8 +1032,8 @@ fn read_single_block_preview(core: &sdhc0::CORE) -> Result<ReadBlockPreview, Rea
         if index < SD_SECTOR_PREVIEW_WORDS {
             first_words[index] = word;
         }
-        if index == 112 {
-            partition_word = word;
+        if (111..=115).contains(&index) {
+            partition_words[index - 111] = word;
         }
         if index == SD_BLOCK_WORDS - 1 {
             signature_word = word;
@@ -1026,10 +1045,26 @@ fn read_single_block_preview(core: &sdhc0::CORE) -> Result<ReadBlockPreview, Rea
         return Err(ReadStatus::TransferTimeout);
     }
 
+    let mbr_signature = (signature_word >> 16) as u16;
+    let (partition_status, partition_type, partition_lba_start, partition_sector_count) =
+        if mbr_signature == 0xaa55 {
+            (
+                ((partition_words[0] >> 16) & 0xff) as u8,
+                ((partition_words[1] >> 16) & 0xff) as u8,
+                ((partition_words[2] >> 16) & 0xffff) | ((partition_words[3] & 0xffff) << 16),
+                ((partition_words[3] >> 16) & 0xffff) | ((partition_words[4] & 0xffff) << 16),
+            )
+        } else {
+            (0, 0, 0, 0)
+        };
+
     Ok(ReadBlockPreview {
         first_words,
-        mbr_signature: (signature_word >> 16) as u16,
-        partition_type: ((partition_word >> 16) & 0xff) as u8,
+        mbr_signature,
+        partition_status,
+        partition_type,
+        partition_lba_start,
+        partition_sector_count,
     })
 }
 
@@ -1112,7 +1147,7 @@ fn send_command(core: &sdhc0::CORE, command: Command) -> Result<u32, CommandErro
     };
     delay_us(50);
 
-    wait_command_complete(core, matches!(command.response, ResponseType::None), trace)?;
+    wait_command_complete(core, trace)?;
     delay_us(20);
 
     Ok(core.resp01_r.read().bits())
@@ -1153,16 +1188,10 @@ fn poll_command_line_free(core: &sdhc0::CORE) -> Result<(), CommandError> {
     ))
 }
 
-fn wait_command_complete(
-    core: &sdhc0::CORE,
-    allow_inhibit_fallback: bool,
-    trace: CommandTrace,
-) -> Result<(), CommandError> {
+fn wait_command_complete(core: &sdhc0::CORE, trace: CommandTrace) -> Result<(), CommandError> {
     for _ in 0..1000 {
         let normal_int = core.normal_int_stat_r.read().bits();
         let error_int = core.error_int_stat_r.read().bits();
-        let pstate = core.pstate_reg.read().bits();
-
         if error_int != 0 || normal_int & NORMAL_INT_ERROR != 0 {
             let error = command_error(core, CommandErrorCode::CommandStatusError, trace);
             clear_interrupts(core);
@@ -1174,16 +1203,6 @@ fn wait_command_complete(
             core.normal_int_stat_r
                 .write(|w| unsafe { w.bits(NORMAL_INT_CMD_COMPLETE) });
             return Ok(());
-        }
-
-        if allow_inhibit_fallback && pstate & PSTATE_CMD_INHIBIT == 0 {
-            delay_us(20);
-            let normal_int = core.normal_int_stat_r.read().bits();
-            let error_int = core.error_int_stat_r.read().bits();
-
-            if error_int == 0 && normal_int & NORMAL_INT_ERROR == 0 {
-                return Ok(());
-            }
         }
 
         delay_us(3);
