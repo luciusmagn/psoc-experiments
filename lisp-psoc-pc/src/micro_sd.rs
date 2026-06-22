@@ -290,7 +290,10 @@ pub fn initialize_card(p: &Peripherals) -> InitReport {
             index: 0,
             argument: 0,
             response: ResponseType::None,
-            command_type: CommandType::Abort,
+            // PDL marks reset CMD0 as ABORT, but this board's SDHC1 does not
+            // complete CMD0 with CMD_TYPE=ABORT. A normal no-response CMD0
+            // completes and still sends GO_IDLE_STATE on the bus.
+            command_type: CommandType::Normal,
             crc_check: false,
             index_check: false,
         },

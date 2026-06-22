@@ -29,7 +29,7 @@ Working serial capture:
 
 #+begin_example
 lisp> (help)
-=> (help quote if define lambda begin let + - * / mod = < <= > >= not eq? nil? atom? pair? number? symbol? bool? cons car cdr list led heartbeat button millis reg32 poke32 regs sd-status sd-pins sd-pinmux sd-init sdhc-regs heap gc reboot)
+=> (help quote if define lambda begin let + - * / mod = < <= > >= not eq? nil? atom? pair? number? symbol? bool? cons car cdr list led heartbeat button millis reg32 poke32 regs sd-status sd-pins sd-pinmux sd-clock sd-init sdhc-regs heap gc reboot)
 
 lisp> (+ 1 2 3)
 => 6
@@ -544,44 +544,47 @@ enabled, sourced from PATH0/FLL, and divided by two, so the SDHC1 input
 clock is 50 MHz. The 400 kHz identification divider is therefore =#x3e=.
 
 =sd-init= now uses that 50 MHz root, sets the SDHC internal PLL-enable
-bit when enabling the card clock, emits a compact failure report that the
-serial bridge can carry reliably, and resets the command line after a
-timeout. The current result:
+bit when enabling the card clock, emits a compact report that the serial
+bridge can carry reliably, and sends =CMD0= as a normal no-response
+command. Infineon's PDL marks reset =CMD0= as =CMD_TYPE=ABORT=, but a live
+register experiment on this board showed that =CMD_TYPE=ABORT= asserted
+=CMD_INHIBIT= and never raised command-complete or command-error. The same
+=CMD0= issued as =CMD_TYPE=NORMAL= completed immediately.
+
+The current result:
 
 #+begin_example
 (sd-init)
-=> ((status . cmd0-failed)
-    (CMD8 . #x00000000)
+=> ((status . ready-sdhc)
+    (CMD8 . #x000001aa)
     (CMD8.error)
-    (ACMD41.OCR . #x00000000)
-    (attempts . 0)
+    (ACMD41.OCR . #xc0ff8000)
+    (attempts . 69)
     (CLK_CTRL . #x00003e0f)
     (NORM_INT . #x00000000)
     (ERR_INT . #x00000000)
-    (PSTATE . #x03f30001)
-    (CMD_R . #x000000c0)
-    (ARGUMENT . #x00000000)
-    (last-error . command-timeout)
-    (PSTATE.error . #x03f30001)
-    (PSTATE.after-write . #x03f30000)
-    (NORM_INT.after-write . #x00000000)
-    (ERR_INT.after-write . #x00000000))
+    (PSTATE . #x03f30000)
+    (CMD_R . #x00002902)
+    (ARGUMENT . #x40ff8000)
+    (last-error)
+    (PSTATE.error)
+    (PSTATE.after-write)
+    (NORM_INT.after-write)
+    (ERR_INT.after-write))
 #+end_example
 
-The host setup now gets further than the previous trace. Writing =CMD0=
-sets =CMD_INHIBIT= in =PSTATE=, so the command engine starts. The
-remaining failure is that no command-complete bit and no command-error
-bit appears in the normal/error interrupt status registers before the
-timeout. A later =(sdhc-regs)= read shows =SDHC1.PSTATE= back at
-=#x03f30000=, so the command line is not permanently wedged after the
-timeout path.
+This proves the removable-card path can complete the SD memory-card
+identification sequence. =CMD8= echoes the expected =#xaa= pattern, and
+=ACMD41.OCR= has the busy and high-capacity bits set. The next firmware
+slice should select the card, configure block length if needed, and read
+sector 0 through the same Lisp diagnostic surface.
 
 * Next actions
 
 1. Add REPL history and better editing across continuation lines.
 2. Add string support before file-path based microSD functions.
-3. Investigate SDHC1 command-engine launch, clock, protection, or gating.
-4. Implement SDHC1 block reads after the command/clock path is proven.
+3. Implement SDHC1 block reads and expose a compact sector-0 diagnostic.
+4. Add a FAT/exFAT-aware storage layer after raw sector reads work.
 5. Test the newer Infineon target =infineon/cy8cxxa.cfg= as a replacement
    for obsolete =target/psoc6_2m.cfg=.
 6. Start Wi-Fi from a known-good Infineon or Zephyr sample before trying
