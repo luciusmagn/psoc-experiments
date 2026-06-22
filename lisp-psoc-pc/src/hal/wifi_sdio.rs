@@ -190,6 +190,7 @@ pub enum WifiSdioBackplaneReadStatus {
     WindowMidWriteFailed,
     WindowLowWriteFailed,
     DataSetupBusy,
+    Cmd52Failed,
     Cmd53Failed,
     BufferReadTimeout,
     BufferEnableTimeout,
@@ -1240,6 +1241,43 @@ pub fn backplane_read(p: &Peripherals, address: u32, count: u8) -> WifiSdioBackp
     };
     let window_address = backplane_window_address(address, count);
 
+    if count == 1 {
+        return match cmd52_read_function_byte_selected(
+            core,
+            SDIO_BACKPLANE_FUNCTION,
+            window_address,
+        ) {
+            Ok((byte, response)) => {
+                let mut bytes = [0; SDIO_CMD53_PREVIEW_BYTES];
+                bytes[0] = byte;
+                backplane_read_report(
+                    p,
+                    WifiSdioBackplaneReadStatus::Ready,
+                    setup.status,
+                    address,
+                    count,
+                    window_base,
+                    window_address,
+                    response,
+                    bytes,
+                    None,
+                )
+            }
+            Err(error) => backplane_read_report(
+                p,
+                WifiSdioBackplaneReadStatus::Cmd52Failed,
+                setup.status,
+                address,
+                count,
+                window_base,
+                window_address,
+                0,
+                [0; SDIO_CMD53_PREVIEW_BYTES],
+                Some(error),
+            ),
+        };
+    }
+
     if !configure_cmd53_read(core, count, false) {
         return backplane_read_report(
             p,
@@ -1760,7 +1798,7 @@ fn backplane_window_address(address: u32, count: u8) -> u32 {
 }
 
 fn is_valid_backplane_read_count(count: u8) -> bool {
-    count == 2 || count == 4
+    count == 1 || count == 2 || count == 4
 }
 
 fn backplane_read_crosses_window(address: u32, count: u8) -> bool {

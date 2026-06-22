@@ -589,6 +589,7 @@ fn wifi_sdio_backplane_read_status(
         wifi_sdio::WifiSdioBackplaneReadStatus::WindowMidWriteFailed => b"window-mid-write-failed",
         wifi_sdio::WifiSdioBackplaneReadStatus::WindowLowWriteFailed => b"window-low-write-failed",
         wifi_sdio::WifiSdioBackplaneReadStatus::DataSetupBusy => b"data-setup-busy",
+        wifi_sdio::WifiSdioBackplaneReadStatus::Cmd52Failed => b"cmd52-failed",
         wifi_sdio::WifiSdioBackplaneReadStatus::Cmd53Failed => b"cmd53-failed",
         wifi_sdio::WifiSdioBackplaneReadStatus::BufferReadTimeout => b"buffer-read-timeout",
         wifi_sdio::WifiSdioBackplaneReadStatus::BufferEnableTimeout => b"buffer-enable-timeout",

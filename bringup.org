@@ -1286,8 +1286,9 @@ the CYW4343W backplane path. This implements the WHD-style sequence:
 2. request ALP through =SBSDIO_CHIP_CLOCK_CSR=;
 3. write the backplane window registers =#x1000c=, =#x1000b=, and
    =#x1000a= through CMD52 function 1;
-4. read the masked window offset through CMD53 function 1;
-5. apply the =#x08000= four-byte access flag only for 4-byte reads.
+4. use CMD52 for one-byte reads;
+5. use CMD53 byte mode for two-byte and four-byte reads;
+6. apply the =#x08000= four-byte access flag only for 4-byte reads.
 
 Live validation after flashing:
 
@@ -1316,14 +1317,25 @@ The first two bytes =#xa6 #xa9= are little-endian =#xa9a6=, decimal
 The host snapshot showed =ERR_INT #x00000000=, =SW_RST #x00000000=, and
 =RESP01 #x00001000= for both successful reads.
 
-An early one-byte experiment using CMD52 against the backplane window left
-the console silent. The public form now rejects =count= 1 before touching
-the bus:
+One-byte reads through CMD52 were retested with the capture already
+running. They are valid and will be needed for WHD-style core reset and
+IO-control registers:
 
 #+begin_example
 (wifi-backplane-read #x18000000 1)
-=> ((status . invalid-count) ...)
+=> ((status . ready) ... (response . #x000010a6)
+    (bytes #x000000a6) ...)
+
+(wifi-backplane-read #x18103800 1)
+=> ((status . ready) ... (response . #x00001001)
+    (bytes #x00000001) ...)
 #+end_example
+
+The ARM wrapper address for chip 43430 is =#x18103000=. Reading
+=#x18103408=, =#x18103800=, and =#x18103804= showed IOCTRL =#x00=,
+RESETCTRL =#x01=, and RESETSTATUS =#x00=, so the WLAN ARM core is currently
+held in reset. The SOCSRAM wrapper at =#x18104000= showed the same reset
+shape.
 
 * Next actions
 
