@@ -322,6 +322,10 @@ impl lisp::Board for PsocBoard<'_> {
         wifi_sdio_enable_report(wifi_sdio::enable_functions(self.p, requested))
     }
 
+    fn wifi_setup_backplane(&mut self) -> lisp::WifiSdioBackplaneReport {
+        wifi_sdio_backplane_report(wifi_sdio::setup_backplane(self.p))
+    }
+
     fn sdhc_registers(&mut self) -> lisp::SdhcReport {
         micro_sd::enable_sdhc_controllers(self.p);
 
@@ -497,6 +501,29 @@ fn wifi_sdio_enable_status(status: wifi_sdio::WifiSdioEnableStatus) -> &'static 
     }
 }
 
+fn wifi_sdio_backplane_status(status: wifi_sdio::WifiSdioBackplaneStatus) -> &'static [u8] {
+    match status {
+        wifi_sdio::WifiSdioBackplaneStatus::Ready => b"ready",
+        wifi_sdio::WifiSdioBackplaneStatus::InitFailed => b"init-failed",
+        wifi_sdio::WifiSdioBackplaneStatus::IoEnableWriteFailed => b"io-enable-write-failed",
+        wifi_sdio::WifiSdioBackplaneStatus::IoEnableReadFailed => b"io-enable-read-failed",
+        wifi_sdio::WifiSdioBackplaneStatus::IoEnableTimeout => b"io-enable-timeout",
+        wifi_sdio::WifiSdioBackplaneStatus::BusControlReadFailed => b"bus-control-read-failed",
+        wifi_sdio::WifiSdioBackplaneStatus::BusControlWriteFailed => b"bus-control-write-failed",
+        wifi_sdio::WifiSdioBackplaneStatus::BlockSizeWriteFailed => b"block-size-write-failed",
+        wifi_sdio::WifiSdioBackplaneStatus::BlockSizeReadFailed => b"block-size-read-failed",
+        wifi_sdio::WifiSdioBackplaneStatus::BlockSizeTimeout => b"block-size-timeout",
+        wifi_sdio::WifiSdioBackplaneStatus::InterruptEnableWriteFailed => {
+            b"interrupt-enable-write-failed"
+        }
+        wifi_sdio::WifiSdioBackplaneStatus::InterruptEnableReadFailed => {
+            b"interrupt-enable-read-failed"
+        }
+        wifi_sdio::WifiSdioBackplaneStatus::ReadyReadFailed => b"ready-read-failed",
+        wifi_sdio::WifiSdioBackplaneStatus::ReadyTimeout => b"ready-timeout",
+    }
+}
+
 fn wifi_sdio_command_error_report(
     error: wifi_sdio::CommandError,
 ) -> lisp::WifiSdioCommandErrorReport {
@@ -536,6 +563,27 @@ fn wifi_sdio_enable_report(report: wifi_sdio::WifiSdioEnableReport) -> lisp::Wif
         attempts: report.attempts,
         write_response: report.write_response,
         ready_response: report.ready_response,
+        last_error: report.last_error.map(wifi_sdio_command_error_report),
+        host: wifi_sdio_host_report(report.host),
+    }
+}
+
+fn wifi_sdio_backplane_report(
+    report: wifi_sdio::WifiSdioBackplaneReport,
+) -> lisp::WifiSdioBackplaneReport {
+    lisp::WifiSdioBackplaneReport {
+        status: wifi_sdio_backplane_status(report.status),
+        init_status: wifi_sdio_status(report.init_status),
+        io_enable: report.io_enable,
+        io_ready: report.io_ready,
+        bus_control_before: report.bus_control_before,
+        bus_control_after: report.bus_control_after,
+        f0_block_size: report.f0_block_size,
+        f1_block_size: report.f1_block_size,
+        f2_block_size: report.f2_block_size,
+        interrupt_enable: report.interrupt_enable,
+        attempts: report.attempts,
+        last_response: report.last_response,
         last_error: report.last_error.map(wifi_sdio_command_error_report),
         host: wifi_sdio_host_report(report.host),
     }

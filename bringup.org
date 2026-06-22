@@ -1031,6 +1031,41 @@ This should keep new Wi-Fi and storage diagnostics as Lisp forms built on
 HAL operations, without growing command parsing or direct register writes
 inside the evaluator.
 
+* 2026-06-22 Wi-Fi backplane setup
+
+Added =(wifi-setup-backplane)= as a single selected-card operation modeled
+after the early WHD SDIO setup sequence:
+
+1. Initialize and select the SDIO card.
+2. Enable function 1 through CCCR IOEN.
+3. Switch CCCR BICTRL to 4-bit mode and set the local SDHC0 host width.
+4. Set F0/F1/F2 block sizes to 64 bytes.
+5. Enable master, function 1, and function 2 SDIO interrupts in CCCR INTEN.
+6. Poll CCCR IORDY until function 1 is ready.
+
+Live result after flashing:
+
+#+begin_example
+(wifi-setup-backplane)
+=> ((status . ready)
+    (init-status . ready)
+    (IOEN . #x00000002)
+    (IORDY . #x00000002)
+    (BICTRL.before . #x00000040)
+    (BICTRL.after . #x00000042)
+    (F0.block-size . #x00000040)
+    (F1.block-size . #x00000040)
+    (F2.block-size . #x00000040)
+    (INTEN . #x00000007)
+    (attempts . 1)
+    (last-response . #x00001002)
+    (last-error)
+    (SDHC0 ... (HOST_CTRL1 . #x000000c2) ...))
+#+end_example
+
+This confirms the card accepts the WHD-style function 1 setup. The next
+meaningful Wi-Fi diagnostic is CMD53 byte-mode access through function 1.
+
 * Next actions
 
 1. Add REPL history and better editing across continuation lines.

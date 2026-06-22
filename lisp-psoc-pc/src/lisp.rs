@@ -61,6 +61,7 @@ pub trait Board {
     fn wifi_cmd52_read(&mut self, function: u8, address: u32) -> WifiSdioDirectReport;
     fn wifi_cmd52_write(&mut self, function: u8, address: u32, data: u8) -> WifiSdioDirectReport;
     fn wifi_enable_functions(&mut self, requested: u8) -> WifiSdioEnableReport;
+    fn wifi_setup_backplane(&mut self) -> WifiSdioBackplaneReport;
     fn sdhc_registers(&mut self) -> SdhcReport;
     fn reboot(&mut self) -> !;
 }
@@ -336,6 +337,24 @@ pub struct WifiSdioEnableReport {
     pub host: WifiSdioHostReport,
 }
 
+#[derive(Clone, Copy)]
+pub struct WifiSdioBackplaneReport {
+    pub status: &'static [u8],
+    pub init_status: &'static [u8],
+    pub io_enable: u8,
+    pub io_ready: u8,
+    pub bus_control_before: u8,
+    pub bus_control_after: u8,
+    pub f0_block_size: u16,
+    pub f1_block_size: u16,
+    pub f2_block_size: u16,
+    pub interrupt_enable: u8,
+    pub attempts: u16,
+    pub last_response: u32,
+    pub last_error: Option<WifiSdioCommandErrorReport>,
+    pub host: WifiSdioHostReport,
+}
+
 type LispResult<T> = Result<T, Error>;
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -397,6 +416,7 @@ pub enum Primitive {
     WifiCmd52Read,
     WifiCmd52Write,
     WifiEnableFunctions,
+    WifiSetupBackplane,
     SdhcRegs,
     Heap,
     Gc,
@@ -452,6 +472,7 @@ impl Primitive {
             Self::WifiCmd52Read => "wifi-cmd52-read",
             Self::WifiCmd52Write => "wifi-cmd52-write",
             Self::WifiEnableFunctions => "wifi-enable-functions",
+            Self::WifiSetupBackplane => "wifi-setup-backplane",
             Self::SdhcRegs => "sdhc-regs",
             Self::Heap => "heap",
             Self::Gc => "gc",
@@ -659,6 +680,7 @@ impl Machine {
         self.install_primitive(b"wifi-cmd52-read", Primitive::WifiCmd52Read)?;
         self.install_primitive(b"wifi-cmd52-write", Primitive::WifiCmd52Write)?;
         self.install_primitive(b"wifi-enable-functions", Primitive::WifiEnableFunctions)?;
+        self.install_primitive(b"wifi-setup-backplane", Primitive::WifiSetupBackplane)?;
         self.install_primitive(b"sdhc-regs", Primitive::SdhcRegs)?;
         self.install_primitive(b"heap", Primitive::Heap)?;
         self.install_primitive(b"gc", Primitive::Gc)?;
@@ -1338,6 +1360,10 @@ impl Machine {
                 let requested = self.expect_u8(args[0])?;
                 self.wifi_sdio_enable_report(board.wifi_enable_functions(requested))
             }
+            Primitive::WifiSetupBackplane => {
+                self.expect_count(args, 0)?;
+                self.wifi_sdio_backplane_report(board.wifi_setup_backplane())
+            }
             Primitive::SdhcRegs => {
                 self.expect_count(args, 0)?;
                 self.sdhc_report(board.sdhc_registers())
@@ -1673,6 +1699,7 @@ impl Machine {
             b"wifi-cmd52-read",
             b"wifi-cmd52-write",
             b"wifi-enable-functions",
+            b"wifi-setup-backplane",
             b"sdhc-regs",
             b"heap",
             b"gc",
@@ -2030,6 +2057,43 @@ impl Machine {
             attempts,
             write_response,
             ready_response,
+            last_error,
+            host,
+        ];
+        self.make_list_from_values(&entries)
+    }
+
+    fn wifi_sdio_backplane_report(&mut self, report: WifiSdioBackplaneReport) -> LispResult<Value> {
+        let status = self.symbol_entry(b"status", report.status)?;
+        let init_status = self.symbol_entry(b"init-status", report.init_status)?;
+        let io_enable = self.word_entry(b"IOEN", report.io_enable as u32)?;
+        let io_ready = self.word_entry(b"IORDY", report.io_ready as u32)?;
+        let bus_control_before =
+            self.word_entry(b"BICTRL.before", report.bus_control_before as u32)?;
+        let bus_control_after =
+            self.word_entry(b"BICTRL.after", report.bus_control_after as u32)?;
+        let f0_block_size = self.word_entry(b"F0.block-size", report.f0_block_size as u32)?;
+        let f1_block_size = self.word_entry(b"F1.block-size", report.f1_block_size as u32)?;
+        let f2_block_size = self.word_entry(b"F2.block-size", report.f2_block_size as u32)?;
+        let interrupt_enable = self.word_entry(b"INTEN", report.interrupt_enable as u32)?;
+        let attempts = self.int_entry(b"attempts", report.attempts as i32)?;
+        let last_response = self.word_entry(b"last-response", report.last_response)?;
+        let last_error = self.wifi_sdio_error_entry(b"last-error", report.last_error)?;
+        let host = self.wifi_sdio_host_report(report.host)?;
+        let host = self.entry(b"SDHC0", host)?;
+        let entries = [
+            status,
+            init_status,
+            io_enable,
+            io_ready,
+            bus_control_before,
+            bus_control_after,
+            f0_block_size,
+            f1_block_size,
+            f2_block_size,
+            interrupt_enable,
+            attempts,
+            last_response,
             last_error,
             host,
         ];

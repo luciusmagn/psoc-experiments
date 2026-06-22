@@ -16,6 +16,7 @@ const CLK_CTRL_SD_CLK_EN: u16 = 1 << 2;
 const CLK_CTRL_PLL_ENABLE: u16 = 1 << 3;
 const HOST_CTRL1_CARD_DETECT_TEST_LEVEL: u8 = 1 << 6;
 const HOST_CTRL1_CARD_DETECT_SIGNAL_SELECT: u8 = 1 << 7;
+const HOST_CTRL1_DATA_TRANSFER_WIDTH_4BIT: u8 = 1 << 1;
 const HOST_CTRL2_HOST_VERSION_4_ENABLE: u16 = 1 << 12;
 const GP_OUT_BASIC_SD: u32 = (1 << 0) | (1 << 1) | (1 << 3) | (1 << 4) | (1 << 5);
 
@@ -36,7 +37,22 @@ const SDIO_CMD52_MAX_FUNCTION: u8 = 7;
 const SDIO_CMD52_MAX_ADDRESS: u32 = 0x1ffff;
 const SDIO_CCCR_IO_ENABLE: u32 = 0x02;
 const SDIO_CCCR_IO_READY: u32 = 0x03;
+const SDIO_CCCR_INTERRUPT_ENABLE: u32 = 0x04;
+const SDIO_CCCR_BUS_INTERFACE_CONTROL: u32 = 0x07;
+const SDIO_CCCR_BLOCK_SIZE_LOW: u32 = 0x10;
+const SDIO_CCCR_BLOCK_SIZE_HIGH: u32 = 0x11;
+const SDIO_CCCR_F1_BLOCK_SIZE_LOW: u32 = 0x110;
+const SDIO_CCCR_F1_BLOCK_SIZE_HIGH: u32 = 0x111;
+const SDIO_CCCR_F2_BLOCK_SIZE_LOW: u32 = 0x210;
+const SDIO_CCCR_F2_BLOCK_SIZE_HIGH: u32 = 0x211;
+const SDIO_FUNCTION_ENABLE_1: u8 = 0x02;
+const SDIO_FUNCTION_READY_1: u8 = 0x02;
+const SDIO_INTERRUPT_MASTER_FUNC1_FUNC2: u8 = 0x07;
+const SDIO_BUS_WIDTH_MASK: u8 = 0x03;
+const SDIO_BUS_WIDTH_4BIT: u8 = 0x02;
+const SDIO_BLOCK_SIZE_64: u8 = 64;
 const SDIO_READY_MAX_ATTEMPTS: u16 = 1000;
+const SDIO_BACKPLANE_SETUP_MAX_ATTEMPTS: u16 = 1000;
 
 const P2_SDIO_DATA_MASK: u32 = 0x0f | (0x0f << 4) | (0x0f << 8) | (0x0f << 12);
 const P2_SDIO_DATA_CFG: u32 = DRIVE_STRONG_INPUT
@@ -93,6 +109,24 @@ pub enum WifiSdioEnableStatus {
     Ready,
     InitFailed,
     WriteFailed,
+    ReadyReadFailed,
+    ReadyTimeout,
+}
+
+#[derive(Clone, Copy)]
+pub enum WifiSdioBackplaneStatus {
+    Ready,
+    InitFailed,
+    IoEnableWriteFailed,
+    IoEnableReadFailed,
+    IoEnableTimeout,
+    BusControlReadFailed,
+    BusControlWriteFailed,
+    BlockSizeWriteFailed,
+    BlockSizeReadFailed,
+    BlockSizeTimeout,
+    InterruptEnableWriteFailed,
+    InterruptEnableReadFailed,
     ReadyReadFailed,
     ReadyTimeout,
 }
@@ -198,6 +232,23 @@ pub struct WifiSdioEnableReport {
     pub attempts: u16,
     pub write_response: u32,
     pub ready_response: u32,
+    pub last_error: Option<CommandError>,
+    pub host: WifiSdioHostSnapshot,
+}
+
+pub struct WifiSdioBackplaneReport {
+    pub status: WifiSdioBackplaneStatus,
+    pub init_status: WifiSdioStatus,
+    pub io_enable: u8,
+    pub io_ready: u8,
+    pub bus_control_before: u8,
+    pub bus_control_after: u8,
+    pub f0_block_size: u16,
+    pub f1_block_size: u16,
+    pub f2_block_size: u16,
+    pub interrupt_enable: u8,
+    pub attempts: u16,
+    pub last_response: u32,
     pub last_error: Option<CommandError>,
     pub host: WifiSdioHostSnapshot,
 }
@@ -480,6 +531,523 @@ pub fn enable_functions(p: &Peripherals, requested: u8) -> WifiSdioEnableReport 
     )
 }
 
+pub fn setup_backplane(p: &Peripherals) -> WifiSdioBackplaneReport {
+    let init = initialize(p);
+    if !matches!(init.status, WifiSdioStatus::Ready) {
+        return backplane_report(
+            p,
+            WifiSdioBackplaneStatus::InitFailed,
+            init.status,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            init.last_error,
+        );
+    }
+
+    let core = &p.SDHC0.core;
+    let mut attempts = 0;
+    let mut last_response = 0;
+    let mut io_enable = 0;
+
+    while attempts < SDIO_BACKPLANE_SETUP_MAX_ATTEMPTS {
+        attempts += 1;
+        if attempts > 1 {
+            delay_ms(1);
+        }
+
+        last_response =
+            match cmd52_write_byte_selected(core, SDIO_CCCR_IO_ENABLE, SDIO_FUNCTION_ENABLE_1) {
+                Ok(response) => response,
+                Err(error) => {
+                    return backplane_report(
+                        p,
+                        WifiSdioBackplaneStatus::IoEnableWriteFailed,
+                        init.status,
+                        io_enable,
+                        0,
+                        0,
+                        0,
+                        0,
+                        0,
+                        0,
+                        0,
+                        attempts,
+                        last_response,
+                        Some(error),
+                    )
+                }
+            };
+
+        let read = match cmd52_read_byte_selected(core, SDIO_CCCR_IO_ENABLE) {
+            Ok(read) => read,
+            Err(error) => {
+                return backplane_report(
+                    p,
+                    WifiSdioBackplaneStatus::IoEnableReadFailed,
+                    init.status,
+                    io_enable,
+                    0,
+                    0,
+                    0,
+                    0,
+                    0,
+                    0,
+                    0,
+                    attempts,
+                    last_response,
+                    Some(error),
+                )
+            }
+        };
+        io_enable = read.0;
+        last_response = read.1;
+        if io_enable & SDIO_FUNCTION_ENABLE_1 == SDIO_FUNCTION_ENABLE_1 {
+            break;
+        }
+    }
+
+    if io_enable & SDIO_FUNCTION_ENABLE_1 != SDIO_FUNCTION_ENABLE_1 {
+        return backplane_report(
+            p,
+            WifiSdioBackplaneStatus::IoEnableTimeout,
+            init.status,
+            io_enable,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            attempts,
+            last_response,
+            None,
+        );
+    }
+
+    let bus_control_before = match cmd52_read_byte_selected(core, SDIO_CCCR_BUS_INTERFACE_CONTROL) {
+        Ok(read) => {
+            last_response = read.1;
+            read.0
+        }
+        Err(error) => {
+            return backplane_report(
+                p,
+                WifiSdioBackplaneStatus::BusControlReadFailed,
+                init.status,
+                io_enable,
+                0,
+                0,
+                0,
+                0,
+                0,
+                0,
+                0,
+                attempts,
+                last_response,
+                Some(error),
+            )
+        }
+    };
+
+    let bus_control_requested = (bus_control_before & !SDIO_BUS_WIDTH_MASK) | SDIO_BUS_WIDTH_4BIT;
+    last_response = match cmd52_write_byte_selected(
+        core,
+        SDIO_CCCR_BUS_INTERFACE_CONTROL,
+        bus_control_requested,
+    ) {
+        Ok(response) => response,
+        Err(error) => {
+            return backplane_report(
+                p,
+                WifiSdioBackplaneStatus::BusControlWriteFailed,
+                init.status,
+                io_enable,
+                0,
+                bus_control_before,
+                0,
+                0,
+                0,
+                0,
+                0,
+                attempts,
+                last_response,
+                Some(error),
+            )
+        }
+    };
+
+    let bus_control_after = match cmd52_read_byte_selected(core, SDIO_CCCR_BUS_INTERFACE_CONTROL) {
+        Ok(read) => {
+            last_response = read.1;
+            read.0
+        }
+        Err(error) => {
+            return backplane_report(
+                p,
+                WifiSdioBackplaneStatus::BusControlReadFailed,
+                init.status,
+                io_enable,
+                0,
+                bus_control_before,
+                0,
+                0,
+                0,
+                0,
+                0,
+                attempts,
+                last_response,
+                Some(error),
+            )
+        }
+    };
+    enable_host_4bit(core);
+
+    let mut f0_block_size = 0;
+    attempts = 0;
+    while attempts < SDIO_BACKPLANE_SETUP_MAX_ATTEMPTS {
+        attempts += 1;
+        last_response =
+            match cmd52_write_byte_selected(core, SDIO_CCCR_BLOCK_SIZE_LOW, SDIO_BLOCK_SIZE_64) {
+                Ok(response) => response,
+                Err(error) => {
+                    return backplane_report(
+                        p,
+                        WifiSdioBackplaneStatus::BlockSizeWriteFailed,
+                        init.status,
+                        io_enable,
+                        0,
+                        bus_control_before,
+                        bus_control_after,
+                        f0_block_size,
+                        0,
+                        0,
+                        0,
+                        attempts,
+                        last_response,
+                        Some(error),
+                    )
+                }
+            };
+
+        let read = match cmd52_read_byte_selected(core, SDIO_CCCR_BLOCK_SIZE_LOW) {
+            Ok(read) => read,
+            Err(error) => {
+                return backplane_report(
+                    p,
+                    WifiSdioBackplaneStatus::BlockSizeReadFailed,
+                    init.status,
+                    io_enable,
+                    0,
+                    bus_control_before,
+                    bus_control_after,
+                    f0_block_size,
+                    0,
+                    0,
+                    0,
+                    attempts,
+                    last_response,
+                    Some(error),
+                )
+            }
+        };
+        f0_block_size = read.0 as u16;
+        last_response = read.1;
+        if read.0 == SDIO_BLOCK_SIZE_64 {
+            break;
+        }
+        delay_ms(1);
+    }
+
+    if f0_block_size != SDIO_BLOCK_SIZE_64 as u16 {
+        return backplane_report(
+            p,
+            WifiSdioBackplaneStatus::BlockSizeTimeout,
+            init.status,
+            io_enable,
+            0,
+            bus_control_before,
+            bus_control_after,
+            f0_block_size,
+            0,
+            0,
+            0,
+            attempts,
+            last_response,
+            None,
+        );
+    }
+
+    if let Err(error) = write_block_size(core, SDIO_CCCR_BLOCK_SIZE_LOW, SDIO_CCCR_BLOCK_SIZE_HIGH)
+    {
+        return backplane_report(
+            p,
+            WifiSdioBackplaneStatus::BlockSizeWriteFailed,
+            init.status,
+            io_enable,
+            0,
+            bus_control_before,
+            bus_control_after,
+            f0_block_size,
+            0,
+            0,
+            0,
+            attempts,
+            last_response,
+            Some(error),
+        );
+    }
+    if let Err(error) = write_block_size(
+        core,
+        SDIO_CCCR_F1_BLOCK_SIZE_LOW,
+        SDIO_CCCR_F1_BLOCK_SIZE_HIGH,
+    ) {
+        return backplane_report(
+            p,
+            WifiSdioBackplaneStatus::BlockSizeWriteFailed,
+            init.status,
+            io_enable,
+            0,
+            bus_control_before,
+            bus_control_after,
+            f0_block_size,
+            0,
+            0,
+            0,
+            attempts,
+            last_response,
+            Some(error),
+        );
+    }
+    if let Err(error) = write_block_size(
+        core,
+        SDIO_CCCR_F2_BLOCK_SIZE_LOW,
+        SDIO_CCCR_F2_BLOCK_SIZE_HIGH,
+    ) {
+        return backplane_report(
+            p,
+            WifiSdioBackplaneStatus::BlockSizeWriteFailed,
+            init.status,
+            io_enable,
+            0,
+            bus_control_before,
+            bus_control_after,
+            f0_block_size,
+            0,
+            0,
+            0,
+            attempts,
+            last_response,
+            Some(error),
+        );
+    }
+
+    f0_block_size = match read_block_size(core, SDIO_CCCR_BLOCK_SIZE_LOW, SDIO_CCCR_BLOCK_SIZE_HIGH)
+    {
+        Ok(read) => {
+            last_response = read.1;
+            read.0
+        }
+        Err(error) => {
+            return backplane_report(
+                p,
+                WifiSdioBackplaneStatus::BlockSizeReadFailed,
+                init.status,
+                io_enable,
+                0,
+                bus_control_before,
+                bus_control_after,
+                f0_block_size,
+                0,
+                0,
+                0,
+                attempts,
+                last_response,
+                Some(error),
+            )
+        }
+    };
+    let f1_block_size = match read_block_size(
+        core,
+        SDIO_CCCR_F1_BLOCK_SIZE_LOW,
+        SDIO_CCCR_F1_BLOCK_SIZE_HIGH,
+    ) {
+        Ok(read) => {
+            last_response = read.1;
+            read.0
+        }
+        Err(error) => {
+            return backplane_report(
+                p,
+                WifiSdioBackplaneStatus::BlockSizeReadFailed,
+                init.status,
+                io_enable,
+                0,
+                bus_control_before,
+                bus_control_after,
+                f0_block_size,
+                0,
+                0,
+                0,
+                attempts,
+                last_response,
+                Some(error),
+            )
+        }
+    };
+    let f2_block_size = match read_block_size(
+        core,
+        SDIO_CCCR_F2_BLOCK_SIZE_LOW,
+        SDIO_CCCR_F2_BLOCK_SIZE_HIGH,
+    ) {
+        Ok(read) => {
+            last_response = read.1;
+            read.0
+        }
+        Err(error) => {
+            return backplane_report(
+                p,
+                WifiSdioBackplaneStatus::BlockSizeReadFailed,
+                init.status,
+                io_enable,
+                0,
+                bus_control_before,
+                bus_control_after,
+                f0_block_size,
+                f1_block_size,
+                0,
+                0,
+                attempts,
+                last_response,
+                Some(error),
+            )
+        }
+    };
+
+    last_response = match cmd52_write_byte_selected(
+        core,
+        SDIO_CCCR_INTERRUPT_ENABLE,
+        SDIO_INTERRUPT_MASTER_FUNC1_FUNC2,
+    ) {
+        Ok(response) => response,
+        Err(error) => {
+            return backplane_report(
+                p,
+                WifiSdioBackplaneStatus::InterruptEnableWriteFailed,
+                init.status,
+                io_enable,
+                0,
+                bus_control_before,
+                bus_control_after,
+                f0_block_size,
+                f1_block_size,
+                f2_block_size,
+                0,
+                attempts,
+                last_response,
+                Some(error),
+            )
+        }
+    };
+    let interrupt_enable = match cmd52_read_byte_selected(core, SDIO_CCCR_INTERRUPT_ENABLE) {
+        Ok(read) => {
+            last_response = read.1;
+            read.0
+        }
+        Err(error) => {
+            return backplane_report(
+                p,
+                WifiSdioBackplaneStatus::InterruptEnableReadFailed,
+                init.status,
+                io_enable,
+                0,
+                bus_control_before,
+                bus_control_after,
+                f0_block_size,
+                f1_block_size,
+                f2_block_size,
+                0,
+                attempts,
+                last_response,
+                Some(error),
+            )
+        }
+    };
+
+    attempts = 0;
+    let mut io_ready = 0;
+    while attempts < SDIO_BACKPLANE_SETUP_MAX_ATTEMPTS {
+        attempts += 1;
+        let read = match cmd52_read_byte_selected(core, SDIO_CCCR_IO_READY) {
+            Ok(read) => read,
+            Err(error) => {
+                return backplane_report(
+                    p,
+                    WifiSdioBackplaneStatus::ReadyReadFailed,
+                    init.status,
+                    io_enable,
+                    io_ready,
+                    bus_control_before,
+                    bus_control_after,
+                    f0_block_size,
+                    f1_block_size,
+                    f2_block_size,
+                    interrupt_enable,
+                    attempts,
+                    last_response,
+                    Some(error),
+                )
+            }
+        };
+        io_ready = read.0;
+        last_response = read.1;
+        if io_ready & SDIO_FUNCTION_READY_1 == SDIO_FUNCTION_READY_1 {
+            return backplane_report(
+                p,
+                WifiSdioBackplaneStatus::Ready,
+                init.status,
+                io_enable,
+                io_ready,
+                bus_control_before,
+                bus_control_after,
+                f0_block_size,
+                f1_block_size,
+                f2_block_size,
+                interrupt_enable,
+                attempts,
+                last_response,
+                None,
+            );
+        }
+        delay_ms(1);
+    }
+
+    backplane_report(
+        p,
+        WifiSdioBackplaneStatus::ReadyTimeout,
+        init.status,
+        io_enable,
+        io_ready,
+        bus_control_before,
+        bus_control_after,
+        f0_block_size,
+        f1_block_size,
+        f2_block_size,
+        interrupt_enable,
+        attempts,
+        last_response,
+        None,
+    )
+}
+
 fn cmd52_transfer(
     p: &Peripherals,
     write: bool,
@@ -593,6 +1161,78 @@ fn cmd52_argument(write: bool, function: u8, raw: bool, address: u32, data: u8) 
     }
 
     argument
+}
+
+fn cmd52_read_byte_selected(core: &sdhc0::CORE, address: u32) -> Result<(u8, u32), CommandError> {
+    let response = cmd52_selected(core, false, 0, address, 0, false)?;
+    Ok(((response & 0xff) as u8, response))
+}
+
+fn cmd52_write_byte_selected(
+    core: &sdhc0::CORE,
+    address: u32,
+    data: u8,
+) -> Result<u32, CommandError> {
+    cmd52_selected(core, true, 0, address, data, false)
+}
+
+fn write_block_size(
+    core: &sdhc0::CORE,
+    low_address: u32,
+    high_address: u32,
+) -> Result<(), CommandError> {
+    cmd52_write_byte_selected(core, low_address, SDIO_BLOCK_SIZE_64)?;
+    cmd52_write_byte_selected(core, high_address, 0)?;
+    Ok(())
+}
+
+fn read_block_size(
+    core: &sdhc0::CORE,
+    low_address: u32,
+    high_address: u32,
+) -> Result<(u16, u32), CommandError> {
+    let low = cmd52_read_byte_selected(core, low_address)?;
+    let high = cmd52_read_byte_selected(core, high_address)?;
+    Ok(((low.0 as u16) | ((high.0 as u16) << 8), high.1))
+}
+
+fn enable_host_4bit(core: &sdhc0::CORE) {
+    core.host_ctrl1_r
+        .modify(|r, w| unsafe { w.bits(r.bits() | HOST_CTRL1_DATA_TRANSFER_WIDTH_4BIT) });
+}
+
+fn backplane_report(
+    p: &Peripherals,
+    status: WifiSdioBackplaneStatus,
+    init_status: WifiSdioStatus,
+    io_enable: u8,
+    io_ready: u8,
+    bus_control_before: u8,
+    bus_control_after: u8,
+    f0_block_size: u16,
+    f1_block_size: u16,
+    f2_block_size: u16,
+    interrupt_enable: u8,
+    attempts: u16,
+    last_response: u32,
+    last_error: Option<CommandError>,
+) -> WifiSdioBackplaneReport {
+    WifiSdioBackplaneReport {
+        status,
+        init_status,
+        io_enable,
+        io_ready,
+        bus_control_before,
+        bus_control_after,
+        f0_block_size,
+        f1_block_size,
+        f2_block_size,
+        interrupt_enable,
+        attempts,
+        last_response,
+        last_error,
+        host: host_snapshot(p),
+    }
 }
 
 fn enable_report(
