@@ -1132,6 +1132,58 @@ tools/build-lisp.scm
 => builds lisp-psoc-pc, updates app.bin, builds psoc6-cm0-bootloader
 #+end_example
 
+* 2026-06-22 Raw store listing and cat
+
+The inserted 32GB microSD card still initializes after the example-crate
+cleanup and the active build-script flash:
+
+#+begin_example
+(sd-status)
+=> ((CD_L . low) (inserted . #t) ...)
+
+(sd-init)
+=> ((status . ready-sdhc) (CMD8 . #x000001aa) (ACMD41.OCR . #xc0ff8000) ...)
+#+end_example
+
+The raw Lisp store round trip remains healthy:
+
+#+begin_example
+(save-file "boot.lisp" "(begin (define persisted 41) (+ persisted 1))")
+=> ((status . ready) (ready . #t) ... (data-sector . #x00000101))
+
+(read-file "boot.lisp")
+=> ((status . ready) (ready . #t) ... (content . "(begin (define persisted 41) (+ persisted 1))"))
+
+(load "boot.lisp")
+=> 42
+#+end_example
+
+Added two convenience forms on top of the same raw directory format:
+
+1. =(ls)= returns the directory status and the file-name list.
+2. =(cat "path")= returns file contents directly when the read succeeds;
+   on failure it returns the existing =read-file= diagnostic report.
+
+Live validation after flashing:
+
+#+begin_example
+(help)
+=> (... save-file read-file load ls cat wifi-sdio-init ...)
+
+(ls)
+=> ((status . ready) (ready . #t) (count . 1)
+    (directory-sector . #x00000100) (files "boot.lisp"))
+
+(cat "boot.lisp")
+=> "(begin (define persisted 41) (+ persisted 1))"
+#+end_example
+
+Implementation stratification:
+
+1. =lisp_store= decodes the raw directory sector and reports filenames.
+2. =hal::board= translates the store report into Lisp-facing data.
+3. =lisp.rs= exposes =(ls)= and =(cat ...)= as normal Lisp primitives.
+
 * Next actions
 
 1. Add REPL history and better editing across continuation lines.
@@ -1140,6 +1192,5 @@ tools/build-lisp.scm
 3. Add a FAT/exFAT-aware storage layer after raw block reads/writes work.
 4. Test the newer Infineon target =infineon/cy8cxxa.cfg= as a replacement
    for obsolete =target/psoc6_2m.cfg=.
-5. Add CMD53 diagnostics on top of =hal::wifi_sdio= for function 1.
-6. Start Wi-Fi from a known-good Infineon or Zephyr sample before trying
+5. Start Wi-Fi from a known-good Infineon or Zephyr sample before trying
    to hand-port CYW4343W support.

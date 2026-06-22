@@ -5,6 +5,7 @@ const MAX_SYMBOLS: usize = 224;
 const MAX_GLOBALS: usize = 112;
 const MAX_SYMBOL_BYTES: usize = 32;
 pub const MAX_STRING_BYTES: usize = 96;
+pub const MAX_STORE_FILES: usize = 5;
 const MAX_CALL_ARGS: usize = 16;
 const MAX_EVAL_DEPTH: u8 = 128;
 
@@ -57,6 +58,7 @@ pub trait Board {
     fn sd_write_fill(&mut self, sector: u32, fill_word: u32) -> SdWriteReport;
     fn save_file(&mut self, path: StringBytes, content: StringBytes) -> StoreWriteReport;
     fn read_file(&mut self, path: StringBytes) -> StoreReadReport;
+    fn list_files(&mut self) -> StoreListReport;
     fn wifi_sdio_init(&mut self) -> WifiSdioReport;
     fn wifi_cmd52_read(&mut self, function: u8, address: u32) -> WifiSdioDirectReport;
     fn wifi_cmd52_write(&mut self, function: u8, address: u32, data: u8) -> WifiSdioDirectReport;
@@ -235,6 +237,15 @@ pub struct StoreReadReport {
     pub directory_sector: u32,
     pub data_sector: u32,
     pub content: StringBytes,
+}
+
+#[derive(Clone, Copy)]
+pub struct StoreListReport {
+    pub ready: bool,
+    pub status: &'static [u8],
+    pub file_count: u8,
+    pub directory_sector: u32,
+    pub files: [StringBytes; MAX_STORE_FILES],
 }
 
 #[derive(Clone, Copy)]
@@ -427,6 +438,8 @@ pub enum Primitive {
     SaveFile,
     ReadFile,
     Load,
+    Ls,
+    Cat,
     WifiSdioInit,
     WifiCmd52Read,
     WifiCmd52Write,
@@ -484,6 +497,8 @@ impl Primitive {
             Self::SaveFile => "save-file",
             Self::ReadFile => "read-file",
             Self::Load => "load",
+            Self::Ls => "ls",
+            Self::Cat => "cat",
             Self::WifiSdioInit => "wifi-sdio-init",
             Self::WifiCmd52Read => "wifi-cmd52-read",
             Self::WifiCmd52Write => "wifi-cmd52-write",
@@ -693,6 +708,8 @@ impl Machine {
         self.install_primitive(b"save-file", Primitive::SaveFile)?;
         self.install_primitive(b"read-file", Primitive::ReadFile)?;
         self.install_primitive(b"load", Primitive::Load)?;
+        self.install_primitive(b"ls", Primitive::Ls)?;
+        self.install_primitive(b"cat", Primitive::Cat)?;
         self.install_primitive(b"wifi-sdio-init", Primitive::WifiSdioInit)?;
         self.install_primitive(b"wifi-cmd52-read", Primitive::WifiCmd52Read)?;
         self.install_primitive(b"wifi-cmd52-write", Primitive::WifiCmd52Write)?;
@@ -1356,6 +1373,20 @@ impl Machine {
                 self.active_expression = previous_expression;
                 result
             }
+            Primitive::Ls => {
+                self.expect_count(args, 0)?;
+                self.store_list_report(board.list_files())
+            }
+            Primitive::Cat => {
+                self.expect_count(args, 1)?;
+                let path = self.expect_string(args[0])?;
+                let report = board.read_file(path);
+                if report.ready {
+                    self.string_value(report.content)
+                } else {
+                    self.store_read_report(report)
+                }
+            }
             Primitive::WifiSdioInit => {
                 self.expect_count(args, 0)?;
                 self.wifi_sdio_report(board.wifi_sdio_init())
@@ -1720,6 +1751,8 @@ impl Machine {
             b"save-file",
             b"read-file",
             b"load",
+            b"ls",
+            b"cat",
             b"wifi-sdio-init",
             b"wifi-cmd52-read",
             b"wifi-cmd52-write",
@@ -2006,8 +2039,41 @@ impl Machine {
         self.make_list_from_values(&entries)
     }
 
+    fn store_list_report(&mut self, report: StoreListReport) -> LispResult<Value> {
+        let status = self.symbol_entry(b"status", report.status)?;
+        let ready = self.bool_entry(b"ready", report.ready)?;
+        let count = self.int_entry(b"count", report.file_count as i32)?;
+        let directory_sector = self.word_entry(b"directory-sector", report.directory_sector)?;
+        let files = if report.ready {
+            self.string_list(&report.files, report.file_count)?
+        } else {
+            Value::Nil
+        };
+        let files = self.entry(b"files", files)?;
+        let entries = [status, ready, count, directory_sector, files];
+        self.make_list_from_values(&entries)
+    }
+
     fn string_value(&mut self, value: StringBytes) -> LispResult<Value> {
         self.alloc_string(&value.bytes[..value.len as usize])
+    }
+
+    fn string_list(
+        &mut self,
+        values: &[StringBytes; MAX_STORE_FILES],
+        count: u8,
+    ) -> LispResult<Value> {
+        let mut list = Value::Nil;
+        let mut index = usize::from(count);
+        if index > MAX_STORE_FILES {
+            return Err(Error::new("too many store files"));
+        }
+        while index > 0 {
+            index -= 1;
+            let value = self.string_value(values[index])?;
+            list = self.alloc_pair(value, list)?;
+        }
+        Ok(list)
     }
 
     fn wifi_sdio_report(&mut self, report: WifiSdioReport) -> LispResult<Value> {

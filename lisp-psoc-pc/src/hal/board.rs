@@ -289,6 +289,17 @@ impl lisp::Board for PsocBoard<'_> {
         }
     }
 
+    fn list_files(&mut self) -> lisp::StoreListReport {
+        let report = lisp_store::list_files(self.p);
+        lisp::StoreListReport {
+            ready: matches!(report.status, lisp_store::StoreStatus::Ready),
+            status: store_status(report.status),
+            file_count: report.file_count,
+            directory_sector: report.directory_sector,
+            files: report.files,
+        }
+    }
+
     fn wifi_sdio_init(&mut self) -> lisp::WifiSdioReport {
         let report = wifi_sdio::initialize(self.p);
         lisp::WifiSdioReport {

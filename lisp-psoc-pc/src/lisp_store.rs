@@ -10,7 +10,7 @@ const VERSION: u32 = 1;
 const SECTOR_BYTES: usize = 512;
 const DIRECTORY_HEADER_BYTES: usize = 16;
 const DIRECTORY_ENTRY_BYTES: usize = 96;
-const DIRECTORY_MAX_FILES: usize = 5;
+pub const DIRECTORY_MAX_FILES: usize = 5;
 const PATH_MAX_BYTES: usize = 64;
 const DATA_HEADER_BYTES: usize = 12;
 
@@ -45,6 +45,13 @@ pub struct ReadReport {
     pub directory_sector: u32,
     pub data_sector: u32,
     pub content: lisp::StringBytes,
+}
+
+pub struct ListReport {
+    pub status: StoreStatus,
+    pub file_count: u8,
+    pub directory_sector: u32,
+    pub files: [lisp::StringBytes; DIRECTORY_MAX_FILES],
 }
 
 #[derive(Clone, Copy)]
@@ -219,6 +226,39 @@ pub fn read_file(p: &Peripherals, path: lisp::StringBytes) -> ReadReport {
     )
 }
 
+pub fn list_files(p: &Peripherals) -> ListReport {
+    let mut files = [empty_string(); DIRECTORY_MAX_FILES];
+    let mut directory = [0u8; SECTOR_BYTES];
+    let directory_read = micro_sd::read_sector_words(p, DIRECTORY_SECTOR);
+    if !matches!(directory_read.status, micro_sd::ReadStatus::Ready) {
+        return list_report(StoreStatus::DirectoryReadFailed, 0, files);
+    }
+    words_to_bytes(&directory_read.words, &mut directory);
+    if !directory_is_formatted(&directory) {
+        return list_report(StoreStatus::Ready, 0, files);
+    }
+
+    let mut file_count = 0usize;
+    let mut index = 0usize;
+    while index < DIRECTORY_MAX_FILES {
+        let offset = entry_offset(index);
+        if directory[offset] != 0 {
+            let path_len = directory[offset + 1] as usize;
+            if path_len == 0 || path_len > PATH_MAX_BYTES || path_len > lisp::MAX_STRING_BYTES {
+                return list_report(StoreStatus::CorruptData, file_count as u8, files);
+            }
+
+            files[file_count].len = path_len as u8;
+            files[file_count].bytes[..path_len]
+                .copy_from_slice(&directory[offset + 2..offset + 2 + path_len]);
+            file_count += 1;
+        }
+        index += 1;
+    }
+
+    list_report(StoreStatus::Ready, file_count as u8, files)
+}
+
 fn write_report(
     status: StoreStatus,
     path: lisp::StringBytes,
@@ -248,6 +288,19 @@ fn read_report(
         directory_sector: DIRECTORY_SECTOR,
         data_sector,
         content,
+    }
+}
+
+fn list_report(
+    status: StoreStatus,
+    file_count: u8,
+    files: [lisp::StringBytes; DIRECTORY_MAX_FILES],
+) -> ListReport {
+    ListReport {
+        status,
+        file_count,
+        directory_sector: DIRECTORY_SECTOR,
+        files,
     }
 }
 
