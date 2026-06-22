@@ -777,12 +777,65 @@ One shell test accidentally sent a literal newline inside a string, and the
 reader returned =error: unterminated string=. That is the intended behavior:
 literal newline bytes are not allowed in string syntax; use =\n=.
 
+* 2026-06-22 Raw Lisp store
+
+Added a small raw-sector Lisp store so the machine has persistence before
+we tackle a real FAT/exFAT layer. This is not a host-readable filesystem.
+It uses sector =#x100= as a directory and data sectors beginning at
+=#x101=. The store currently holds five named entries, each with content
+bounded by the Lisp string limit.
+
+The REPL forms are:
+
+1. =(save-file "name" "one-expression")=
+2. =(read-file "name")=
+3. =(load "name")=
+
+=load= reads the stored string and evaluates it as one Lisp expression.
+Use =(begin ...)= for a multi-form script.
+
+UART smoke test after flashing:
+
+#+begin_example
+(save-file "boot.lisp" "(begin (define persisted 41) (+ persisted 1))")
+=> ((status . ready)
+    (ready . #t)
+    (path-len . 9)
+    (content-len . 45)
+    (directory-sector . #x00000100)
+    (data-sector . #x00000101))
+
+(read-file "boot.lisp")
+=> ((status . ready)
+    (ready . #t)
+    (path-len . 9)
+    (content-len . 45)
+    (directory-sector . #x00000100)
+    (data-sector . #x00000101)
+    (content . "(begin (define persisted 41) (+ persisted 1))"))
+
+(load "boot.lisp")
+=> 42
+
+persisted
+=> 41
+#+end_example
+
+After =(reboot)=, loading the same path from the card returned =42= again,
+which proves the result came from microSD and not from RAM.
+
+The storage layout uses a magic/versioned directory sector, one sector per
+entry, and an FNV-1a checksum for the stored content. Invalid or missing
+directory data is treated as an empty store on write and =not-found= on
+read. This means the earlier fill-pattern test sector was safely replaced
+by the store directory during the first =save-file=.
+
 * Next actions
 
 1. Add REPL history and better editing across continuation lines.
-2. Turn the working raw =sd-read= and =sd-write-fill= paths into an
-   internal block-device API.
-3. Add a FAT/exFAT-aware storage layer after raw block reads work.
+2. Add automatic =(load "boot.lisp")= during boot once the failure mode is
+   boring enough.
+3. Add a FAT/exFAT-aware storage layer after raw block reads/writes work.
 4. Test the newer Infineon target =infineon/cy8cxxa.cfg= as a replacement
    for obsolete =target/psoc6_2m.cfg=.
 5. Start Wi-Fi from a known-good Infineon or Zephyr sample before trying

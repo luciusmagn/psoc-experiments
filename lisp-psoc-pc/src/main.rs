@@ -9,6 +9,7 @@ use panic_halt as _;
 use psoc6_pac::{Peripherals, SCB5};
 
 mod lisp;
+mod lisp_store;
 mod micro_sd;
 
 const SYSCLK_HZ: u32 = 50_000_000;
@@ -493,6 +494,35 @@ impl lisp::Board for PsocBoard<'_> {
         }
     }
 
+    fn save_file(
+        &mut self,
+        path: lisp::StringBytes,
+        content: lisp::StringBytes,
+    ) -> lisp::StoreWriteReport {
+        let report = lisp_store::write_file(self.p, path, content);
+        lisp::StoreWriteReport {
+            ready: matches!(report.status, lisp_store::StoreStatus::Ready),
+            status: store_status(report.status),
+            path_len: report.path_len,
+            content_len: report.content_len,
+            directory_sector: report.directory_sector,
+            data_sector: report.data_sector,
+        }
+    }
+
+    fn read_file(&mut self, path: lisp::StringBytes) -> lisp::StoreReadReport {
+        let report = lisp_store::read_file(self.p, path);
+        lisp::StoreReadReport {
+            ready: matches!(report.status, lisp_store::StoreStatus::Ready),
+            status: store_status(report.status),
+            path_len: report.path_len,
+            content_len: report.content_len,
+            directory_sector: report.directory_sector,
+            data_sector: report.data_sector,
+            content: report.content,
+        }
+    }
+
     fn sdhc_registers(&mut self) -> lisp::SdhcReport {
         micro_sd::enable_sdhc_controllers(self.p);
 
@@ -579,6 +609,23 @@ fn sd_write_status(status: micro_sd::WriteStatus) -> &'static [u8] {
         micro_sd::WriteStatus::BufferEnableTimeout => b"buffer-enable-timeout",
         micro_sd::WriteStatus::TransferTimeout => b"transfer-timeout",
         micro_sd::WriteStatus::DataLineBusy => b"data-line-busy",
+    }
+}
+
+fn store_status(status: lisp_store::StoreStatus) -> &'static [u8] {
+    match status {
+        lisp_store::StoreStatus::Ready => b"ready",
+        lisp_store::StoreStatus::EmptyPath => b"empty-path",
+        lisp_store::StoreStatus::PathTooLong => b"path-too-long",
+        lisp_store::StoreStatus::ContentTooLong => b"content-too-long",
+        lisp_store::StoreStatus::NotFound => b"not-found",
+        lisp_store::StoreStatus::DirectoryFull => b"directory-full",
+        lisp_store::StoreStatus::DirectoryReadFailed => b"directory-read-failed",
+        lisp_store::StoreStatus::DirectoryWriteFailed => b"directory-write-failed",
+        lisp_store::StoreStatus::DataReadFailed => b"data-read-failed",
+        lisp_store::StoreStatus::DataWriteFailed => b"data-write-failed",
+        lisp_store::StoreStatus::CorruptData => b"corrupt-data",
+        lisp_store::StoreStatus::ChecksumMismatch => b"checksum-mismatch",
     }
 }
 

@@ -41,7 +41,7 @@ const SD_OCR_BUSY: u32 = 1 << 31;
 const SD_OCR_CAPACITY: u32 = 1 << 30;
 const SD_RCA_SHIFT: u8 = 16;
 const SD_BLOCK_SIZE_BYTES: u16 = 512;
-const SD_BLOCK_WORDS: usize = 128;
+pub const SD_BLOCK_WORDS: usize = 128;
 const SD_SECTOR_PREVIEW_WORDS: usize = 8;
 const SD_ACMD41_VOLTAGE_MASK: u32 = (1 << 23)
     | (1 << 22)
@@ -236,6 +236,26 @@ pub struct SectorReport {
     pub argument: u32,
 }
 
+pub struct BlockReadReport {
+    pub status: ReadStatus,
+    pub init_status: InitStatus,
+    pub sector: u32,
+    pub rca: u16,
+    pub ocr: u32,
+    pub acmd41_attempts: u16,
+    pub command_response: u32,
+    pub last_error: Option<CommandError>,
+    pub words: [u32; SD_BLOCK_WORDS],
+    pub normal_int: u16,
+    pub error_int: u16,
+    pub pstate: u32,
+    pub block_size: u16,
+    pub block_count: u16,
+    pub xfer_mode: u16,
+    pub cmd: u16,
+    pub argument: u32,
+}
+
 pub struct WriteReport {
     pub status: WriteStatus,
     pub init_status: InitStatus,
@@ -380,6 +400,24 @@ pub fn read_sector_zero(p: &Peripherals) -> SectorReport {
 }
 
 pub fn write_sector_fill(p: &Peripherals, sector: u32, fill_word: u32) -> WriteReport {
+    let words = [fill_word; SD_BLOCK_WORDS];
+    write_sector_words_with_report_word(p, sector, fill_word, &words)
+}
+
+pub fn write_sector_words(
+    p: &Peripherals,
+    sector: u32,
+    words: &[u32; SD_BLOCK_WORDS],
+) -> WriteReport {
+    write_sector_words_with_report_word(p, sector, words[0], words)
+}
+
+fn write_sector_words_with_report_word(
+    p: &Peripherals,
+    sector: u32,
+    fill_word: u32,
+    words: &[u32; SD_BLOCK_WORDS],
+) -> WriteReport {
     let card = match identify_card(p) {
         Ok(card) => card,
         Err(report) => {
@@ -575,7 +613,7 @@ pub fn write_sector_fill(p: &Peripherals, sector: u32, fill_word: u32) -> WriteR
         }
     };
 
-    match write_single_block_fill(core, fill_word) {
+    match write_single_block_words(core, words) {
         Ok(()) => {}
         Err(status) => {
             return write_report_for_card(
@@ -797,6 +835,223 @@ pub fn read_sector(p: &Peripherals, sector: u32) -> SectorReport {
         read.partition_type,
         read.partition_lba_start,
         read.partition_sector_count,
+    )
+}
+
+pub fn read_sector_words(p: &Peripherals, sector: u32) -> BlockReadReport {
+    let card = match identify_card(p) {
+        Ok(card) => card,
+        Err(report) => {
+            return block_read_report(
+                p,
+                ReadStatus::InitFailed,
+                report.status,
+                sector,
+                0,
+                report.acmd41_ocr,
+                report.acmd41_attempts,
+                0,
+                report.last_error,
+                [0; SD_BLOCK_WORDS],
+            )
+        }
+    };
+
+    let core = &p.SDHC1.core;
+
+    if let Err(error) = send_command(
+        core,
+        Command {
+            index: 2,
+            argument: 0,
+            response: ResponseType::Len136,
+            command_type: CommandType::Normal,
+            data_present: false,
+            crc_check: true,
+            index_check: false,
+        },
+    ) {
+        return block_read_report_for_card(
+            p,
+            ReadStatus::Cmd2Failed,
+            card,
+            sector,
+            0,
+            0,
+            Some(error),
+        );
+    }
+
+    let rca_response = match send_command(
+        core,
+        Command {
+            index: 3,
+            argument: 0,
+            response: ResponseType::Len48,
+            command_type: CommandType::Normal,
+            data_present: false,
+            crc_check: true,
+            index_check: true,
+        },
+    ) {
+        Ok(response) => response,
+        Err(error) => {
+            return block_read_report_for_card(
+                p,
+                ReadStatus::Cmd3Failed,
+                card,
+                sector,
+                0,
+                0,
+                Some(error),
+            )
+        }
+    };
+    let rca = (rca_response >> SD_RCA_SHIFT) as u16;
+
+    if let Err(error) = send_command(
+        core,
+        Command {
+            index: 7,
+            argument: (rca as u32) << SD_RCA_SHIFT,
+            response: ResponseType::Len48Busy,
+            command_type: CommandType::Normal,
+            data_present: false,
+            crc_check: false,
+            index_check: false,
+        },
+    ) {
+        return block_read_report_for_card(
+            p,
+            ReadStatus::Cmd7Failed,
+            card,
+            sector,
+            rca,
+            0,
+            Some(error),
+        );
+    }
+
+    if !wait_transfer_complete(core) {
+        return block_read_report_for_card(
+            p,
+            ReadStatus::TransferTimeout,
+            card,
+            sector,
+            rca,
+            0,
+            None,
+        );
+    }
+
+    if matches!(card.status, InitStatus::ReadySdsc) {
+        if let Err(error) = send_command(
+            core,
+            Command {
+                index: 16,
+                argument: SD_BLOCK_SIZE_BYTES as u32,
+                response: ResponseType::Len48,
+                command_type: CommandType::Normal,
+                data_present: false,
+                crc_check: true,
+                index_check: true,
+            },
+        ) {
+            return block_read_report_for_card(
+                p,
+                ReadStatus::Cmd16Failed,
+                card,
+                sector,
+                rca,
+                0,
+                Some(error),
+            );
+        }
+    }
+
+    if !configure_single_block_read(core) {
+        return block_read_report_for_card(
+            p,
+            ReadStatus::DataSetupBusy,
+            card,
+            sector,
+            rca,
+            0,
+            None,
+        );
+    }
+
+    let command_argument = if matches!(card.status, InitStatus::ReadySdsc) {
+        match sector.checked_mul(SD_BLOCK_SIZE_BYTES as u32) {
+            Some(address) => address,
+            None => {
+                return block_read_report_for_card(
+                    p,
+                    ReadStatus::AddressOverflow,
+                    card,
+                    sector,
+                    rca,
+                    0,
+                    None,
+                )
+            }
+        }
+    } else {
+        sector
+    };
+
+    let command_response = match send_command(
+        core,
+        Command {
+            index: 17,
+            argument: command_argument,
+            response: ResponseType::Len48,
+            command_type: CommandType::Normal,
+            data_present: true,
+            crc_check: true,
+            index_check: true,
+        },
+    ) {
+        Ok(response) => response,
+        Err(error) => {
+            return block_read_report_for_card(
+                p,
+                ReadStatus::Cmd17Failed,
+                card,
+                sector,
+                rca,
+                0,
+                Some(error),
+            )
+        }
+    };
+
+    let words = match read_single_block_words(core) {
+        Ok(words) => words,
+        Err(status) => {
+            return block_read_report_for_card(
+                p,
+                status,
+                card,
+                sector,
+                rca,
+                command_response,
+                None,
+            );
+        }
+    };
+
+    block_read_report(
+        p,
+        ReadStatus::Ready,
+        card.status,
+        sector,
+        rca,
+        card.acmd41_ocr,
+        card.acmd41_attempts,
+        command_response,
+        None,
+        words,
     )
 }
 
@@ -1152,6 +1407,64 @@ fn sector_report(
     }
 }
 
+fn block_read_report_for_card(
+    p: &Peripherals,
+    status: ReadStatus,
+    card: IdentifiedCard,
+    sector: u32,
+    rca: u16,
+    command_response: u32,
+    last_error: Option<CommandError>,
+) -> BlockReadReport {
+    block_read_report(
+        p,
+        status,
+        card.status,
+        sector,
+        rca,
+        card.acmd41_ocr,
+        card.acmd41_attempts,
+        command_response,
+        last_error,
+        [0; SD_BLOCK_WORDS],
+    )
+}
+
+fn block_read_report(
+    p: &Peripherals,
+    status: ReadStatus,
+    init_status: InitStatus,
+    sector: u32,
+    rca: u16,
+    ocr: u32,
+    acmd41_attempts: u16,
+    command_response: u32,
+    last_error: Option<CommandError>,
+    words: [u32; SD_BLOCK_WORDS],
+) -> BlockReadReport {
+    let core = &p.SDHC1.core;
+
+    BlockReadReport {
+        status,
+        init_status,
+        sector,
+        rca,
+        ocr,
+        acmd41_attempts,
+        command_response,
+        last_error,
+        words,
+        normal_int: core.normal_int_stat_r.read().bits(),
+        error_int: core.error_int_stat_r.read().bits(),
+        pstate: core.pstate_reg.read().bits(),
+        block_size: core.blocksize_r.read().bits(),
+        block_count: core.blockcount_r.read().bits(),
+        xfer_mode: core.xfer_mode_r.read().bits(),
+        cmd: core.cmd_r.read().bits(),
+        argument: core.argument_r.read().bits(),
+    }
+}
+
 fn write_report_for_card(
     p: &Peripherals,
     status: WriteStatus,
@@ -1410,18 +1723,44 @@ fn read_single_block_preview(core: &sdhc0::CORE) -> Result<ReadBlockPreview, Rea
     })
 }
 
-fn write_single_block_fill(core: &sdhc0::CORE, fill_word: u32) -> Result<(), WriteStatus> {
+fn read_single_block_words(core: &sdhc0::CORE) -> Result<[u32; SD_BLOCK_WORDS], ReadStatus> {
+    if !wait_buffer_read_ready(core) {
+        return Err(ReadStatus::BufferReadTimeout);
+    }
+
+    let mut words = [0u32; SD_BLOCK_WORDS];
+    for word in &mut words {
+        if !wait_buffer_read_enable(core) {
+            let _ = software_reset_data_line(core);
+            return Err(ReadStatus::BufferEnableTimeout);
+        }
+
+        *word = core.buf_data_r.read().bits();
+    }
+
+    if !wait_transfer_complete(core) {
+        let _ = software_reset_data_line(core);
+        return Err(ReadStatus::TransferTimeout);
+    }
+
+    Ok(words)
+}
+
+fn write_single_block_words(
+    core: &sdhc0::CORE,
+    words: &[u32; SD_BLOCK_WORDS],
+) -> Result<(), WriteStatus> {
     if !wait_buffer_write_ready(core) {
         return Err(WriteStatus::BufferWriteTimeout);
     }
 
-    for _ in 0..SD_BLOCK_WORDS {
+    for word in words {
         if !wait_buffer_write_enable(core) {
             let _ = software_reset_data_line(core);
             return Err(WriteStatus::BufferEnableTimeout);
         }
 
-        core.buf_data_r.write(|w| unsafe { w.bits(fill_word) });
+        core.buf_data_r.write(|w| unsafe { w.bits(*word) });
     }
 
     if !wait_transfer_complete(core) {

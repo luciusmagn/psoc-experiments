@@ -4,12 +4,18 @@ const MAX_OBJECTS: usize = 384;
 const MAX_SYMBOLS: usize = 176;
 const MAX_GLOBALS: usize = 104;
 const MAX_SYMBOL_BYTES: usize = 32;
-const MAX_STRING_BYTES: usize = 96;
+pub const MAX_STRING_BYTES: usize = 96;
 const MAX_CALL_ARGS: usize = 16;
 const MAX_EVAL_DEPTH: u8 = 128;
 
 type ObjectId = u16;
 type SymbolId = u16;
+
+#[derive(Clone, Copy)]
+pub struct StringBytes {
+    pub len: u8,
+    pub bytes: [u8; MAX_STRING_BYTES],
+}
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub enum LedAction {
@@ -49,6 +55,8 @@ pub trait Board {
     fn sd_init(&mut self) -> SdInitReport;
     fn sd_read(&mut self, sector: u32) -> SdReadReport;
     fn sd_write_fill(&mut self, sector: u32, fill_word: u32) -> SdWriteReport;
+    fn save_file(&mut self, path: StringBytes, content: StringBytes) -> StoreWriteReport;
+    fn read_file(&mut self, path: StringBytes) -> StoreReadReport;
     fn sdhc_registers(&mut self) -> SdhcReport;
     fn reboot(&mut self) -> !;
 }
@@ -201,6 +209,27 @@ pub struct SdWriteReport {
     pub argument: u32,
 }
 
+#[derive(Clone, Copy)]
+pub struct StoreWriteReport {
+    pub ready: bool,
+    pub status: &'static [u8],
+    pub path_len: u8,
+    pub content_len: u8,
+    pub directory_sector: u32,
+    pub data_sector: u32,
+}
+
+#[derive(Clone, Copy)]
+pub struct StoreReadReport {
+    pub ready: bool,
+    pub status: &'static [u8],
+    pub path_len: u8,
+    pub content_len: u8,
+    pub directory_sector: u32,
+    pub data_sector: u32,
+    pub content: StringBytes,
+}
+
 type LispResult<T> = Result<T, Error>;
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -255,6 +284,9 @@ pub enum Primitive {
     SdRead,
     SdRead0,
     SdWriteFill,
+    SaveFile,
+    ReadFile,
+    Load,
     SdhcRegs,
     Heap,
     Gc,
@@ -303,6 +335,9 @@ impl Primitive {
             Self::SdRead => "sd-read",
             Self::SdRead0 => "sd-read0",
             Self::SdWriteFill => "sd-write-fill",
+            Self::SaveFile => "save-file",
+            Self::ReadFile => "read-file",
+            Self::Load => "load",
             Self::SdhcRegs => "sdhc-regs",
             Self::Heap => "heap",
             Self::Gc => "gc",
@@ -503,6 +538,9 @@ impl Machine {
         self.install_primitive(b"sd-read", Primitive::SdRead)?;
         self.install_primitive(b"sd-read0", Primitive::SdRead0)?;
         self.install_primitive(b"sd-write-fill", Primitive::SdWriteFill)?;
+        self.install_primitive(b"save-file", Primitive::SaveFile)?;
+        self.install_primitive(b"read-file", Primitive::ReadFile)?;
+        self.install_primitive(b"load", Primitive::Load)?;
         self.install_primitive(b"sdhc-regs", Primitive::SdhcRegs)?;
         self.install_primitive(b"heap", Primitive::Heap)?;
         self.install_primitive(b"gc", Primitive::Gc)?;
@@ -907,7 +945,7 @@ impl Machine {
 
         match function {
             Value::Primitive(primitive) => {
-                self.apply_primitive(primitive, &args[..arg_count], caller_env, board)
+                self.apply_primitive(primitive, &args[..arg_count], caller_env, board, depth + 1)
             }
             Value::Object(id) => match self.object_kind_by_id(id)? {
                 ObjectKind::Closure { params, body, env } => {
@@ -981,6 +1019,7 @@ impl Machine {
         args: &[Value],
         env: Value,
         board: &mut B,
+        depth: u8,
     ) -> LispResult<Value> {
         match primitive {
             Primitive::Help => {
@@ -1132,6 +1171,33 @@ impl Machine {
                 let fill_word = self.expect_u32(args[1])?;
                 self.sd_write_report(board.sd_write_fill(sector, fill_word))
             }
+            Primitive::SaveFile => {
+                self.expect_count(args, 2)?;
+                let path = self.expect_string(args[0])?;
+                let content = self.expect_string(args[1])?;
+                self.store_write_report(board.save_file(path, content))
+            }
+            Primitive::ReadFile => {
+                self.expect_count(args, 1)?;
+                let path = self.expect_string(args[0])?;
+                self.store_read_report(board.read_file(path))
+            }
+            Primitive::Load => {
+                self.expect_count(args, 1)?;
+                let path = self.expect_string(args[0])?;
+                let report = board.read_file(path);
+                if !report.ready {
+                    return self.store_read_report(report);
+                }
+
+                let input = &report.content.bytes[..report.content.len as usize];
+                let expression = self.read(input)?;
+                let previous_expression = self.active_expression;
+                self.active_expression = expression;
+                let result = self.eval(expression, env, board, depth + 1);
+                self.active_expression = previous_expression;
+                result
+            }
             Primitive::SdhcRegs => {
                 self.expect_count(args, 0)?;
                 self.sdhc_report(board.sdhc_registers())
@@ -1265,6 +1331,16 @@ impl Machine {
             Value::Word(value) => Ok(value),
             Value::Int(value) if value >= 0 => Ok(value as u32),
             _ => Err(Error::new("expected non-negative integer or word")),
+        }
+    }
+
+    fn expect_string(&self, value: Value) -> LispResult<StringBytes> {
+        match value {
+            Value::Object(id) => match self.object_kind_by_id(id)? {
+                ObjectKind::String { len, bytes } => Ok(StringBytes { len, bytes }),
+                _ => Err(Error::new("expected string")),
+            },
+            _ => Err(Error::new("expected string")),
         }
     }
 
@@ -1441,6 +1517,9 @@ impl Machine {
             b"sd-read",
             b"sd-read0",
             b"sd-write-fill",
+            b"save-file",
+            b"read-file",
+            b"load",
             b"sdhc-regs",
             b"heap",
             b"gc",
@@ -1676,6 +1755,53 @@ impl Machine {
             argument,
         ];
         self.make_list_from_values(&entries)
+    }
+
+    fn store_write_report(&mut self, report: StoreWriteReport) -> LispResult<Value> {
+        let status = self.symbol_entry(b"status", report.status)?;
+        let ready = self.bool_entry(b"ready", report.ready)?;
+        let path_len = self.int_entry(b"path-len", report.path_len as i32)?;
+        let content_len = self.int_entry(b"content-len", report.content_len as i32)?;
+        let directory_sector = self.word_entry(b"directory-sector", report.directory_sector)?;
+        let data_sector = self.word_entry(b"data-sector", report.data_sector)?;
+        let entries = [
+            status,
+            ready,
+            path_len,
+            content_len,
+            directory_sector,
+            data_sector,
+        ];
+        self.make_list_from_values(&entries)
+    }
+
+    fn store_read_report(&mut self, report: StoreReadReport) -> LispResult<Value> {
+        let status = self.symbol_entry(b"status", report.status)?;
+        let ready = self.bool_entry(b"ready", report.ready)?;
+        let path_len = self.int_entry(b"path-len", report.path_len as i32)?;
+        let content_len = self.int_entry(b"content-len", report.content_len as i32)?;
+        let directory_sector = self.word_entry(b"directory-sector", report.directory_sector)?;
+        let data_sector = self.word_entry(b"data-sector", report.data_sector)?;
+        let content = if report.ready {
+            self.string_value(report.content)?
+        } else {
+            Value::Nil
+        };
+        let content = self.entry(b"content", content)?;
+        let entries = [
+            status,
+            ready,
+            path_len,
+            content_len,
+            directory_sector,
+            data_sector,
+            content,
+        ];
+        self.make_list_from_values(&entries)
+    }
+
+    fn string_value(&mut self, value: StringBytes) -> LispResult<Value> {
+        self.alloc_string(&value.bytes[..value.len as usize])
     }
 
     fn sd_word_list_entry(&mut self, name: &[u8], words: &[u32]) -> LispResult<Value> {
