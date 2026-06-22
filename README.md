@@ -45,6 +45,18 @@ tools/serial-console.scm
 tools/send-lisp.scm '(wifi-setup-backplane)'
 ```
 
+For local Wi-Fi credentials, generate the ignored env file from a local IWD
+PSK profile:
+
+```sh
+tools/prepare-wifi-credentials.scm
+tools/prepare-wifi-credentials.scm --check
+```
+
+The script writes `.local/wifi/selected.env` with mode `600` and reports only
+field lengths, never credential values. Use `--ssid` or `--profile` to choose a
+specific non-enterprise profile.
+
 ### Prerequisites
 
 1. Install correct Rust targets for both cores.

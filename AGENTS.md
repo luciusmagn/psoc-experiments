@@ -89,6 +89,9 @@ Treat hardware writes as externally visible side effects.
 - Any generated credential material must live in an ignored local path.
 - Skip enterprise profiles such as eduroam unless the user explicitly asks
   to support them.
+- Use `tools/prepare-wifi-credentials.scm` for local IWD PSK extraction.
+  It writes `.local/wifi/selected.env`, and its output must stay limited to
+  counts/paths rather than SSIDs or secret values.
 - Treat other local checkouts, such as `/root/zmk` or `/root/project/hiisi`,
   as read-only references unless the user explicitly asks to edit them.
 

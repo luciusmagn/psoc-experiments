@@ -1210,6 +1210,39 @@ Try: (help), (ls), (cat "boot.lisp"), (+ 1 2 3)
 lisp>
 #+end_example
 
+* 2026-06-22 Local Wi-Fi credential prep
+
+Added =tools/prepare-wifi-credentials.scm= to generate ignored local Wi-Fi
+state from IWD PSK profiles without printing credential values. The script:
+
+1. Skips enterprise profiles such as =.8021x= and =eduroam=.
+2. Reads only =.psk= profiles with a stored =Passphrase= or
+   =PreSharedKey=.
+3. Chooses =$WIFI_PROFILE=, =$WIFI_SSID=, the current =iw= SSID when
+   available, or the first valid PSK profile in sorted order.
+4. Writes =.local/wifi/selected.env= with mode =600=.
+5. Reports env-field byte counts rather than SSIDs or secrets.
+
+Validation:
+
+#+begin_example
+tools/prepare-wifi-credentials.scm
+=> selected-profile-count=31
+=> output=.local/wifi/selected.env
+=> ssid-field-bytes=6
+=> secret-kind-field-bytes=12
+=> secret-field-bytes=12
+
+tools/prepare-wifi-credentials.scm --check
+=> output=.local/wifi/selected.env
+=> ssid-field-bytes=6
+=> secret-kind-field-bytes=12
+=> secret-field-bytes=12
+
+git check-ignore -v .local/wifi/selected.env
+=> .gitignore:7:.local/ .local/wifi/selected.env
+#+end_example
+
 * Next actions
 
 1. Add REPL history and better editing across continuation lines.
