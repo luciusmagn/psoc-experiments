@@ -750,14 +750,40 @@ Implementation notes:
 3. The data path waits for =BUF_WR_READY=, streams 128 words through
    =BUF_DATA_R=, waits for =XFER_COMPLETE=, and then waits for DAT idle.
 
+* 2026-06-22 Lisp strings
+
+Added bounded string objects to the Lisp heap. Strings are self-evaluating
+values, are traced by the existing GC as atom-like heap objects, and print
+with escapes. The initial limit is 96 bytes per string; that is enough for
+file paths and small console values without introducing a second allocator.
+
+UART smoke test after flashing:
+
+#+begin_example
+"boot.lisp"
+=> "boot.lisp"
+
+(define path "boot.lisp")
+=> path
+
+(string? path)
+=> #t
+
+(list "a\n\"b" path)
+=> ("a\n\"b" "boot.lisp")
+#+end_example
+
+One shell test accidentally sent a literal newline inside a string, and the
+reader returned =error: unterminated string=. That is the intended behavior:
+literal newline bytes are not allowed in string syntax; use =\n=.
+
 * Next actions
 
 1. Add REPL history and better editing across continuation lines.
-2. Add string support before file-path based microSD functions.
-3. Turn the working raw =sd-read= and =sd-write-fill= paths into an
+2. Turn the working raw =sd-read= and =sd-write-fill= paths into an
    internal block-device API.
-4. Add a FAT/exFAT-aware storage layer after raw block reads work.
-5. Test the newer Infineon target =infineon/cy8cxxa.cfg= as a replacement
+3. Add a FAT/exFAT-aware storage layer after raw block reads work.
+4. Test the newer Infineon target =infineon/cy8cxxa.cfg= as a replacement
    for obsolete =target/psoc6_2m.cfg=.
-6. Start Wi-Fi from a known-good Infineon or Zephyr sample before trying
+5. Start Wi-Fi from a known-good Infineon or Zephyr sample before trying
    to hand-port CYW4343W support.

@@ -4,6 +4,7 @@ const MAX_OBJECTS: usize = 384;
 const MAX_SYMBOLS: usize = 176;
 const MAX_GLOBALS: usize = 104;
 const MAX_SYMBOL_BYTES: usize = 32;
+const MAX_STRING_BYTES: usize = 96;
 const MAX_CALL_ARGS: usize = 16;
 const MAX_EVAL_DEPTH: u8 = 128;
 
@@ -234,6 +235,7 @@ pub enum Primitive {
     NumberPredicate,
     SymbolPredicate,
     BoolPredicate,
+    StringPredicate,
     Cons,
     Car,
     Cdr,
@@ -281,6 +283,7 @@ impl Primitive {
             Self::NumberPredicate => "number?",
             Self::SymbolPredicate => "symbol?",
             Self::BoolPredicate => "bool?",
+            Self::StringPredicate => "string?",
             Self::Cons => "cons",
             Self::Car => "car",
             Self::Cdr => "cdr",
@@ -324,6 +327,10 @@ enum ObjectKind {
         symbol: SymbolId,
         value: Value,
         next: Value,
+    },
+    String {
+        len: u8,
+        bytes: [u8; MAX_STRING_BYTES],
     },
 }
 
@@ -476,6 +483,7 @@ impl Machine {
         self.install_primitive(b"number?", Primitive::NumberPredicate)?;
         self.install_primitive(b"symbol?", Primitive::SymbolPredicate)?;
         self.install_primitive(b"bool?", Primitive::BoolPredicate)?;
+        self.install_primitive(b"string?", Primitive::StringPredicate)?;
         self.install_primitive(b"cons", Primitive::Cons)?;
         self.install_primitive(b"car", Primitive::Car)?;
         self.install_primitive(b"cdr", Primitive::Cdr)?;
@@ -705,6 +713,7 @@ impl Machine {
             Value::Object(id) => match self.object_kind_by_id(id)? {
                 ObjectKind::Pair { .. } => self.eval_call(expression, env, board, depth + 1),
                 ObjectKind::Closure { .. } => Ok(expression),
+                ObjectKind::String { .. } => Ok(expression),
                 ObjectKind::Env { .. } => Err(Error::new("environment object is not a value")),
                 ObjectKind::Free => Err(Error::new("stale object")),
             },
@@ -1031,6 +1040,14 @@ impl Machine {
                 self.expect_count(args, 1)?;
                 Ok(Value::Bool(matches!(args[0], Value::Bool(_))))
             }
+            Primitive::StringPredicate => {
+                self.expect_count(args, 1)?;
+                Ok(Value::Bool(matches!(
+                    args[0],
+                    Value::Object(id)
+                        if matches!(self.object_kind_by_id(id), Ok(ObjectKind::String { .. }))
+                )))
+            }
             Primitive::Cons => {
                 self.expect_count(args, 2)?;
                 self.alloc_pair(args[0], args[1])
@@ -1304,6 +1321,24 @@ impl Machine {
         self.alloc_object(ObjectKind::Pair { car, cdr })
     }
 
+    fn alloc_string(&mut self, value: &[u8]) -> LispResult<Value> {
+        if value.len() > MAX_STRING_BYTES {
+            return Err(Error::new("string too long"));
+        }
+
+        let mut bytes = [0u8; MAX_STRING_BYTES];
+        let mut index = 0usize;
+        while index < value.len() {
+            bytes[index] = value[index];
+            index += 1;
+        }
+
+        self.alloc_object(ObjectKind::String {
+            len: value.len() as u8,
+            bytes,
+        })
+    }
+
     fn alloc_object(&mut self, kind: ObjectKind) -> LispResult<Value> {
         let id = self.free_head.ok_or(Error::new("heap full"))?;
         let index = id as usize;
@@ -1386,6 +1421,7 @@ impl Machine {
             b"number?",
             b"symbol?",
             b"bool?",
+            b"string?",
             b"cons",
             b"car",
             b"cdr",
@@ -1825,6 +1861,7 @@ impl Machine {
                 self.mark_value(value);
                 self.mark_value(next);
             }
+            ObjectKind::String { .. } => {}
             ObjectKind::Free => {}
         }
     }
@@ -1842,6 +1879,7 @@ impl Machine {
                 Ok(ObjectKind::Pair { .. }) => self.write_pair(id, output),
                 Ok(ObjectKind::Closure { .. }) => output.write_str("<lambda>"),
                 Ok(ObjectKind::Env { .. }) => output.write_str("<env>"),
+                Ok(ObjectKind::String { len, bytes }) => self.write_string(len, &bytes, output),
                 _ => output.write_str("<stale>"),
             },
         }
@@ -1904,6 +1942,29 @@ impl Machine {
         }
         Ok(())
     }
+
+    fn write_string<W: Write>(
+        &self,
+        len: u8,
+        bytes: &[u8; MAX_STRING_BYTES],
+        output: &mut W,
+    ) -> fmt::Result {
+        output.write_char('"')?;
+        let mut index = 0usize;
+        while index < len as usize {
+            match bytes[index] {
+                b'"' => output.write_str("\\\"")?,
+                b'\\' => output.write_str("\\\\")?,
+                b'\n' => output.write_str("\\n")?,
+                b'\r' => output.write_str("\\r")?,
+                b'\t' => output.write_str("\\t")?,
+                byte if (0x20..=0x7e).contains(&byte) => output.write_char(byte as char)?,
+                byte => write!(output, "\\x{:02x}", byte)?,
+            }
+            index += 1;
+        }
+        output.write_char('"')
+    }
 }
 
 struct Reader<'a> {
@@ -1926,6 +1987,7 @@ impl Reader<'_> {
                 let quote_tail = machine.alloc_pair(quoted, Value::Nil)?;
                 machine.alloc_pair(Value::Symbol(machine.specials.quote), quote_tail)
             }
+            Some(b'"') => self.read_string(machine),
             Some(_) => self.read_atom(machine),
             None => Err(Error::new("unexpected end of input")),
         }
@@ -1964,6 +2026,40 @@ impl Reader<'_> {
                     tail = cell;
                 }
                 None => return Err(Error::new("unterminated list")),
+            }
+        }
+    }
+
+    fn read_string(&mut self, machine: &mut Machine) -> LispResult<Value> {
+        self.expect(b'"')?;
+
+        let mut bytes = [0u8; MAX_STRING_BYTES];
+        let mut len = 0usize;
+
+        loop {
+            let byte = match self.peek() {
+                Some(byte) => byte,
+                None => return Err(Error::new("unterminated string")),
+            };
+            self.position += 1;
+
+            match byte {
+                b'"' => return machine.alloc_string(&bytes[..len]),
+                b'\\' => {
+                    let escaped = match self.peek() {
+                        Some(b'"') => b'"',
+                        Some(b'\\') => b'\\',
+                        Some(b'n') => b'\n',
+                        Some(b'r') => b'\r',
+                        Some(b't') => b'\t',
+                        Some(_) => return Err(Error::new("invalid string escape")),
+                        None => return Err(Error::new("unterminated string")),
+                    };
+                    self.position += 1;
+                    push_string_byte(&mut bytes, &mut len, escaped)?;
+                }
+                b'\r' | b'\n' => return Err(Error::new("unterminated string")),
+                byte => push_string_byte(&mut bytes, &mut len, byte)?,
             }
         }
     }
@@ -2033,6 +2129,20 @@ impl Reader<'_> {
     fn is_done(&self) -> bool {
         self.position >= self.input.len()
     }
+}
+
+fn push_string_byte(
+    bytes: &mut [u8; MAX_STRING_BYTES],
+    len: &mut usize,
+    byte: u8,
+) -> LispResult<()> {
+    if *len >= MAX_STRING_BYTES {
+        return Err(Error::new("string too long"));
+    }
+
+    bytes[*len] = byte;
+    *len += 1;
+    Ok(())
 }
 
 fn is_delimiter(byte: u8) -> bool {
