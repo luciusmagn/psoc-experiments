@@ -115,7 +115,30 @@ proves the changed surface is sane before committing. For docs-only
 changes, `git diff --check` is enough unless the docs include commands
 that were changed and should be tested.
 
-For the active console firmware:
+For the active console firmware, use the repo-local Chez Scheme tooling by
+default:
+
+```sh
+tools/setup-modustoolbox.scm --check
+tools/build-lisp.scm
+tools/flash-lisp.scm
+```
+
+Use `tools/build-flash-lisp.scm` when a change should be built and flashed
+in one step. Use `tools/serial-console.scm` for an interactive console and
+`tools/send-lisp.scm '(form ...)'` for one-off Lisp forms. These scripts
+encode the current known-good build, pack, flash, and serial-console
+commands and should be kept up to date when that flow changes.
+
+The scripts keep vendor downloads and generated local state under `.local/`
+and discover Infineon OpenOCD from `OPENOCD_ROOT`,
+`MODUSTOOLBOX_OPENOCD_ROOT`, `MODUSTOOLBOX_ROOT`,
+`.local/ModusToolbox`, or `/opt/ModusToolbox`. Use
+`tools/setup-modustoolbox.scm --archive /path/to/ModusToolbox-linux.tar.gz`
+to install a local ModusToolbox tarball into the ignored repo-local tools
+directory.
+
+The underlying manual flow for the active console firmware is:
 
 ```sh
 cd lisp-psoc-pc
