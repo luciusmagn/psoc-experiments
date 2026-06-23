@@ -13,6 +13,7 @@ psoc6-pac = {path = "../psoc6-pac", features = ["rt"]}
 
 [features]
 use-bootloader = []
+wifi-firmware-blob = []
 
 [profile.release]
 lto = true

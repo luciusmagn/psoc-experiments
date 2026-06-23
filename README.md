@@ -28,6 +28,18 @@ flashing script looks for Infineon OpenOCD in this order: `OPENOCD_ROOT`,
 `MODUSTOOLBOX_OPENOCD_ROOT`, `MODUSTOOLBOX_ROOT`, `.local/ModusToolbox`,
 and `/opt/ModusToolbox`.
 
+To include the local CYW4343W firmware blob in the CM4 image and enable
+`(wifi-load-firmware)` to load real firmware into Wi-Fi SOCSRAM:
+
+```sh
+tools/prepare-wifi-resources.scm --check
+tools/build-lisp.scm --wifi-firmware
+tools/flash-lisp.scm
+```
+
+`tools/build-flash-lisp.scm --wifi-firmware` runs the same build and flash
+flow in one step.
+
 To keep the large vendor tools out of git, install ModusToolbox into the
 ignored `.local/ModusToolbox` directory:
 

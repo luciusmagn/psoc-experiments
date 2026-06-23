@@ -11,6 +11,7 @@ use psoc6_pac::Peripherals;
 mod hal;
 mod lisp;
 mod lisp_store;
+mod wifi_resources;
 
 const SYSCLK_HZ: u32 = 50_000_000;
 

@@ -3,7 +3,7 @@ use core::ptr::{read_volatile, write_volatile};
 use psoc6_pac::Peripherals;
 
 use crate::hal::{micro_sd, wifi_sdio};
-use crate::{lisp, lisp_store};
+use crate::{lisp, lisp_store, wifi_resources};
 
 const BUTTON0_MASK: u32 = 1 << 4;
 const PERIPHERAL_REGISTER_START: u32 = 0x4000_0000;
@@ -392,6 +392,13 @@ impl lisp::Board for PsocBoard<'_> {
         wifi_sdio_socram_block_probe_report(wifi_sdio::socram_block_probe(self.p, address, seed))
     }
 
+    fn wifi_load_firmware(&mut self) -> lisp::WifiSdioFirmwareLoadReport {
+        wifi_sdio_firmware_load_report(wifi_sdio::load_firmware(
+            self.p,
+            wifi_resources::cyw4343w_firmware(),
+        ))
+    }
+
     fn wifi_core_state(&mut self, base: u32) -> lisp::WifiSdioCoreStateReport {
         wifi_sdio_core_state_report(wifi_sdio::core_state(self.p, base))
     }
@@ -751,6 +758,27 @@ fn wifi_sdio_socram_block_probe_status(
     }
 }
 
+fn wifi_sdio_firmware_load_status(status: wifi_sdio::WifiSdioFirmwareLoadStatus) -> &'static [u8] {
+    match status {
+        wifi_sdio::WifiSdioFirmwareLoadStatus::Ready => b"ready",
+        wifi_sdio::WifiSdioFirmwareLoadStatus::BlobMissing => b"blob-missing",
+        wifi_sdio::WifiSdioFirmwareLoadStatus::BlobTooLarge => b"blob-too-large",
+        wifi_sdio::WifiSdioFirmwareLoadStatus::SetupFailed => b"setup-failed",
+        wifi_sdio::WifiSdioFirmwareLoadStatus::AlpWriteFailed => b"alp-write-failed",
+        wifi_sdio::WifiSdioFirmwareLoadStatus::AlpReadFailed => b"alp-read-failed",
+        wifi_sdio::WifiSdioFirmwareLoadStatus::AlpTimeout => b"alp-timeout",
+        wifi_sdio::WifiSdioFirmwareLoadStatus::AlpClearFailed => b"alp-clear-failed",
+        wifi_sdio::WifiSdioFirmwareLoadStatus::ArmDisableFailed => b"arm-disable-failed",
+        wifi_sdio::WifiSdioFirmwareLoadStatus::SocramDisableFailed => b"socram-disable-failed",
+        wifi_sdio::WifiSdioFirmwareLoadStatus::SocramResetFailed => b"socram-reset-failed",
+        wifi_sdio::WifiSdioFirmwareLoadStatus::BankIndexWriteFailed => b"bank-index-write-failed",
+        wifi_sdio::WifiSdioFirmwareLoadStatus::BankPdaWriteFailed => b"bank-pda-write-failed",
+        wifi_sdio::WifiSdioFirmwareLoadStatus::WriteFailed => b"write-failed",
+        wifi_sdio::WifiSdioFirmwareLoadStatus::VerifyReadFailed => b"verify-read-failed",
+        wifi_sdio::WifiSdioFirmwareLoadStatus::VerifyMismatch => b"verify-mismatch",
+    }
+}
+
 fn wifi_sdio_core_state_status(status: wifi_sdio::WifiSdioCoreStateStatus) -> &'static [u8] {
     match status {
         wifi_sdio::WifiSdioCoreStateStatus::Ready => b"ready",
@@ -975,6 +1003,28 @@ fn wifi_sdio_socram_block_probe_report(
         readback_checksum: report.readback_checksum,
         restored_checksum: report.restored_checksum,
         mismatch_index: report.mismatch_index,
+        mismatch_expected: report.mismatch_expected,
+        mismatch_actual: report.mismatch_actual,
+        last_response: report.last_response,
+        last_error: report.last_error.map(wifi_sdio_command_error_report),
+        host: wifi_sdio_host_report(report.host),
+    }
+}
+
+fn wifi_sdio_firmware_load_report(
+    report: wifi_sdio::WifiSdioFirmwareLoadReport,
+) -> lisp::WifiSdioFirmwareLoadReport {
+    lisp::WifiSdioFirmwareLoadReport {
+        status: wifi_sdio_firmware_load_status(report.status),
+        setup_status: wifi_sdio_backplane_status(report.setup_status),
+        read_status: wifi_sdio_backplane_read_status(report.read_status),
+        write_status: wifi_sdio_backplane_write32_status(report.write_status),
+        firmware_bytes: report.firmware_bytes,
+        processed_bytes: report.processed_bytes,
+        chunk_count: report.chunk_count,
+        firmware_checksum: report.firmware_checksum,
+        verify_checksum: report.verify_checksum,
+        mismatch_offset: report.mismatch_offset,
         mismatch_expected: report.mismatch_expected,
         mismatch_actual: report.mismatch_actual,
         last_response: report.last_response,

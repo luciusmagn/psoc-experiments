@@ -23,14 +23,30 @@
       ((string=? out "") (loop (cdr items) (car items)))
       (else (loop (cdr items) (string-append out " " (car items)))))))
 
+(define (parse args build-args flash-args)
+  (cond
+    ((null? args) (values (reverse build-args) (reverse flash-args)))
+    ((string=? (car args) "--wifi-firmware")
+     (parse (cdr args) (cons (car args) build-args) flash-args))
+    (else
+     (parse (cdr args) build-args (cons (car args) flash-args)))))
+
+(define (command-with-args command args)
+  (let ((rest (join-with-spaces (quote-args args))))
+    (if (string=? rest "")
+        command
+        (string-append command " " rest))))
+
 (let ((args (command-line-tail)))
   (when (and (pair? args) (string=? (car args) "--help"))
-    (say "usage: tools/build-flash-lisp.scm [flash-lisp arguments]")
+    (say "usage: tools/build-flash-lisp.scm [--wifi-firmware] [flash-lisp arguments]")
     (say "")
     (say "Builds lisp-psoc-pc, packs the bootloader, then flashes it.")
     (exit 0))
-  (run (shell-quote (repo-path "tools/build-lisp.scm")))
-  (run (string-append
-        (shell-quote (repo-path "tools/flash-lisp.scm"))
-        (let ((rest (join-with-spaces (quote-args args))))
-          (if (string=? rest "") "" (string-append " " rest))))))
+  (let-values (((build-args flash-args) (parse args '() '())))
+    (run (command-with-args
+          (shell-quote (repo-path "tools/build-lisp.scm"))
+          build-args))
+    (run (command-with-args
+          (shell-quote (repo-path "tools/flash-lisp.scm"))
+          flash-args))))

@@ -13,7 +13,7 @@
 use std::env;
 use std::fs::File;
 use std::io::Write;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 static MEMORY_X: &[u8] = include_bytes!("memory-raw.x");
 static MEMORY_X_BOOTLOADER: &[u8] = include_bytes!("memory-bootloader.x");
@@ -36,6 +36,14 @@ fn main() {
     println!("cargo:rustc-link-search={}", out.display());
     println!("cargo:rerun-if-changed=memory-raw.x");
     println!("cargo:rerun-if-changed=memory-bootloader.x");
+    println!("cargo:rerun-if-changed=../.local/wifi/resources/4343WA1.bin");
+
+    if env::var("CARGO_FEATURE_WIFI_FIRMWARE_BLOB").is_ok() {
+        let firmware = Path::new("../.local/wifi/resources/4343WA1.bin");
+        if !firmware.exists() {
+            panic!("missing CYW4343W firmware; run tools/prepare-wifi-resources.scm");
+        }
+    }
 
     // Specify linker arguments.
 

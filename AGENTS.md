@@ -135,6 +135,12 @@ in one step. Use `tools/serial-console.scm` for an interactive console and
 encode the current known-good build, pack, flash, and serial-console
 commands and should be kept up to date when that flow changes.
 
+Use `tools/build-lisp.scm --wifi-firmware` or
+`tools/build-flash-lisp.scm --wifi-firmware` only when the local CYW4343W
+firmware blob should be embedded in the CM4 image for `(wifi-load-firmware)`.
+The default build keeps the blob out of the image and returns `blob-missing`
+from that form.
+
 The scripts keep vendor downloads and generated local state under `.local/`
 and discover Infineon OpenOCD from `OPENOCD_ROOT`,
 `MODUSTOOLBOX_OPENOCD_ROOT`, `MODUSTOOLBOX_ROOT`,

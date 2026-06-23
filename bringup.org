@@ -1722,14 +1722,84 @@ the same SHA-256 hash. =release-v1.94.0= carries an older 419799-byte
 firmware payload, so the newer matching payload is the current local
 resource source.
 
+* 2026-06-23 Wi-Fi firmware SOCSRAM load
+
+Added an explicit local-resource build path:
+
+#+begin_src sh
+tools/build-lisp.scm --wifi-firmware
+tools/flash-lisp.scm
+#+end_src
+
+or:
+
+#+begin_src sh
+tools/build-flash-lisp.scm --wifi-firmware
+#+end_src
+
+The default build still leaves the CYW4343W blob out of the CM4 image.
+When the blob feature is absent, =(wifi-load-firmware)= returns
+=blob-missing=. The =--wifi-firmware= build checks
+=.local/wifi/resources/4343WA1.bin= and embeds it with =include_bytes!=.
+
+The new Lisp form =(wifi-load-firmware)= does not start the Wi-Fi ARM
+core. It performs one uninterrupted CYW43430 SOCSRAM session:
+
+1. setup SDIO and request ALP;
+2. disable the WLAN ARM wrapper at =#x18103000=;
+3. disable and reset the SOCSRAM wrapper at =#x18104000=;
+4. set SOCSRAM bank index/PDA for RAM download;
+5. write the firmware to SOCSRAM address =#x00000000= in 64-byte CMD53
+   block-mode ADMA chunks;
+6. read the same byte range back and verify a bytewise FNV-1a checksum and
+   first mismatch offset.
+
+Blob-enabled build size:
+
+#+begin_example
+text=506988 data=0 bss=84 dec=507072 hex=7bcc0 lisp-psoc-pc
+text=507476 data=0 bss=4  dec=507480 hex=7be58 psoc6-cm0-bootloader
+app.bin bytes=506988
+bootloader ELF bytes=528248
+#+end_example
+
+Live validation after flashing:
+
+#+begin_example
+(wifi-load-firmware)
+=> ((status . ready)
+    (setup-status . ready)
+    (read-status . ready)
+    (write-status . ready)
+    (firmware-bytes . #x00066e2d)
+    (processed-bytes . #x00066e2d)
+    (chunk-count . #x000019b9)
+    (firmware-checksum . #x51cea20c)
+    (verify-checksum . #x51cea20c)
+    (mismatch-offset . #xffffffff)
+    (mismatch-expected . #x00000000)
+    (mismatch-actual . #x00000000)
+    (last-response . #x00001000)
+    (last-error)
+    (SDHC0 ... (XFER_MODE . #x00000012)
+               (BLOCKSIZE . #x00000040)
+               (ADMA_ERR_STAT . #x00000000)
+               (HOST_CTRL1 . #x000000d2)
+               (PSTATE . #x03f30000)
+               (RESP01 . #x00001000) ...))
+#+end_example
+
+This proves the host can load and verify the full 421421-byte CYW4343W
+firmware image in SOCSRAM using the same 64-byte ADMA transfer path proven
+by the block probe. The next Wi-Fi slice should load NVRAM/CLM or identify
+the correct post-download start sequence, not revisit basic SOCSRAM block
+I/O.
+
 * Next actions
 
 1. Add REPL history and better editing across continuation lines.
 2. Add a FAT/exFAT-aware storage layer after raw block reads/writes work.
 3. Test the newer Infineon target =infineon/cy8cxxa.cfg= as a replacement
    for obsolete =target/psoc6_2m.cfg=.
-4. Add a firmware-sized SOCSRAM loader using the local Wi-Fi resources and
-   the now-working 64-byte block
-   transfer path.
-5. Start Wi-Fi from a known-good Infineon or Zephyr sample before trying
+4. Start Wi-Fi from a known-good Infineon or Zephyr sample before trying
    to hand-port CYW4343W support.

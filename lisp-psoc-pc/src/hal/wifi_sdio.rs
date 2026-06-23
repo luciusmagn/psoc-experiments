@@ -95,6 +95,7 @@ const CORE_CONTROL_FORCE_CLOCKED: u8 = SICF_FGC | SICF_CLOCK_EN;
 const CYW43430_ARM_WRAPPER_BASE: u32 = 0x1810_3000;
 const CYW43430_SOCSRAM_BASE: u32 = 0x1800_4000;
 const CYW43430_SOCSRAM_WRAPPER_BASE: u32 = 0x1810_4000;
+const CYW43430_SOCSRAM_BYTES: usize = 512 * 1024;
 const CYW43430_SOCSRAM_BANKX_INDEX: u32 = CYW43430_SOCSRAM_BASE + 0x10;
 const CYW43430_SOCSRAM_BANKX_PDA: u32 = CYW43430_SOCSRAM_BASE + 0x44;
 const HOST_CTRL1_DMA_SELECT_MASK: u8 = 0x03 << 3;
@@ -107,6 +108,8 @@ const ADMA_ATTR_VALID: u32 = 1 << 0;
 const ADMA_ATTR_END: u32 = 1 << 1;
 const ADMA_ACT_TRAN: u32 = 4 << 3;
 const ADMA_LEN_SHIFT: u32 = 16;
+const FNV_OFFSET_BASIS: u32 = 0x811c_9dc5;
+const FNV_PRIME: u32 = 0x0100_0193;
 
 const P2_SDIO_DATA_MASK: u32 = 0x0f | (0x0f << 4) | (0x0f << 8) | (0x0f << 12);
 const P2_SDIO_DATA_CFG: u32 = DRIVE_STRONG_INPUT
@@ -308,6 +311,26 @@ pub enum WifiSdioSocramBlockProbeStatus {
     RestoreWriteFailed,
     RestoreReadFailed,
     RestoreReadbackMismatch,
+}
+
+#[derive(Clone, Copy)]
+pub enum WifiSdioFirmwareLoadStatus {
+    Ready,
+    BlobMissing,
+    BlobTooLarge,
+    SetupFailed,
+    AlpWriteFailed,
+    AlpReadFailed,
+    AlpTimeout,
+    AlpClearFailed,
+    ArmDisableFailed,
+    SocramDisableFailed,
+    SocramResetFailed,
+    BankIndexWriteFailed,
+    BankPdaWriteFailed,
+    WriteFailed,
+    VerifyReadFailed,
+    VerifyMismatch,
 }
 
 #[derive(Clone, Copy)]
@@ -717,6 +740,24 @@ pub struct WifiSdioSocramBlockProbeReport {
     pub readback_checksum: u32,
     pub restored_checksum: u32,
     pub mismatch_index: u32,
+    pub mismatch_expected: u32,
+    pub mismatch_actual: u32,
+    pub last_response: u32,
+    pub last_error: Option<CommandError>,
+    pub host: WifiSdioHostSnapshot,
+}
+
+pub struct WifiSdioFirmwareLoadReport {
+    pub status: WifiSdioFirmwareLoadStatus,
+    pub setup_status: WifiSdioBackplaneStatus,
+    pub read_status: WifiSdioBackplaneReadStatus,
+    pub write_status: WifiSdioBackplaneWrite32Status,
+    pub firmware_bytes: u32,
+    pub processed_bytes: u32,
+    pub chunk_count: u32,
+    pub firmware_checksum: u32,
+    pub verify_checksum: u32,
+    pub mismatch_offset: u32,
     pub mismatch_expected: u32,
     pub mismatch_actual: u32,
     pub last_response: u32,
@@ -2659,6 +2700,183 @@ pub fn socram_block_probe(
     )
 }
 
+pub fn load_firmware(p: &Peripherals, firmware: &[u8]) -> WifiSdioFirmwareLoadReport {
+    if firmware.is_empty() {
+        return firmware_load_report(
+            p,
+            WifiSdioFirmwareLoadStatus::BlobMissing,
+            WifiSdioBackplaneStatus::Ready,
+            WifiSdioBackplaneReadStatus::Ready,
+            WifiSdioBackplaneWrite32Status::Ready,
+            0,
+            0,
+            0,
+            0,
+            0,
+            SOCSRAM_BLOCK_PROBE_NO_MISMATCH,
+            0,
+            0,
+            0,
+            None,
+        );
+    }
+
+    if firmware.len() > CYW43430_SOCSRAM_BYTES {
+        return firmware_load_report(
+            p,
+            WifiSdioFirmwareLoadStatus::BlobTooLarge,
+            WifiSdioBackplaneStatus::Ready,
+            WifiSdioBackplaneReadStatus::Ready,
+            WifiSdioBackplaneWrite32Status::Ready,
+            firmware.len() as u32,
+            0,
+            firmware_chunk_count(firmware.len()),
+            checksum_bytes(firmware),
+            0,
+            SOCSRAM_BLOCK_PROBE_NO_MISMATCH,
+            0,
+            0,
+            0,
+            None,
+        );
+    }
+
+    let firmware_bytes = firmware.len() as u32;
+    let chunk_count = firmware_chunk_count(firmware.len());
+    let firmware_checksum = checksum_bytes(firmware);
+    let prepared = match prepare_cyw43430_socram(p) {
+        Ok(prepared) => prepared,
+        Err(error) => {
+            let (status, setup_status, write_status, last_response, last_error) =
+                firmware_load_prepare_error(error);
+            return firmware_load_report(
+                p,
+                status,
+                setup_status,
+                WifiSdioBackplaneReadStatus::Ready,
+                write_status,
+                firmware_bytes,
+                0,
+                chunk_count,
+                firmware_checksum,
+                0,
+                SOCSRAM_BLOCK_PROBE_NO_MISMATCH,
+                0,
+                0,
+                last_response,
+                last_error,
+            );
+        }
+    };
+
+    let core = &p.SDHC0.core;
+    let setup_status = prepared.setup_status;
+    let mut last_response = prepared.last_response;
+    let mut offset = 0usize;
+
+    while offset < firmware.len() {
+        let chunk_len = firmware_chunk_len(firmware.len(), offset);
+        let words = firmware_chunk_words(firmware, offset, chunk_len);
+        match write_backplane_block_after_setup(core, offset as u32, &words) {
+            Ok(write) => {
+                last_response = write.response;
+            }
+            Err(error) => {
+                let (write_status, response, last_error) = backplane_block_write_error(error);
+                return firmware_load_report(
+                    p,
+                    WifiSdioFirmwareLoadStatus::WriteFailed,
+                    setup_status,
+                    WifiSdioBackplaneReadStatus::Ready,
+                    write_status,
+                    firmware_bytes,
+                    offset as u32,
+                    chunk_count,
+                    firmware_checksum,
+                    0,
+                    SOCSRAM_BLOCK_PROBE_NO_MISMATCH,
+                    0,
+                    0,
+                    response_or_last(response, last_response),
+                    last_error,
+                );
+            }
+        }
+        offset += SDIO_CMD53_BLOCK_BYTES as usize;
+    }
+
+    let mut verify_checksum = FNV_OFFSET_BASIS;
+    let mut mismatch_offset = SOCSRAM_BLOCK_PROBE_NO_MISMATCH;
+    let mut mismatch_expected = 0;
+    let mut mismatch_actual = 0;
+    offset = 0;
+
+    while offset < firmware.len() {
+        let chunk_len = firmware_chunk_len(firmware.len(), offset);
+        let read = match read_backplane_block_after_setup(core, offset as u32) {
+            Ok(read) => read,
+            Err(error) => {
+                let (read_status, response, last_error) = backplane_block_read_error(error);
+                return firmware_load_report(
+                    p,
+                    WifiSdioFirmwareLoadStatus::VerifyReadFailed,
+                    setup_status,
+                    read_status,
+                    WifiSdioBackplaneWrite32Status::Ready,
+                    firmware_bytes,
+                    offset as u32,
+                    chunk_count,
+                    firmware_checksum,
+                    verify_checksum,
+                    mismatch_offset,
+                    mismatch_expected,
+                    mismatch_actual,
+                    response_or_last(response, last_response),
+                    last_error,
+                );
+            }
+        };
+        last_response = read.response;
+
+        for chunk_offset in 0..chunk_len {
+            let expected = firmware[offset + chunk_offset];
+            let actual = word_byte(&read.words, chunk_offset);
+            verify_checksum = checksum_byte(verify_checksum, actual);
+            if mismatch_offset == SOCSRAM_BLOCK_PROBE_NO_MISMATCH && expected != actual {
+                mismatch_offset = (offset + chunk_offset) as u32;
+                mismatch_expected = expected as u32;
+                mismatch_actual = actual as u32;
+            }
+        }
+
+        offset += SDIO_CMD53_BLOCK_BYTES as usize;
+    }
+
+    let status = if mismatch_offset == SOCSRAM_BLOCK_PROBE_NO_MISMATCH {
+        WifiSdioFirmwareLoadStatus::Ready
+    } else {
+        WifiSdioFirmwareLoadStatus::VerifyMismatch
+    };
+
+    firmware_load_report(
+        p,
+        status,
+        setup_status,
+        WifiSdioBackplaneReadStatus::Ready,
+        WifiSdioBackplaneWrite32Status::Ready,
+        firmware_bytes,
+        firmware_bytes,
+        chunk_count,
+        firmware_checksum,
+        verify_checksum,
+        mismatch_offset,
+        mismatch_expected,
+        mismatch_actual,
+        last_response,
+        None,
+    )
+}
+
 fn prepare_cyw43430_socram(p: &Peripherals) -> Result<SocramPrepared, SocramPrepareError> {
     let setup = setup_backplane(p);
     if !matches!(setup.status, WifiSdioBackplaneStatus::Ready) {
@@ -2922,6 +3140,104 @@ fn socram_block_probe_prepare_error(
     }
 }
 
+fn firmware_load_prepare_error(
+    error: SocramPrepareError,
+) -> (
+    WifiSdioFirmwareLoadStatus,
+    WifiSdioBackplaneStatus,
+    WifiSdioBackplaneWrite32Status,
+    u32,
+    Option<CommandError>,
+) {
+    match error {
+        SocramPrepareError::Setup {
+            setup_status,
+            last_error,
+        } => (
+            WifiSdioFirmwareLoadStatus::SetupFailed,
+            setup_status,
+            WifiSdioBackplaneWrite32Status::Ready,
+            0,
+            last_error,
+        ),
+        SocramPrepareError::Alp {
+            setup_status,
+            error,
+        } => {
+            let (status, response, last_error) = firmware_load_alp_error(error);
+            (
+                status,
+                setup_status,
+                WifiSdioBackplaneWrite32Status::Ready,
+                response,
+                last_error,
+            )
+        }
+        SocramPrepareError::ArmDisable {
+            setup_status,
+            last_response,
+            error,
+        } => {
+            let (_, last_error) = core_reset_step_error(error);
+            (
+                WifiSdioFirmwareLoadStatus::ArmDisableFailed,
+                setup_status,
+                WifiSdioBackplaneWrite32Status::Ready,
+                last_response,
+                Some(last_error),
+            )
+        }
+        SocramPrepareError::SocramDisable {
+            setup_status,
+            last_response,
+            error,
+        } => {
+            let (_, last_error) = core_reset_step_error(error);
+            (
+                WifiSdioFirmwareLoadStatus::SocramDisableFailed,
+                setup_status,
+                WifiSdioBackplaneWrite32Status::Ready,
+                last_response,
+                Some(last_error),
+            )
+        }
+        SocramPrepareError::SocramReset {
+            setup_status,
+            last_response,
+            error,
+        } => {
+            let (_, last_error) = core_reset_step_error(error);
+            (
+                WifiSdioFirmwareLoadStatus::SocramResetFailed,
+                setup_status,
+                WifiSdioBackplaneWrite32Status::Ready,
+                last_response,
+                Some(last_error),
+            )
+        }
+        SocramPrepareError::BankIndexWrite {
+            setup_status,
+            error,
+        } => (
+            WifiSdioFirmwareLoadStatus::BankIndexWriteFailed,
+            setup_status,
+            error.status,
+            error.response,
+            error.last_error,
+        ),
+        SocramPrepareError::BankPdaWrite {
+            setup_status,
+            error,
+        } => (
+            WifiSdioFirmwareLoadStatus::BankPdaWriteFailed,
+            setup_status,
+            error.status,
+            error.response,
+            error.last_error,
+        ),
+    }
+}
+
 fn socram_block_probe_words(seed: u32) -> [u32; SDIO_CMD53_BLOCK_WORDS] {
     let mut words = [0u32; SDIO_CMD53_BLOCK_WORDS];
     let mut state = seed ^ 0x9e37_79b9;
@@ -2939,12 +3255,55 @@ fn socram_block_probe_words(seed: u32) -> [u32; SDIO_CMD53_BLOCK_WORDS] {
 }
 
 fn checksum_words(words: &[u32; SDIO_CMD53_BLOCK_WORDS]) -> u32 {
-    let mut checksum = 0x811c_9dc5;
+    let mut checksum = FNV_OFFSET_BASIS;
     for word in words.iter() {
         checksum ^= *word;
-        checksum = checksum.wrapping_mul(0x0100_0193);
+        checksum = checksum.wrapping_mul(FNV_PRIME);
     }
     checksum
+}
+
+fn checksum_byte(checksum: u32, byte: u8) -> u32 {
+    (checksum ^ byte as u32).wrapping_mul(FNV_PRIME)
+}
+
+fn checksum_bytes(bytes: &[u8]) -> u32 {
+    let mut checksum = FNV_OFFSET_BASIS;
+    for &byte in bytes {
+        checksum = checksum_byte(checksum, byte);
+    }
+    checksum
+}
+
+fn firmware_chunk_count(byte_count: usize) -> u32 {
+    ((byte_count + SDIO_CMD53_BLOCK_BYTES as usize - 1) / SDIO_CMD53_BLOCK_BYTES as usize) as u32
+}
+
+fn firmware_chunk_len(byte_count: usize, offset: usize) -> usize {
+    let remaining = byte_count - offset;
+    if remaining < SDIO_CMD53_BLOCK_BYTES as usize {
+        remaining
+    } else {
+        SDIO_CMD53_BLOCK_BYTES as usize
+    }
+}
+
+fn firmware_chunk_words(
+    firmware: &[u8],
+    offset: usize,
+    chunk_len: usize,
+) -> [u32; SDIO_CMD53_BLOCK_WORDS] {
+    let mut words = [0u32; SDIO_CMD53_BLOCK_WORDS];
+    for chunk_offset in 0..chunk_len {
+        let word_index = chunk_offset / 4;
+        let shift = (chunk_offset & 0x03) * 8;
+        words[word_index] |= (firmware[offset + chunk_offset] as u32) << shift;
+    }
+    words
+}
+
+fn word_byte(words: &[u32; SDIO_CMD53_BLOCK_WORDS], byte_index: usize) -> u8 {
+    ((words[byte_index / 4] >> ((byte_index & 0x03) * 8)) & 0xff) as u8
 }
 
 fn mismatch_words(
@@ -3641,6 +4000,25 @@ fn socram_block_probe_alp_error(
         }
         AlpError::Clear { response, error } => (
             WifiSdioSocramBlockProbeStatus::AlpClearFailed,
+            response,
+            Some(error),
+        ),
+    }
+}
+
+fn firmware_load_alp_error(
+    error: AlpError,
+) -> (WifiSdioFirmwareLoadStatus, u32, Option<CommandError>) {
+    match error {
+        AlpError::Write(error) => (WifiSdioFirmwareLoadStatus::AlpWriteFailed, 0, Some(error)),
+        AlpError::Read { response, error } => (
+            WifiSdioFirmwareLoadStatus::AlpReadFailed,
+            response,
+            Some(error),
+        ),
+        AlpError::Timeout { response } => (WifiSdioFirmwareLoadStatus::AlpTimeout, response, None),
+        AlpError::Clear { response, error } => (
+            WifiSdioFirmwareLoadStatus::AlpClearFailed,
             response,
             Some(error),
         ),
@@ -4541,6 +4919,42 @@ fn socram_block_probe_report(
         readback_checksum,
         restored_checksum,
         mismatch_index,
+        mismatch_expected,
+        mismatch_actual,
+        last_response,
+        last_error,
+        host: host_snapshot(p),
+    }
+}
+
+fn firmware_load_report(
+    p: &Peripherals,
+    status: WifiSdioFirmwareLoadStatus,
+    setup_status: WifiSdioBackplaneStatus,
+    read_status: WifiSdioBackplaneReadStatus,
+    write_status: WifiSdioBackplaneWrite32Status,
+    firmware_bytes: u32,
+    processed_bytes: u32,
+    chunk_count: u32,
+    firmware_checksum: u32,
+    verify_checksum: u32,
+    mismatch_offset: u32,
+    mismatch_expected: u32,
+    mismatch_actual: u32,
+    last_response: u32,
+    last_error: Option<CommandError>,
+) -> WifiSdioFirmwareLoadReport {
+    WifiSdioFirmwareLoadReport {
+        status,
+        setup_status,
+        read_status,
+        write_status,
+        firmware_bytes,
+        processed_bytes,
+        chunk_count,
+        firmware_checksum,
+        verify_checksum,
+        mismatch_offset,
         mismatch_expected,
         mismatch_actual,
         last_response,
