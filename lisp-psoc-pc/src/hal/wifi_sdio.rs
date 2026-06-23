@@ -10,6 +10,7 @@ const NORMAL_INT_CMD_COMPLETE: u16 = 1 << 0;
 const NORMAL_INT_XFER_COMPLETE: u16 = 1 << 1;
 const NORMAL_INT_BUF_WR_READY: u16 = 1 << 4;
 const NORMAL_INT_BUF_RD_READY: u16 = 1 << 5;
+const NORMAL_INT_CARD_INTERRUPT: u16 = 1 << 8;
 const NORMAL_INT_ERROR: u16 = 1 << 15;
 const PSTATE_CMD_INHIBIT: u32 = 1 << 0;
 const PSTATE_CMD_INHIBIT_DAT: u32 = 1 << 1;
@@ -105,8 +106,11 @@ const CORE_CONTROL_RESET: u8 = AIRC_RESET;
 const CORE_CONTROL_CLOCKED: u8 = SICF_CLOCK_EN;
 const CORE_CONTROL_FORCE_CLOCKED: u8 = SICF_FGC | SICF_CLOCK_EN;
 const CYW43430_SDIO_CORE_BASE: u32 = 0x1800_2000;
+const CYW43430_SDIO_INT_STATUS: u32 = CYW43430_SDIO_CORE_BASE + 0x20;
 const CYW43430_SDIO_INT_HOST_MASK: u32 = CYW43430_SDIO_CORE_BASE + 0x24;
 const CYW43430_SDIO_FUNCTION_INT_MASK: u32 = CYW43430_SDIO_CORE_BASE + 0x34;
+const CYW43430_SDIO_TO_SB_MAILBOX: u32 = CYW43430_SDIO_CORE_BASE + 0x40;
+const CYW43430_SDIO_TO_HOST_MAILBOX_DATA: u32 = CYW43430_SDIO_CORE_BASE + 0x4c;
 const CYW43430_ARM_WRAPPER_BASE: u32 = 0x1810_3000;
 const CYW43430_SOCSRAM_BASE: u32 = 0x1800_4000;
 const CYW43430_SOCSRAM_WRAPPER_BASE: u32 = 0x1810_4000;
@@ -126,6 +130,8 @@ const ADMA_LEN_SHIFT: u32 = 16;
 const FNV_OFFSET_BASIS: u32 = 0x811c_9dc5;
 const FNV_PRIME: u32 = 0x0100_0193;
 const NVRAM_IMAGE_SIZE_ALIGNMENT: usize = 4;
+const I_HMB_HOST_INT: u32 = 1 << 7;
+const SMB_INT_ACK: u32 = 1 << 1;
 
 const P2_SDIO_DATA_MASK: u32 = 0x0f | (0x0f << 4) | (0x0f << 8) | (0x0f << 12);
 const P2_SDIO_DATA_CFG: u32 = DRIVE_STRONG_INPUT
@@ -239,6 +245,16 @@ pub enum WifiSdioF2FrameStatus {
     FrameTooLarge,
     UnsupportedLength,
     BodyReadFailed,
+}
+
+#[derive(Clone, Copy)]
+pub enum WifiSdioInterruptAckStatus {
+    Ready,
+    IntStatusReadFailed,
+    MailboxReadFailed,
+    MailboxAckWriteFailed,
+    InterruptClearWriteFailed,
+    FinalIntStatusReadFailed,
 }
 
 #[derive(Clone, Copy)]
@@ -909,6 +925,28 @@ pub struct WifiSdioF2FrameReport {
     pub bus_data_credit: u8,
     pub reserved0: u8,
     pub reserved1: u8,
+    pub last_error: Option<CommandError>,
+    pub host: WifiSdioHostSnapshot,
+}
+
+pub struct WifiSdioInterruptAckReport {
+    pub status: WifiSdioInterruptAckStatus,
+    pub int_status_before: u32,
+    pub mailbox_data: u32,
+    pub mailbox_ack_value: u32,
+    pub clear_value: u32,
+    pub int_status_after: u32,
+    pub host_normal_int_before: u16,
+    pub host_error_int_before: u16,
+    pub host_normal_int_after: u16,
+    pub host_error_int_after: u16,
+    pub int_status_response: u32,
+    pub mailbox_response: u32,
+    pub mailbox_ack_response: u32,
+    pub mailbox_ack_readback: u32,
+    pub clear_response: u32,
+    pub clear_readback: u32,
+    pub final_response: u32,
     pub last_error: Option<CommandError>,
     pub host: WifiSdioHostSnapshot,
 }
@@ -3789,6 +3827,201 @@ pub fn f2_read_frame(p: &Peripherals) -> WifiSdioF2FrameReport {
     )
 }
 
+pub fn ack_interrupts(p: &Peripherals) -> WifiSdioInterruptAckReport {
+    let core = &p.SDHC0.core;
+    let host_normal_int_before = core.normal_int_stat_r.read().bits();
+    let host_error_int_before = core.error_int_stat_r.read().bits();
+
+    let int_status = match read_backplane_u32_bytes(core, CYW43430_SDIO_INT_STATUS) {
+        Ok(read) => read,
+        Err(error) => {
+            return interrupt_ack_report(
+                p,
+                WifiSdioInterruptAckStatus::IntStatusReadFailed,
+                0,
+                0,
+                0,
+                0,
+                0,
+                host_normal_int_before,
+                host_error_int_before,
+                0,
+                0,
+                0,
+                0,
+                0,
+                0,
+                0,
+                0,
+                0,
+                Some(interrupt_ack_read_error(error)),
+            );
+        }
+    };
+
+    let mut mailbox_data = 0;
+    let mut mailbox_response = 0;
+    let mut mailbox_ack_response = 0;
+    let mut mailbox_ack_readback = 0;
+    if int_status.value & I_HMB_HOST_INT != 0 {
+        let mailbox = match read_backplane_u32_bytes(core, CYW43430_SDIO_TO_HOST_MAILBOX_DATA) {
+            Ok(read) => read,
+            Err(error) => {
+                return interrupt_ack_report(
+                    p,
+                    WifiSdioInterruptAckStatus::MailboxReadFailed,
+                    int_status.value,
+                    0,
+                    0,
+                    0,
+                    0,
+                    host_normal_int_before,
+                    host_error_int_before,
+                    0,
+                    0,
+                    int_status.response,
+                    0,
+                    0,
+                    0,
+                    0,
+                    0,
+                    0,
+                    Some(interrupt_ack_read_error(error)),
+                );
+            }
+        };
+        mailbox_data = mailbox.value;
+        mailbox_response = mailbox.response;
+
+        if mailbox_data != 0 {
+            let ack = match write_backplane_u32_after_setup(
+                core,
+                CYW43430_SDIO_TO_SB_MAILBOX,
+                SMB_INT_ACK,
+                mailbox_response,
+            ) {
+                Ok(write) => write,
+                Err(error) => {
+                    return interrupt_ack_report(
+                        p,
+                        WifiSdioInterruptAckStatus::MailboxAckWriteFailed,
+                        int_status.value,
+                        mailbox_data,
+                        SMB_INT_ACK,
+                        0,
+                        0,
+                        host_normal_int_before,
+                        host_error_int_before,
+                        0,
+                        0,
+                        int_status.response,
+                        mailbox_response,
+                        error.response,
+                        0,
+                        0,
+                        0,
+                        0,
+                        error.last_error,
+                    );
+                }
+            };
+            mailbox_ack_response = ack.response;
+            mailbox_ack_readback = ack.readback;
+        }
+    }
+
+    let clear_value = int_status.value & HOST_INTERRUPT_MASK;
+    let mut clear_response = 0;
+    let mut clear_readback = 0;
+    if clear_value != 0 {
+        let clear = match write_backplane_u32_after_setup(
+            core,
+            CYW43430_SDIO_INT_STATUS,
+            clear_value,
+            int_status.response,
+        ) {
+            Ok(write) => write,
+            Err(error) => {
+                return interrupt_ack_report(
+                    p,
+                    WifiSdioInterruptAckStatus::InterruptClearWriteFailed,
+                    int_status.value,
+                    mailbox_data,
+                    if mailbox_data == 0 { 0 } else { SMB_INT_ACK },
+                    clear_value,
+                    0,
+                    host_normal_int_before,
+                    host_error_int_before,
+                    0,
+                    0,
+                    int_status.response,
+                    mailbox_response,
+                    mailbox_ack_response,
+                    mailbox_ack_readback,
+                    error.response,
+                    0,
+                    0,
+                    error.last_error,
+                );
+            }
+        };
+        clear_response = clear.response;
+        clear_readback = clear.readback;
+    }
+
+    core.normal_int_stat_r
+        .write(|w| unsafe { w.bits(NORMAL_INT_CARD_INTERRUPT) });
+
+    let final_status = match read_backplane_u32_bytes(core, CYW43430_SDIO_INT_STATUS) {
+        Ok(read) => read,
+        Err(error) => {
+            return interrupt_ack_report(
+                p,
+                WifiSdioInterruptAckStatus::FinalIntStatusReadFailed,
+                int_status.value,
+                mailbox_data,
+                if mailbox_data == 0 { 0 } else { SMB_INT_ACK },
+                clear_value,
+                0,
+                host_normal_int_before,
+                host_error_int_before,
+                core.normal_int_stat_r.read().bits(),
+                core.error_int_stat_r.read().bits(),
+                int_status.response,
+                mailbox_response,
+                mailbox_ack_response,
+                mailbox_ack_readback,
+                clear_response,
+                clear_readback,
+                0,
+                Some(interrupt_ack_read_error(error)),
+            );
+        }
+    };
+
+    interrupt_ack_report(
+        p,
+        WifiSdioInterruptAckStatus::Ready,
+        int_status.value,
+        mailbox_data,
+        if mailbox_data == 0 { 0 } else { SMB_INT_ACK },
+        clear_value,
+        final_status.value,
+        host_normal_int_before,
+        host_error_int_before,
+        core.normal_int_stat_r.read().bits(),
+        core.error_int_stat_r.read().bits(),
+        int_status.response,
+        mailbox_response,
+        mailbox_ack_response,
+        mailbox_ack_readback,
+        clear_response,
+        clear_readback,
+        final_status.response,
+        None,
+    )
+}
+
 fn prepare_cyw43430_socram(p: &Peripherals) -> Result<SocramPrepared, SocramPrepareError> {
     let setup = setup_backplane(p);
     if !matches!(setup.status, WifiSdioBackplaneStatus::Ready) {
@@ -6331,6 +6564,57 @@ fn f2_frame_report(
         reserved1: bytes[11],
         last_error,
         host: host_snapshot(p),
+    }
+}
+
+fn interrupt_ack_report(
+    p: &Peripherals,
+    status: WifiSdioInterruptAckStatus,
+    int_status_before: u32,
+    mailbox_data: u32,
+    mailbox_ack_value: u32,
+    clear_value: u32,
+    int_status_after: u32,
+    host_normal_int_before: u16,
+    host_error_int_before: u16,
+    host_normal_int_after: u16,
+    host_error_int_after: u16,
+    int_status_response: u32,
+    mailbox_response: u32,
+    mailbox_ack_response: u32,
+    mailbox_ack_readback: u32,
+    clear_response: u32,
+    clear_readback: u32,
+    final_response: u32,
+    last_error: Option<CommandError>,
+) -> WifiSdioInterruptAckReport {
+    WifiSdioInterruptAckReport {
+        status,
+        int_status_before,
+        mailbox_data,
+        mailbox_ack_value,
+        clear_value,
+        int_status_after,
+        host_normal_int_before,
+        host_error_int_before,
+        host_normal_int_after,
+        host_error_int_after,
+        int_status_response,
+        mailbox_response,
+        mailbox_ack_response,
+        mailbox_ack_readback,
+        clear_response,
+        clear_readback,
+        final_response,
+        last_error,
+        host: host_snapshot(p),
+    }
+}
+
+fn interrupt_ack_read_error(error: BackplaneByteReadError) -> CommandError {
+    match error {
+        BackplaneByteReadError::Window(error) => backplane_window_error(error).1,
+        BackplaneByteReadError::Cmd52(error) => error,
     }
 }
 

@@ -88,6 +88,7 @@ pub trait Board {
     fn wifi_start_firmware(&mut self) -> WifiSdioFirmwareStartReport;
     fn wifi_f2_read_header(&mut self) -> WifiSdioF2HeaderReport;
     fn wifi_f2_read_frame(&mut self) -> WifiSdioF2FrameReport;
+    fn wifi_ack_interrupts(&mut self) -> WifiSdioInterruptAckReport;
     fn wifi_core_state(&mut self, base: u32) -> WifiSdioCoreStateReport;
     fn wifi_reset_core(&mut self, base: u32) -> WifiSdioCoreResetReport;
     fn sdhc_registers(&mut self) -> SdhcReport;
@@ -578,6 +579,29 @@ pub struct WifiSdioF2FrameReport {
 }
 
 #[derive(Clone, Copy)]
+pub struct WifiSdioInterruptAckReport {
+    pub status: &'static [u8],
+    pub int_status_before: u32,
+    pub mailbox_data: u32,
+    pub mailbox_ack_value: u32,
+    pub clear_value: u32,
+    pub int_status_after: u32,
+    pub host_normal_int_before: u16,
+    pub host_error_int_before: u16,
+    pub host_normal_int_after: u16,
+    pub host_error_int_after: u16,
+    pub int_status_response: u32,
+    pub mailbox_response: u32,
+    pub mailbox_ack_response: u32,
+    pub mailbox_ack_readback: u32,
+    pub clear_response: u32,
+    pub clear_readback: u32,
+    pub final_response: u32,
+    pub last_error: Option<WifiSdioCommandErrorReport>,
+    pub host: WifiSdioHostReport,
+}
+
+#[derive(Clone, Copy)]
 pub struct WifiSdioCoreStateReport {
     pub status: &'static [u8],
     pub setup_status: &'static [u8],
@@ -700,6 +724,7 @@ pub enum Primitive {
     WifiStartFirmware,
     WifiF2ReadHeader,
     WifiF2ReadFrame,
+    WifiAckInterrupts,
     WifiCoreState,
     WifiResetCore,
     SdhcRegs,
@@ -771,6 +796,7 @@ impl Primitive {
             Self::WifiStartFirmware => "wifi-start-firmware",
             Self::WifiF2ReadHeader => "wifi-f2-read-header",
             Self::WifiF2ReadFrame => "wifi-f2-read-frame",
+            Self::WifiAckInterrupts => "wifi-ack-interrupts",
             Self::WifiCoreState => "wifi-core-state",
             Self::WifiResetCore => "wifi-reset-core",
             Self::SdhcRegs => "sdhc-regs",
@@ -997,6 +1023,7 @@ impl Machine {
         self.install_primitive(b"wifi-start-firmware", Primitive::WifiStartFirmware)?;
         self.install_primitive(b"wifi-f2-read-header", Primitive::WifiF2ReadHeader)?;
         self.install_primitive(b"wifi-f2-read-frame", Primitive::WifiF2ReadFrame)?;
+        self.install_primitive(b"wifi-ack-interrupts", Primitive::WifiAckInterrupts)?;
         self.install_primitive(b"wifi-core-state", Primitive::WifiCoreState)?;
         self.install_primitive(b"wifi-reset-core", Primitive::WifiResetCore)?;
         self.install_primitive(b"sdhc-regs", Primitive::SdhcRegs)?;
@@ -1768,6 +1795,10 @@ impl Machine {
                 self.expect_count(args, 0)?;
                 self.wifi_sdio_f2_frame_report(board.wifi_f2_read_frame())
             }
+            Primitive::WifiAckInterrupts => {
+                self.expect_count(args, 0)?;
+                self.wifi_sdio_interrupt_ack_report(board.wifi_ack_interrupts())
+            }
             Primitive::WifiCoreState => {
                 self.expect_count(args, 1)?;
                 let base = self.expect_u32(args[0])?;
@@ -2148,6 +2179,7 @@ impl Machine {
             b"wifi-start-firmware",
             b"wifi-f2-read-header",
             b"wifi-f2-read-frame",
+            b"wifi-ack-interrupts",
             b"wifi-core-state",
             b"wifi-reset-core",
             b"sdhc-regs",
@@ -2945,6 +2977,67 @@ impl Machine {
             reserved1,
             header_response,
             body_response,
+            last_error,
+            host,
+        ];
+        self.make_list_from_values(&entries)
+    }
+
+    fn wifi_sdio_interrupt_ack_report(
+        &mut self,
+        report: WifiSdioInterruptAckReport,
+    ) -> LispResult<Value> {
+        let status = self.symbol_entry(b"status", report.status)?;
+        let int_status_before = self.word_entry(b"INT_STATUS.before", report.int_status_before)?;
+        let mailbox_data = self.word_entry(b"TO_HOST_MAILBOX_DATA", report.mailbox_data)?;
+        let mailbox_ack_value = self.word_entry(b"TO_SB_MAILBOX.ack", report.mailbox_ack_value)?;
+        let clear_value = self.word_entry(b"INT_STATUS.clear", report.clear_value)?;
+        let int_status_after = self.word_entry(b"INT_STATUS.after", report.int_status_after)?;
+        let host_normal_int_before = self.word_entry(
+            b"HOST.NORM_INT.before",
+            report.host_normal_int_before as u32,
+        )?;
+        let host_error_int_before =
+            self.word_entry(b"HOST.ERR_INT.before", report.host_error_int_before as u32)?;
+        let host_normal_int_after =
+            self.word_entry(b"HOST.NORM_INT.after", report.host_normal_int_after as u32)?;
+        let host_error_int_after =
+            self.word_entry(b"HOST.ERR_INT.after", report.host_error_int_after as u32)?;
+        let int_status_response =
+            self.word_entry(b"INT_STATUS.response", report.int_status_response)?;
+        let mailbox_response =
+            self.word_entry(b"TO_HOST_MAILBOX_DATA.response", report.mailbox_response)?;
+        let mailbox_ack_response =
+            self.word_entry(b"TO_SB_MAILBOX.response", report.mailbox_ack_response)?;
+        let mailbox_ack_readback =
+            self.word_entry(b"TO_SB_MAILBOX.readback", report.mailbox_ack_readback)?;
+        let clear_response =
+            self.word_entry(b"INT_STATUS.clear-response", report.clear_response)?;
+        let clear_readback =
+            self.word_entry(b"INT_STATUS.clear-readback", report.clear_readback)?;
+        let final_response =
+            self.word_entry(b"INT_STATUS.final-response", report.final_response)?;
+        let last_error = self.wifi_sdio_error_entry(b"last-error", report.last_error)?;
+        let host = self.wifi_sdio_host_report(report.host)?;
+        let host = self.entry(b"SDHC0", host)?;
+        let entries = [
+            status,
+            int_status_before,
+            mailbox_data,
+            mailbox_ack_value,
+            clear_value,
+            int_status_after,
+            host_normal_int_before,
+            host_error_int_before,
+            host_normal_int_after,
+            host_error_int_after,
+            int_status_response,
+            mailbox_response,
+            mailbox_ack_response,
+            mailbox_ack_readback,
+            clear_response,
+            clear_readback,
+            final_response,
             last_error,
             host,
         ];

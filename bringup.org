@@ -1960,14 +1960,53 @@ a credit/flow-control update with no payload. The next Wi-Fi milestone is
 interrupt acknowledgement and then the first host-to-device SDPCM control
 message.
 
+* 2026-06-23 Wi-Fi interrupt ack diagnostic
+
+Added =(wifi-ack-interrupts)= as a stateful diagnostic for the interrupt path
+after =(wifi-start-firmware)= and =(wifi-f2-read-frame)=. The form reads the
+CYW43430 SDIO core =INT_STATUS= register at =#x18002020=, reads and acknowledges
+=TO_HOST_MAILBOX_DATA= if =I_HMB_HOST_INT= is set, writes the observed WHD
+software-interrupt bits back to =INT_STATUS=, writes the PSoC SDHC card
+interrupt bit to the host normal interrupt status register, and reports the
+before/after state.
+
+Live validation after consuming the startup frame:
+
+#+begin_example
+(wifi-ack-interrupts)
+=> ((status . ready)
+    (INT_STATUS.before . #x00000000)
+    (TO_HOST_MAILBOX_DATA . #x00000000)
+    (TO_SB_MAILBOX.ack . #x00000000)
+    (INT_STATUS.clear . #x00000000)
+    (INT_STATUS.after . #x00000000)
+    (HOST.NORM_INT.before . #x00000100)
+    (HOST.ERR_INT.before . #x00000000)
+    (HOST.NORM_INT.after . #x00000100)
+    (HOST.ERR_INT.after . #x00000000)
+    (last-error)
+    (SDHC0 ... (NORM_INT . #x00000100)
+               (ERR_INT . #x00000000)
+               (PSTATE . #x03f30000)
+               (ARGUMENT . #x10404600)
+               (RESP01 . #x00000000) ...))
+#+end_example
+
+The device-side WHD software interrupt register is already clear after the
+startup frame is read. The remaining =NORM_INT #x100= is therefore a host SDHC
+card-interrupt status problem or a lower SDIO function interrupt-pending
+condition, not an uncleared =SDIO_INT_STATUS= bit. The next diagnostic should
+read CCCR =INTPEND= in the same live session and determine why writing the
+PSoC host card-interrupt status bit does not clear =NORM_INT #x100=.
+
 * Next actions
 
 1. Add REPL history and better editing across continuation lines.
 2. Add a FAT/exFAT-aware storage layer after raw block reads/writes work.
 3. Test the newer Infineon target =infineon/cy8cxxa.cfg= as a replacement
    for obsolete =target/psoc6_2m.cfg=.
-4. Add SDPCM interrupt acknowledgement now that the initial startup frame can
-   be consumed and decoded.
+4. Add a stateful CCCR =INTPEND= and host card-interrupt diagnostic after the
+   startup frame is consumed.
 5. Send the first host-to-device SDPCM control message after the credit update.
 6. Start Wi-Fi from a known-good Infineon or Zephyr sample before trying
    to hand-port the full CYW4343W network stack.

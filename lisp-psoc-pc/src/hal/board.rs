@@ -415,6 +415,10 @@ impl lisp::Board for PsocBoard<'_> {
         wifi_sdio_f2_frame_report(wifi_sdio::f2_read_frame(self.p))
     }
 
+    fn wifi_ack_interrupts(&mut self) -> lisp::WifiSdioInterruptAckReport {
+        wifi_sdio_interrupt_ack_report(wifi_sdio::ack_interrupts(self.p))
+    }
+
     fn wifi_core_state(&mut self, base: u32) -> lisp::WifiSdioCoreStateReport {
         wifi_sdio_core_state_report(wifi_sdio::core_state(self.p, base))
     }
@@ -842,6 +846,21 @@ fn wifi_sdio_f2_frame_status(status: wifi_sdio::WifiSdioF2FrameStatus) -> &'stat
     }
 }
 
+fn wifi_sdio_interrupt_ack_status(status: wifi_sdio::WifiSdioInterruptAckStatus) -> &'static [u8] {
+    match status {
+        wifi_sdio::WifiSdioInterruptAckStatus::Ready => b"ready",
+        wifi_sdio::WifiSdioInterruptAckStatus::IntStatusReadFailed => b"int-status-read-failed",
+        wifi_sdio::WifiSdioInterruptAckStatus::MailboxReadFailed => b"mailbox-read-failed",
+        wifi_sdio::WifiSdioInterruptAckStatus::MailboxAckWriteFailed => b"mailbox-ack-write-failed",
+        wifi_sdio::WifiSdioInterruptAckStatus::InterruptClearWriteFailed => {
+            b"interrupt-clear-write-failed"
+        }
+        wifi_sdio::WifiSdioInterruptAckStatus::FinalIntStatusReadFailed => {
+            b"final-int-status-read-failed"
+        }
+    }
+}
+
 fn wifi_sdio_core_state_status(status: wifi_sdio::WifiSdioCoreStateStatus) -> &'static [u8] {
     match status {
         wifi_sdio::WifiSdioCoreStateStatus::Ready => b"ready",
@@ -1168,6 +1187,32 @@ fn wifi_sdio_f2_frame_report(
         bus_data_credit: report.bus_data_credit,
         reserved0: report.reserved0,
         reserved1: report.reserved1,
+        last_error: report.last_error.map(wifi_sdio_command_error_report),
+        host: wifi_sdio_host_report(report.host),
+    }
+}
+
+fn wifi_sdio_interrupt_ack_report(
+    report: wifi_sdio::WifiSdioInterruptAckReport,
+) -> lisp::WifiSdioInterruptAckReport {
+    lisp::WifiSdioInterruptAckReport {
+        status: wifi_sdio_interrupt_ack_status(report.status),
+        int_status_before: report.int_status_before,
+        mailbox_data: report.mailbox_data,
+        mailbox_ack_value: report.mailbox_ack_value,
+        clear_value: report.clear_value,
+        int_status_after: report.int_status_after,
+        host_normal_int_before: report.host_normal_int_before,
+        host_error_int_before: report.host_error_int_before,
+        host_normal_int_after: report.host_normal_int_after,
+        host_error_int_after: report.host_error_int_after,
+        int_status_response: report.int_status_response,
+        mailbox_response: report.mailbox_response,
+        mailbox_ack_response: report.mailbox_ack_response,
+        mailbox_ack_readback: report.mailbox_ack_readback,
+        clear_response: report.clear_response,
+        clear_readback: report.clear_readback,
+        final_response: report.final_response,
         last_error: report.last_error.map(wifi_sdio_command_error_report),
         host: wifi_sdio_host_report(report.host),
     }

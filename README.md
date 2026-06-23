@@ -44,6 +44,8 @@ WLAN ARM core, waits for HT clock, and polls function 2 readiness.
 `(wifi-f2-read-header)` then reads the first function-2 SDPCM hardware tag from
 the already-started firmware session. `(wifi-f2-read-frame)` reads the full
 initial 12-byte SDPCM startup frame and decodes its control fields.
+`(wifi-ack-interrupts)` reports and clears device-side SDIO software interrupt
+bits when they are present.
 
 To keep the large vendor tools out of git, install ModusToolbox into the
 ignored `.local/ModusToolbox` directory:
