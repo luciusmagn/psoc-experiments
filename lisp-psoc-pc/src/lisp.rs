@@ -73,6 +73,11 @@ pub trait Board {
         address: u32,
         value: u32,
     ) -> WifiSdioBackplaneWrite32Report;
+    fn wifi_backplane_write32_bytes(
+        &mut self,
+        address: u32,
+        value: u32,
+    ) -> WifiSdioBackplaneWrite32Report;
     fn wifi_core_state(&mut self, base: u32) -> WifiSdioCoreStateReport;
     fn wifi_reset_core(&mut self, base: u32) -> WifiSdioCoreResetReport;
     fn sdhc_registers(&mut self) -> SdhcReport;
@@ -279,9 +284,15 @@ pub struct WifiSdioHostReport {
     pub block_size: u16,
     pub block_count: u16,
     pub sdmasa: u32,
+    pub adma_sa_low: u32,
+    pub adma_id_low: u32,
+    pub adma_err_stat: u8,
     pub bgap_ctrl: u8,
     pub host_ctrl1: u8,
     pub host_ctrl2: u16,
+    pub capabilities1: u32,
+    pub capabilities2: u32,
+    pub mbiu_ctrl: u8,
     pub tout_ctrl: u8,
     pub clk_ctrl: u16,
     pub pwr_ctrl: u8,
@@ -551,6 +562,7 @@ pub enum Primitive {
     WifiBackplaneRead,
     WifiBackplaneWrite8,
     WifiBackplaneWrite32,
+    WifiBackplaneWrite32Bytes,
     WifiCoreState,
     WifiResetCore,
     SdhcRegs,
@@ -615,6 +627,7 @@ impl Primitive {
             Self::WifiBackplaneRead => "wifi-backplane-read",
             Self::WifiBackplaneWrite8 => "wifi-backplane-write8",
             Self::WifiBackplaneWrite32 => "wifi-backplane-write32",
+            Self::WifiBackplaneWrite32Bytes => "wifi-backplane-write32-bytes",
             Self::WifiCoreState => "wifi-core-state",
             Self::WifiResetCore => "wifi-reset-core",
             Self::SdhcRegs => "sdhc-regs",
@@ -831,6 +844,10 @@ impl Machine {
         self.install_primitive(b"wifi-backplane-read", Primitive::WifiBackplaneRead)?;
         self.install_primitive(b"wifi-backplane-write8", Primitive::WifiBackplaneWrite8)?;
         self.install_primitive(b"wifi-backplane-write32", Primitive::WifiBackplaneWrite32)?;
+        self.install_primitive(
+            b"wifi-backplane-write32-bytes",
+            Primitive::WifiBackplaneWrite32Bytes,
+        )?;
         self.install_primitive(b"wifi-core-state", Primitive::WifiCoreState)?;
         self.install_primitive(b"wifi-reset-core", Primitive::WifiResetCore)?;
         self.install_primitive(b"sdhc-regs", Primitive::SdhcRegs)?;
@@ -1564,6 +1581,14 @@ impl Machine {
                     board.wifi_backplane_write32(address, value),
                 )
             }
+            Primitive::WifiBackplaneWrite32Bytes => {
+                self.expect_count(args, 2)?;
+                let address = self.expect_u32(args[0])?;
+                let value = self.expect_u32(args[1])?;
+                self.wifi_sdio_backplane_write32_report(
+                    board.wifi_backplane_write32_bytes(address, value),
+                )
+            }
             Primitive::WifiCoreState => {
                 self.expect_count(args, 1)?;
                 let base = self.expect_u32(args[0])?;
@@ -1937,6 +1962,7 @@ impl Machine {
             b"wifi-backplane-read",
             b"wifi-backplane-write8",
             b"wifi-backplane-write32",
+            b"wifi-backplane-write32-bytes",
             b"wifi-core-state",
             b"wifi-reset-core",
             b"sdhc-regs",
@@ -2587,9 +2613,15 @@ impl Machine {
         let block_size = self.word_entry(b"BLOCKSIZE", report.block_size as u32)?;
         let block_count = self.word_entry(b"BLOCKCOUNT", report.block_count as u32)?;
         let sdmasa = self.word_entry(b"SDMASA", report.sdmasa)?;
+        let adma_sa_low = self.word_entry(b"ADMA_SA_LOW", report.adma_sa_low)?;
+        let adma_id_low = self.word_entry(b"ADMA_ID_LOW", report.adma_id_low)?;
+        let adma_err_stat = self.word_entry(b"ADMA_ERR_STAT", report.adma_err_stat as u32)?;
         let bgap_ctrl = self.word_entry(b"BGAP_CTRL", report.bgap_ctrl as u32)?;
         let host_ctrl1 = self.word_entry(b"HOST_CTRL1", report.host_ctrl1 as u32)?;
         let host_ctrl2 = self.word_entry(b"HOST_CTRL2", report.host_ctrl2 as u32)?;
+        let capabilities1 = self.word_entry(b"CAPABILITIES1", report.capabilities1)?;
+        let capabilities2 = self.word_entry(b"CAPABILITIES2", report.capabilities2)?;
+        let mbiu_ctrl = self.word_entry(b"MBIU_CTRL", report.mbiu_ctrl as u32)?;
         let tout_ctrl = self.word_entry(b"TOUT_CTRL", report.tout_ctrl as u32)?;
         let clk_ctrl = self.word_entry(b"CLK_CTRL", report.clk_ctrl as u32)?;
         let pwr_ctrl = self.word_entry(b"PWR_CTRL", report.pwr_ctrl as u32)?;
@@ -2619,9 +2651,15 @@ impl Machine {
             block_size,
             block_count,
             sdmasa,
+            adma_sa_low,
+            adma_id_low,
+            adma_err_stat,
             bgap_ctrl,
             host_ctrl1,
             host_ctrl2,
+            capabilities1,
+            capabilities2,
+            mbiu_ctrl,
             tout_ctrl,
             clk_ctrl,
             pwr_ctrl,

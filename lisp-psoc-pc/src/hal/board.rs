@@ -370,6 +370,16 @@ impl lisp::Board for PsocBoard<'_> {
         wifi_sdio_backplane_write32_report(wifi_sdio::backplane_write32(self.p, address, value))
     }
 
+    fn wifi_backplane_write32_bytes(
+        &mut self,
+        address: u32,
+        value: u32,
+    ) -> lisp::WifiSdioBackplaneWrite32Report {
+        wifi_sdio_backplane_write32_report(wifi_sdio::backplane_write32_bytes(
+            self.p, address, value,
+        ))
+    }
+
     fn wifi_core_state(&mut self, base: u32) -> lisp::WifiSdioCoreStateReport {
         wifi_sdio_core_state_report(wifi_sdio::core_state(self.p, base))
     }
@@ -665,24 +675,11 @@ fn wifi_sdio_backplane_write32_status(
             b"window-low-write-failed"
         }
         wifi_sdio::WifiSdioBackplaneWrite32Status::DataSetupBusy => b"data-setup-busy",
+        wifi_sdio::WifiSdioBackplaneWrite32Status::Cmd52Failed => b"cmd52-failed",
         wifi_sdio::WifiSdioBackplaneWrite32Status::Cmd53Failed => b"cmd53-failed",
-        wifi_sdio::WifiSdioBackplaneWrite32Status::BufferWriteTimeout => b"buffer-write-timeout",
-        wifi_sdio::WifiSdioBackplaneWrite32Status::BufferEnableTimeout => b"buffer-enable-timeout",
         wifi_sdio::WifiSdioBackplaneWrite32Status::TransferTimeout => b"transfer-timeout",
         wifi_sdio::WifiSdioBackplaneWrite32Status::DataLineBusy => b"data-line-busy",
-        wifi_sdio::WifiSdioBackplaneWrite32Status::ReadbackDataSetupBusy => {
-            b"readback-data-setup-busy"
-        }
-        wifi_sdio::WifiSdioBackplaneWrite32Status::ReadbackCmd53Failed => b"readback-cmd53-failed",
-        wifi_sdio::WifiSdioBackplaneWrite32Status::ReadbackBufferReadTimeout => {
-            b"readback-buffer-read-timeout"
-        }
-        wifi_sdio::WifiSdioBackplaneWrite32Status::ReadbackBufferEnableTimeout => {
-            b"readback-buffer-enable-timeout"
-        }
-        wifi_sdio::WifiSdioBackplaneWrite32Status::ReadbackTransferTimeout => {
-            b"readback-transfer-timeout"
-        }
+        wifi_sdio::WifiSdioBackplaneWrite32Status::ReadbackCmd52Failed => b"readback-cmd52-failed",
     }
 }
 
@@ -938,9 +935,15 @@ fn wifi_sdio_host_report(snapshot: wifi_sdio::WifiSdioHostSnapshot) -> lisp::Wif
         block_size: snapshot.block_size,
         block_count: snapshot.block_count,
         sdmasa: snapshot.sdmasa,
+        adma_sa_low: snapshot.adma_sa_low,
+        adma_id_low: snapshot.adma_id_low,
+        adma_err_stat: snapshot.adma_err_stat,
         bgap_ctrl: snapshot.bgap_ctrl,
         host_ctrl1: snapshot.host_ctrl1,
         host_ctrl2: snapshot.host_ctrl2,
+        capabilities1: snapshot.capabilities1,
+        capabilities2: snapshot.capabilities2,
+        mbiu_ctrl: snapshot.mbiu_ctrl,
         tout_ctrl: snapshot.tout_ctrl,
         clk_ctrl: snapshot.clk_ctrl,
         pwr_ctrl: snapshot.pwr_ctrl,

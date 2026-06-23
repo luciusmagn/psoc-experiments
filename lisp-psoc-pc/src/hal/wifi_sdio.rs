@@ -90,8 +90,16 @@ const CORE_CONTROL_NONE: u8 = 0;
 const CORE_CONTROL_RESET: u8 = AIRC_RESET;
 const CORE_CONTROL_CLOCKED: u8 = SICF_CLOCK_EN;
 const CORE_CONTROL_FORCE_CLOCKED: u8 = SICF_FGC | SICF_CLOCK_EN;
+const HOST_CTRL1_DMA_SELECT_MASK: u8 = 0x03 << 3;
+const HOST_CTRL1_DMA_SELECT_ADMA2: u8 = 0x02 << 3;
+const MBIU_CTRL_ALL_BURSTS: u8 = 0x0f;
+const XFER_MODE_DMA_ENABLE: u16 = 1 << 0;
 const XFER_MODE_BLOCK_COUNT_ENABLE: u16 = 1 << 1;
 const XFER_MODE_READ: u16 = 1 << 4;
+const ADMA_ATTR_VALID: u32 = 1 << 0;
+const ADMA_ATTR_END: u32 = 1 << 1;
+const ADMA_ACT_TRAN: u32 = 4 << 3;
+const ADMA_LEN_SHIFT: u32 = 16;
 
 const P2_SDIO_DATA_MASK: u32 = 0x0f | (0x0f << 4) | (0x0f << 8) | (0x0f << 12);
 const P2_SDIO_DATA_CFG: u32 = DRIVE_STRONG_INPUT
@@ -113,6 +121,13 @@ const CLK_ROOT_ENABLE: u32 = 1 << 31;
 const CLK_ROOT_MUX_PATH0: u32 = 0;
 const CLK_ROOT_DIV_BY_2: u32 = 1 << 4;
 const SDHC0_HF_CLOCK_INDEX: usize = 4;
+const SDHC_WRAP_CTL_ENABLE: u32 = 1 << 31;
+
+#[repr(align(8))]
+struct AdmaDescriptorTable([u32; 2]);
+
+static mut CMD53_WRITE_ADMA_DESCRIPTOR: AdmaDescriptorTable = AdmaDescriptorTable([0; 2]);
+static mut CMD53_WRITE_WORD: u32 = 0;
 
 #[derive(Clone, Copy)]
 pub enum WifiSdioStatus {
@@ -236,16 +251,11 @@ pub enum WifiSdioBackplaneWrite32Status {
     WindowMidWriteFailed,
     WindowLowWriteFailed,
     DataSetupBusy,
+    Cmd52Failed,
     Cmd53Failed,
-    BufferWriteTimeout,
-    BufferEnableTimeout,
     TransferTimeout,
     DataLineBusy,
-    ReadbackDataSetupBusy,
-    ReadbackCmd53Failed,
-    ReadbackBufferReadTimeout,
-    ReadbackBufferEnableTimeout,
-    ReadbackTransferTimeout,
+    ReadbackCmd52Failed,
 }
 
 #[derive(Clone, Copy)]
@@ -341,14 +351,6 @@ enum BackplaneByteWriteError {
 }
 
 #[derive(Clone, Copy)]
-enum BackplaneWordReadError {
-    Window(BackplaneWindowError),
-    DataSetupBusy,
-    Cmd53(CommandError),
-    Data(WifiSdioCmd53ReadStatus),
-}
-
-#[derive(Clone, Copy)]
 struct BackplaneByteRead {
     value: u8,
     response: u32,
@@ -401,9 +403,15 @@ pub struct WifiSdioHostSnapshot {
     pub block_size: u16,
     pub block_count: u16,
     pub sdmasa: u32,
+    pub adma_sa_low: u32,
+    pub adma_id_low: u32,
+    pub adma_err_stat: u8,
     pub bgap_ctrl: u8,
     pub host_ctrl1: u8,
     pub host_ctrl2: u16,
+    pub capabilities1: u32,
+    pub capabilities2: u32,
+    pub mbiu_ctrl: u8,
     pub tout_ctrl: u8,
     pub clk_ctrl: u16,
     pub pwr_ctrl: u8,
@@ -1746,7 +1754,8 @@ pub fn backplane_write32(
     };
     let window_address = backplane_window_address(address, 4);
 
-    if !configure_cmd53_write(core, 4, false) {
+    let descriptor_address = prepare_cmd53_write_word(value, 4);
+    if !configure_cmd53_write_adma(core, 4, false, descriptor_address) {
         return backplane_write32_report(
             p,
             WifiSdioBackplaneWrite32Status::DataSetupBusy,
@@ -1798,7 +1807,7 @@ pub fn backplane_write32(
         }
     };
 
-    if let Err(status) = write_cmd53_word(core, value) {
+    if let Err(status) = wait_cmd53_adma_write_complete(core) {
         return backplane_write32_report(
             p,
             status,
@@ -1813,10 +1822,10 @@ pub fn backplane_write32(
         );
     }
 
-    let readback = match read_backplane_u32(core, address) {
+    let readback = match read_backplane_u32_bytes(core, address) {
         Ok(readback) => readback,
         Err(error) => {
-            let (status, last_error) = backplane_write32_readback_error(error);
+            let (status, last_error) = backplane_write32_byte_readback_error(error);
             return backplane_write32_report(
                 p,
                 status,
@@ -1841,6 +1850,147 @@ pub fn backplane_write32(
         window_base,
         window_address,
         response,
+        readback.value,
+        None,
+    )
+}
+
+pub fn backplane_write32_bytes(
+    p: &Peripherals,
+    address: u32,
+    value: u32,
+) -> WifiSdioBackplaneWrite32Report {
+    if address & 0x03 != 0 || backplane_read_crosses_window(address, 4) {
+        return backplane_write32_report(
+            p,
+            WifiSdioBackplaneWrite32Status::InvalidAddress,
+            WifiSdioBackplaneStatus::Ready,
+            address,
+            value,
+            0,
+            0,
+            0,
+            0,
+            None,
+        );
+    }
+
+    let setup = setup_backplane(p);
+    if !matches!(setup.status, WifiSdioBackplaneStatus::Ready) {
+        return backplane_write32_report(
+            p,
+            WifiSdioBackplaneWrite32Status::SetupFailed,
+            setup.status,
+            address,
+            value,
+            0,
+            0,
+            0,
+            0,
+            setup.last_error,
+        );
+    }
+
+    let core = &p.SDHC0.core;
+    let alp_response = match request_alp_clock(core) {
+        Ok(response) => response,
+        Err(error) => {
+            let (status, response, last_error) = backplane_write32_alp_error(error);
+            return backplane_write32_report(
+                p,
+                status,
+                setup.status,
+                address,
+                value,
+                0,
+                0,
+                response,
+                0,
+                last_error,
+            );
+        }
+    };
+
+    let window_base = match set_backplane_window(core, address) {
+        Ok(window_base) => window_base,
+        Err(error) => {
+            let (status, last_error) = backplane_write32_window_error(error);
+            return backplane_write32_report(
+                p,
+                status,
+                setup.status,
+                address,
+                value,
+                backplane_window_base(address),
+                0,
+                alp_response,
+                0,
+                Some(last_error),
+            );
+        }
+    };
+
+    let window_address = backplane_window_address(address, 1);
+    let mut last_response = alp_response;
+    let bytes = [
+        value as u8,
+        (value >> 8) as u8,
+        (value >> 16) as u8,
+        (value >> 24) as u8,
+    ];
+    for (offset, byte) in bytes.iter().enumerate() {
+        last_response = match cmd52_write_function_byte_selected(
+            core,
+            SDIO_BACKPLANE_FUNCTION,
+            window_address + offset as u32,
+            *byte,
+        ) {
+            Ok(response) => response,
+            Err(error) => {
+                return backplane_write32_report(
+                    p,
+                    WifiSdioBackplaneWrite32Status::Cmd52Failed,
+                    setup.status,
+                    address,
+                    value,
+                    window_base,
+                    window_address,
+                    last_response,
+                    0,
+                    Some(error),
+                );
+            }
+        };
+    }
+
+    let readback = match read_backplane_u32_bytes(core, address) {
+        Ok(readback) => readback,
+        Err(error) => {
+            let (status, last_error) = backplane_write32_byte_readback_error(error);
+            return backplane_write32_report(
+                p,
+                status,
+                setup.status,
+                address,
+                value,
+                window_base,
+                window_address,
+                last_response,
+                0,
+                last_error,
+            );
+        }
+    };
+
+    backplane_write32_report(
+        p,
+        WifiSdioBackplaneWrite32Status::Ready,
+        setup.status,
+        address,
+        value,
+        window_base,
+        window_address,
+        last_response,
         readback.value,
         None,
     )
@@ -2690,41 +2840,18 @@ fn core_reset_window_error(error: BackplaneWindowError) -> (WifiSdioCoreResetSta
     }
 }
 
-fn backplane_write32_readback_error(
-    error: BackplaneWordReadError,
+fn backplane_write32_byte_readback_error(
+    error: BackplaneByteReadError,
 ) -> (WifiSdioBackplaneWrite32Status, Option<CommandError>) {
     match error {
-        BackplaneWordReadError::Window(error) => {
+        BackplaneByteReadError::Window(error) => {
             let (status, error) = backplane_write32_window_error(error);
             (status, Some(error))
         }
-        BackplaneWordReadError::DataSetupBusy => {
-            (WifiSdioBackplaneWrite32Status::ReadbackDataSetupBusy, None)
-        }
-        BackplaneWordReadError::Cmd53(error) => (
-            WifiSdioBackplaneWrite32Status::ReadbackCmd53Failed,
+        BackplaneByteReadError::Cmd52(error) => (
+            WifiSdioBackplaneWrite32Status::ReadbackCmd52Failed,
             Some(error),
         ),
-        BackplaneWordReadError::Data(status) => {
-            (backplane_write32_readback_data_status(status), None)
-        }
-    }
-}
-
-fn backplane_write32_readback_data_status(
-    status: WifiSdioCmd53ReadStatus,
-) -> WifiSdioBackplaneWrite32Status {
-    match status {
-        WifiSdioCmd53ReadStatus::BufferReadTimeout => {
-            WifiSdioBackplaneWrite32Status::ReadbackBufferReadTimeout
-        }
-        WifiSdioCmd53ReadStatus::BufferEnableTimeout => {
-            WifiSdioBackplaneWrite32Status::ReadbackBufferEnableTimeout
-        }
-        WifiSdioCmd53ReadStatus::TransferTimeout => {
-            WifiSdioBackplaneWrite32Status::ReadbackTransferTimeout
-        }
-        _ => WifiSdioBackplaneWrite32Status::ReadbackCmd53Failed,
     }
 }
 
@@ -2742,40 +2869,25 @@ fn read_backplane_u8(
     })
 }
 
-fn read_backplane_u32(
+fn read_backplane_u32_bytes(
     core: &sdhc0::CORE,
     address: u32,
-) -> Result<BackplaneWordRead, BackplaneWordReadError> {
-    set_backplane_window(core, address).map_err(BackplaneWordReadError::Window)?;
-    let window_address = backplane_window_address(address, 4);
-
-    if !configure_cmd53_read(core, 4, false) {
-        return Err(BackplaneWordReadError::DataSetupBusy);
+) -> Result<BackplaneWordRead, BackplaneByteReadError> {
+    set_backplane_window(core, address).map_err(BackplaneByteReadError::Window)?;
+    let window_address = backplane_window_address(address, 1);
+    let mut bytes = [0u8; 4];
+    let mut response = 0;
+    for (offset, byte) in bytes.iter_mut().enumerate() {
+        let read = cmd52_read_function_byte_selected(
+            core,
+            SDIO_BACKPLANE_FUNCTION,
+            window_address + offset as u32,
+        )
+        .map_err(BackplaneByteReadError::Cmd52)?;
+        *byte = read.0;
+        response = read.1;
     }
 
-    let argument = cmd53_argument(
-        false,
-        SDIO_BACKPLANE_FUNCTION,
-        false,
-        true,
-        window_address,
-        4,
-    );
-    let response = send_command(
-        core,
-        Command {
-            index: 53,
-            argument,
-            response: ResponseType::Len48,
-            command_type: CommandType::Normal,
-            data_present: true,
-            crc_check: true,
-            index_check: true,
-        },
-    )
-    .map_err(BackplaneWordReadError::Cmd53)?;
-
-    let bytes = read_cmd53_bytes(core, 4).map_err(BackplaneWordReadError::Data)?;
     let value = (bytes[0] as u32)
         | ((bytes[1] as u32) << 8)
         | ((bytes[2] as u32) << 16)
@@ -2940,7 +3052,12 @@ fn configure_cmd53_read(core: &sdhc0::CORE, count: u8, block_mode: bool) -> bool
     true
 }
 
-fn configure_cmd53_write(core: &sdhc0::CORE, count: u8, block_mode: bool) -> bool {
+fn configure_cmd53_write_adma(
+    core: &sdhc0::CORE,
+    count: u8,
+    block_mode: bool,
+    descriptor_address: u32,
+) -> bool {
     if !wait_command_and_data_lines_free(core) {
         return false;
     }
@@ -2950,16 +3067,47 @@ fn configure_cmd53_write(core: &sdhc0::CORE, count: u8, block_mode: bool) -> boo
     } else {
         count as u16
     };
+    select_adma2(core);
+    core.blocksize_r.write(|w| unsafe { w.bits(0) });
+    core.xfer_mode_r.write(|w| unsafe { w.bits(0) });
+    core.adma_sa_low_r
+        .write(|w| unsafe { w.bits(descriptor_address) });
+    core.sdmasa_r.write(|w| unsafe { w.bits(0) });
     core.blocksize_r.write(|w| unsafe { w.bits(block_size) });
     core.blockcount_r.write(|w| unsafe { w.bits(1) });
-    core.sdmasa_r.write(|w| unsafe { w.bits(1) });
     core.bgap_ctrl_r.write(|w| unsafe { w.bits(0) });
-    core.tout_ctrl_r.write(|w| unsafe { w.bits(0x0e) });
+    core.mbiu_ctrl_r
+        .write(|w| unsafe { w.bits(MBIU_CTRL_ALL_BURSTS) });
+    core.tout_ctrl_r.write(|w| unsafe { w.bits(0x0d) });
     core.xfer_mode_r
-        .write(|w| unsafe { w.bits(XFER_MODE_BLOCK_COUNT_ENABLE) });
+        .write(|w| unsafe { w.bits(XFER_MODE_DMA_ENABLE | XFER_MODE_BLOCK_COUNT_ENABLE) });
     clear_interrupts(core);
 
     true
+}
+
+fn select_adma2(core: &sdhc0::CORE) {
+    core.host_ctrl1_r.modify(|r, w| unsafe {
+        let bits = (r.bits() & !HOST_CTRL1_DMA_SELECT_MASK) | HOST_CTRL1_DMA_SELECT_ADMA2;
+        w.bits(bits)
+    });
+}
+
+fn prepare_cmd53_write_word(value: u32, byte_count: u16) -> u32 {
+    let descriptor =
+        ADMA_ATTR_VALID | ADMA_ATTR_END | ADMA_ACT_TRAN | ((byte_count as u32) << ADMA_LEN_SHIFT);
+
+    unsafe {
+        let buffer = core::ptr::addr_of_mut!(CMD53_WRITE_WORD);
+        core::ptr::write_volatile(buffer, value);
+
+        let descriptor_table = core::ptr::addr_of_mut!(CMD53_WRITE_ADMA_DESCRIPTOR) as *mut u32;
+        core::ptr::write_volatile(descriptor_table, descriptor);
+        core::ptr::write_volatile(descriptor_table.add(1), buffer as u32);
+        cortex_m::asm::dsb();
+
+        descriptor_table as u32
+    }
 }
 
 fn wait_command_and_data_lines_free(core: &sdhc0::CORE) -> bool {
@@ -3011,23 +3159,14 @@ fn read_cmd53_bytes(
     Ok(bytes)
 }
 
-fn write_cmd53_word(core: &sdhc0::CORE, value: u32) -> Result<(), WifiSdioBackplaneWrite32Status> {
-    if !wait_buffer_write_ready(core) {
-        let _ = software_reset_data_line(core);
-        return Err(WifiSdioBackplaneWrite32Status::BufferWriteTimeout);
-    }
-
-    if !wait_buffer_write_enable(core) {
-        let _ = software_reset_data_line(core);
-        return Err(WifiSdioBackplaneWrite32Status::BufferEnableTimeout);
-    }
-
-    core.buf_data_r.write(|w| unsafe { w.bits(value) });
-
-    if !wait_transfer_complete_or_data_idle(core) {
+fn wait_cmd53_adma_write_complete(
+    core: &sdhc0::CORE,
+) -> Result<(), WifiSdioBackplaneWrite32Status> {
+    if !wait_transfer_complete(core) {
         let _ = software_reset_data_line(core);
         return Err(WifiSdioBackplaneWrite32Status::TransferTimeout);
     }
+    cortex_m::asm::dsb();
 
     if !wait_data_line_free(core) {
         let _ = software_reset_data_line(core);
@@ -3055,38 +3194,9 @@ fn wait_buffer_read_ready(core: &sdhc0::CORE) -> bool {
     false
 }
 
-fn wait_buffer_write_ready(core: &sdhc0::CORE) -> bool {
-    for _ in 0..1000 {
-        let normal_int = core.normal_int_stat_r.read().bits();
-        let error_int = core.error_int_stat_r.read().bits();
-        if error_int != 0 || normal_int & NORMAL_INT_ERROR != 0 {
-            return false;
-        }
-        if normal_int & NORMAL_INT_BUF_WR_READY != 0 {
-            core.normal_int_stat_r
-                .write(|w| unsafe { w.bits(NORMAL_INT_BUF_WR_READY) });
-            return true;
-        }
-        delay_us(150);
-    }
-
-    false
-}
-
 fn wait_buffer_read_enable(core: &sdhc0::CORE) -> bool {
     for _ in 0..1000 {
         if core.pstate_reg.read().bits() & PSTATE_BUF_RD_ENABLE != 0 {
-            return true;
-        }
-        delay_us(3);
-    }
-
-    false
-}
-
-fn wait_buffer_write_enable(core: &sdhc0::CORE) -> bool {
-    for _ in 0..1000 {
-        if core.pstate_reg.read().bits() & PSTATE_BUF_WR_ENABLE != 0 {
             return true;
         }
         delay_us(3);
@@ -3462,18 +3572,29 @@ fn report(
 }
 
 fn host_snapshot(p: &Peripherals) -> WifiSdioHostSnapshot {
+    let wrap_ctl = p.SDHC0.wrap.ctl.read().bits();
+    if wrap_ctl & SDHC_WRAP_CTL_ENABLE == 0 {
+        return disabled_host_snapshot(wrap_ctl);
+    }
+
     let core = &p.SDHC0.core;
     WifiSdioHostSnapshot {
-        wrap_ctl: p.SDHC0.wrap.ctl.read().bits(),
+        wrap_ctl,
         gp_out: core.gp_out_r.read().bits(),
         gp_in: core.gp_in_r.read().bits(),
         xfer_mode: core.xfer_mode_r.read().bits(),
         block_size: core.blocksize_r.read().bits(),
         block_count: core.blockcount_r.read().bits(),
         sdmasa: core.sdmasa_r.read().bits(),
+        adma_sa_low: core.adma_sa_low_r.read().bits(),
+        adma_id_low: core.adma_id_low_r.read().bits(),
+        adma_err_stat: core.adma_err_stat_r.read().bits(),
         bgap_ctrl: core.bgap_ctrl_r.read().bits(),
         host_ctrl1: core.host_ctrl1_r.read().bits(),
         host_ctrl2: core.host_ctrl2_r.read().bits(),
+        capabilities1: core.capabilities1_r.read().bits(),
+        capabilities2: core.capabilities2_r.read().bits(),
+        mbiu_ctrl: core.mbiu_ctrl_r.read().bits(),
         tout_ctrl: core.tout_ctrl_r.read().bits(),
         clk_ctrl: core.clk_ctrl_r.read().bits(),
         pwr_ctrl: core.pwr_ctrl_r.read().bits(),
@@ -3491,6 +3612,44 @@ fn host_snapshot(p: &Peripherals) -> WifiSdioHostSnapshot {
         response23: core.resp23_r.read().bits(),
         response45: core.resp45_r.read().bits(),
         response67: core.resp67_r.read().bits(),
+    }
+}
+
+fn disabled_host_snapshot(wrap_ctl: u32) -> WifiSdioHostSnapshot {
+    WifiSdioHostSnapshot {
+        wrap_ctl,
+        gp_out: 0,
+        gp_in: 0,
+        xfer_mode: 0,
+        block_size: 0,
+        block_count: 0,
+        sdmasa: 0,
+        adma_sa_low: 0,
+        adma_id_low: 0,
+        adma_err_stat: 0,
+        bgap_ctrl: 0,
+        host_ctrl1: 0,
+        host_ctrl2: 0,
+        capabilities1: 0,
+        capabilities2: 0,
+        mbiu_ctrl: 0,
+        tout_ctrl: 0,
+        clk_ctrl: 0,
+        pwr_ctrl: 0,
+        sw_rst: 0,
+        normal_int: 0,
+        error_int: 0,
+        normal_int_stat_en: 0,
+        error_int_stat_en: 0,
+        normal_int_signal_en: 0,
+        error_int_signal_en: 0,
+        pstate: 0,
+        cmd: 0,
+        argument: 0,
+        response01: 0,
+        response23: 0,
+        response45: 0,
+        response67: 0,
     }
 }
 
@@ -3644,27 +3803,6 @@ fn wait_transfer_complete(core: &sdhc0::CORE) -> bool {
         }
         delay_us(250);
     }
-    false
-}
-
-fn wait_transfer_complete_or_data_idle(core: &sdhc0::CORE) -> bool {
-    for _ in 0..1000 {
-        let normal_int = core.normal_int_stat_r.read().bits();
-        let error_int = core.error_int_stat_r.read().bits();
-        if error_int != 0 || normal_int & NORMAL_INT_ERROR != 0 {
-            return false;
-        }
-        if normal_int & NORMAL_INT_XFER_COMPLETE != 0 {
-            core.normal_int_stat_r
-                .write(|w| unsafe { w.bits(NORMAL_INT_XFER_COMPLETE) });
-            return true;
-        }
-        if core.pstate_reg.read().bits() & (PSTATE_CMD_INHIBIT_DAT | PSTATE_DAT_LINE_ACTIVE) == 0 {
-            return true;
-        }
-        delay_us(250);
-    }
-
     false
 }
 

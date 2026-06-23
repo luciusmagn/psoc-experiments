@@ -1483,10 +1483,72 @@ Experiments that did not change the failure:
 3. 1-bit SDIO bus width instead of 4-bit;
 4. releasing the SOCSRAM wrapper before the write.
 
-The current checked-in diagnostic keeps WHD-compatible incrementing
-address mode, PDL-style transfer register setup, and 4-bit SDIO setup.
-Next useful tests are a block-mode RAM write/readback diagnostic and a
-closer comparison with Infineon's HAL bulk-transfer path.
+This was the initial PIO-style CMD53 write diagnostic. Later diagnostics
+switched the write path to ADMA2 so the host can be compared more closely
+with Infineon's bulk-transfer setup.
+
+* 2026-06-23 Wi-Fi ADMA and CMD52 write diagnostics
+
+Changed =(wifi-backplane-write32 address value)= to use an ADMA2
+descriptor for the CMD53 data phase and extended every =SDHC0= report
+with =ADMA_SA_LOW=, =ADMA_ID_LOW=, =ADMA_ERR_STAT=, =CAPABILITIES1=,
+=CAPABILITIES2=, and =MBIU_CTRL=. The live host capabilities after a
+normal chip-id read were:
+
+#+begin_example
+(CAPABILITIES1 . #x276c6481)
+(CAPABILITIES2 . #x08000077)
+(MBIU_CTRL . #x00000001)
+#+end_example
+
+The ADMA CMD53 write still stalls in the data phase. A representative
+live result ended with a clean R5 response and no ADMA error:
+
+#+begin_example
+(wifi-backplane-write32 #x18004010 #x00000003)
+=> ((status . transfer-timeout) ...
+    (response . #x00001000)
+    (SDHC0 ... (HOST_CTRL1 . #x000000d2)
+               (ADMA_SA_LOW . #x08001010)
+               (ADMA_ERR_STAT . #x00000000)
+               (MBIU_CTRL . #x0000000f)
+               (SW_RST . #x00000004)
+               (PSTATE . #x03e30006)
+               (RESP01 . #x00001000) ...))
+#+end_example
+
+Removing block-count enable from the ADMA transfer did not change the
+timeout. Enabling all MBIU bursts with =MBIU_CTRL #x0f= also did not
+change the timeout. The command phase is still clean; the remaining
+failure is the CMD53 write data phase.
+
+Added =(wifi-backplane-write32-bytes address value)= as a CMD52-only
+byte-write diagnostic. It writes the four bytes individually and reads
+them back with four CMD52 reads, so it does not depend on CMD53 for
+verification. The earlier exploratory target =#x18004010= produced a
+CMD52 write response of =#x1803= for the low byte, but that register is
+not a proven scratch location. Do not use =#x18004010= for further random
+write tests.
+
+Invalid-address reporting now avoids reading disabled SDHC0 core
+registers. After flashing this change, this form returned promptly with a
+zeroed disabled-host snapshot:
+
+#+begin_example
+(wifi-backplane-write32-bytes #x18004011 #x00000003)
+=> ((status . invalid-address) ... (SDHC0 (WRAP.CTL . #x00000000) ...))
+#+end_example
+
+The chip-id read still works after the change:
+
+#+begin_example
+(wifi-backplane-read #x18000000 4)
+=> ... (bytes #x000000a6 #x000000a9 #x00000031 #x00000015) ...
+#+end_example
+
+Next useful tests are a known-idempotent CMD52 write target, a block-mode
+RAM write/readback diagnostic, and a closer comparison with Infineon's HAL
+bulk-transfer path.
 
 * Next actions
 
