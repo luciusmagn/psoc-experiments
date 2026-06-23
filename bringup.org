@@ -2601,6 +2601,13 @@ data lines, but does not restore valid CMD52 responses. A follow-up
 =(wifi-interrupt-state)= still returns zero CCCR values and =(wifi-keep-awake)=
 still times out with zero responses.
 
+A fresh run that avoided the abort path showed the same result: after
+=(wifi-f2-read-frame)= returned the valid 12-byte frame, immediately running
+=(wifi-host-reset-lines)= and then =(wifi-interrupt-state)= still produced zero
+CCCR values and zero CMD52 responses. The host reset is therefore not only
+"too late" after a failed =IO_ABORT=; it also does not recover immediately
+after an otherwise successful F2 frame read.
+
 Interpretation: the REPL delay is not the cause. A successful ADMA F2 read
 leaves either the CYW4343W SDIO core or the PSoC SDHC command path in a state
 where the F0 abort command cannot complete. The next useful comparison is the
