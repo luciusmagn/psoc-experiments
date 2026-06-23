@@ -96,6 +96,7 @@ pub trait Board {
     fn wifi_f2_read_header(&mut self) -> WifiSdioF2HeaderReport;
     fn wifi_f2_read_frame(&mut self) -> WifiSdioF2FrameReport;
     fn wifi_f2_read_frame_abort(&mut self) -> WifiSdioF2AbortProbeReport;
+    fn wifi_poll_read_frame(&mut self) -> WifiSdioPollReadFrameReport;
     fn wifi_ack_interrupts(&mut self) -> WifiSdioInterruptAckReport;
     fn wifi_interrupt_state(&mut self) -> WifiSdioInterruptStateReport;
     fn wifi_keep_awake(&mut self) -> WifiSdioKeepAwakeReport;
@@ -659,6 +660,34 @@ pub struct WifiSdioF2AbortProbeReport {
 }
 
 #[derive(Clone, Copy)]
+pub struct WifiSdioPollReadFrameReport {
+    pub ack_status: &'static [u8],
+    pub ack_int_status_before: u32,
+    pub ack_clear_value: u32,
+    pub ack_int_status_after: u32,
+    pub ack_final_response: u32,
+    pub frame_status: &'static [u8],
+    pub frame_valid: bool,
+    pub frame_length: u16,
+    pub frame_channel: u8,
+    pub frame_bus_data_credit: u8,
+    pub frame_header_response: u32,
+    pub frame_body_response: u32,
+    pub post_status: &'static [u8],
+    pub post_io_enable: u8,
+    pub post_io_ready: u8,
+    pub post_interrupt_pending: u8,
+    pub post_io_enable_response: u32,
+    pub post_io_ready_response: u32,
+    pub post_interrupt_pending_response: u32,
+    pub post_host_normal_int: u16,
+    pub post_host_error_int: u16,
+    pub ack_last_error: Option<WifiSdioCommandErrorReport>,
+    pub frame_last_error: Option<WifiSdioCommandErrorReport>,
+    pub post_last_error: Option<WifiSdioCommandErrorReport>,
+}
+
+#[derive(Clone, Copy)]
 pub struct WifiSdioInterruptAckReport {
     pub status: &'static [u8],
     pub int_status_before: u32,
@@ -879,6 +908,7 @@ pub enum Primitive {
     WifiF2ReadHeader,
     WifiF2ReadFrame,
     WifiF2ReadFrameAbort,
+    WifiPollReadFrame,
     WifiAckInterrupts,
     WifiInterruptState,
     WifiKeepAwake,
@@ -959,6 +989,7 @@ impl Primitive {
             Self::WifiF2ReadHeader => "wifi-f2-read-header",
             Self::WifiF2ReadFrame => "wifi-f2-read-frame",
             Self::WifiF2ReadFrameAbort => "wifi-f2-read-frame-abort",
+            Self::WifiPollReadFrame => "wifi-poll-read-frame",
             Self::WifiAckInterrupts => "wifi-ack-interrupts",
             Self::WifiInterruptState => "wifi-interrupt-state",
             Self::WifiKeepAwake => "wifi-keep-awake",
@@ -1194,6 +1225,7 @@ impl Machine {
         self.install_primitive(b"wifi-f2-read-header", Primitive::WifiF2ReadHeader)?;
         self.install_primitive(b"wifi-f2-read-frame", Primitive::WifiF2ReadFrame)?;
         self.install_primitive(b"wifi-f2-read-frame-abort", Primitive::WifiF2ReadFrameAbort)?;
+        self.install_primitive(b"wifi-poll-read-frame", Primitive::WifiPollReadFrame)?;
         self.install_primitive(b"wifi-ack-interrupts", Primitive::WifiAckInterrupts)?;
         self.install_primitive(b"wifi-interrupt-state", Primitive::WifiInterruptState)?;
         self.install_primitive(b"wifi-keep-awake", Primitive::WifiKeepAwake)?;
@@ -2017,6 +2049,10 @@ impl Machine {
                 self.expect_count(args, 0)?;
                 self.wifi_sdio_f2_abort_probe_report(board.wifi_f2_read_frame_abort())
             }
+            Primitive::WifiPollReadFrame => {
+                self.expect_count(args, 0)?;
+                self.wifi_sdio_poll_read_frame_report(board.wifi_poll_read_frame())
+            }
             Primitive::WifiAckInterrupts => {
                 self.expect_count(args, 0)?;
                 self.wifi_sdio_interrupt_ack_report(board.wifi_ack_interrupts())
@@ -2422,6 +2458,7 @@ impl Machine {
             b"wifi-f2-read-header",
             b"wifi-f2-read-frame",
             b"wifi-f2-read-frame-abort",
+            b"wifi-poll-read-frame",
             b"wifi-ack-interrupts",
             b"wifi-interrupt-state",
             b"wifi-keep-awake",
@@ -3398,6 +3435,87 @@ impl Machine {
             post_host_error_int,
             frame_last_error,
             abort_last_error,
+            post_last_error,
+        ];
+        self.make_list_from_values(&entries)
+    }
+
+    fn wifi_sdio_poll_read_frame_report(
+        &mut self,
+        report: WifiSdioPollReadFrameReport,
+    ) -> LispResult<Value> {
+        let ack_status = self.symbol_entry(b"ack.status", report.ack_status)?;
+        let ack_int_status_before =
+            self.word_entry(b"ack.INT_STATUS.before", report.ack_int_status_before)?;
+        let ack_clear_value = self.word_entry(b"ack.INT_STATUS.clear", report.ack_clear_value)?;
+        let ack_int_status_after =
+            self.word_entry(b"ack.INT_STATUS.after", report.ack_int_status_after)?;
+        let ack_final_response =
+            self.word_entry(b"ack.INT_STATUS.final-response", report.ack_final_response)?;
+        let frame_status = self.symbol_entry(b"frame.status", report.frame_status)?;
+        let frame_valid = self.bool_entry(b"frame.valid", report.frame_valid)?;
+        let frame_length = self.word_entry(b"frame.length", report.frame_length as u32)?;
+        let frame_channel = self.word_entry(b"frame.channel", report.frame_channel as u32)?;
+        let frame_bus_data_credit = self.word_entry(
+            b"frame.bus-data-credit",
+            report.frame_bus_data_credit as u32,
+        )?;
+        let frame_header_response =
+            self.word_entry(b"frame.header-response", report.frame_header_response)?;
+        let frame_body_response =
+            self.word_entry(b"frame.body-response", report.frame_body_response)?;
+        let post_status = self.symbol_entry(b"post.status", report.post_status)?;
+        let post_io_enable =
+            self.word_entry(b"post.CCCR.IO_ENABLE", report.post_io_enable as u32)?;
+        let post_io_ready = self.word_entry(b"post.CCCR.IO_READY", report.post_io_ready as u32)?;
+        let post_interrupt_pending =
+            self.word_entry(b"post.CCCR.INTPEND", report.post_interrupt_pending as u32)?;
+        let post_io_enable_response = self.word_entry(
+            b"post.CCCR.IO_ENABLE.response",
+            report.post_io_enable_response,
+        )?;
+        let post_io_ready_response = self.word_entry(
+            b"post.CCCR.IO_READY.response",
+            report.post_io_ready_response,
+        )?;
+        let post_interrupt_pending_response = self.word_entry(
+            b"post.CCCR.INTPEND.response",
+            report.post_interrupt_pending_response,
+        )?;
+        let post_host_normal_int =
+            self.word_entry(b"post.HOST.NORM_INT", report.post_host_normal_int as u32)?;
+        let post_host_error_int =
+            self.word_entry(b"post.HOST.ERR_INT", report.post_host_error_int as u32)?;
+        let ack_last_error =
+            self.wifi_sdio_error_entry(b"ack.last-error", report.ack_last_error)?;
+        let frame_last_error =
+            self.wifi_sdio_error_entry(b"frame.last-error", report.frame_last_error)?;
+        let post_last_error =
+            self.wifi_sdio_error_entry(b"post.last-error", report.post_last_error)?;
+        let entries = [
+            ack_status,
+            ack_int_status_before,
+            ack_clear_value,
+            ack_int_status_after,
+            ack_final_response,
+            frame_status,
+            frame_valid,
+            frame_length,
+            frame_channel,
+            frame_bus_data_credit,
+            frame_header_response,
+            frame_body_response,
+            post_status,
+            post_io_enable,
+            post_io_ready,
+            post_interrupt_pending,
+            post_io_enable_response,
+            post_io_ready_response,
+            post_interrupt_pending_response,
+            post_host_normal_int,
+            post_host_error_int,
+            ack_last_error,
+            frame_last_error,
             post_last_error,
         ];
         self.make_list_from_values(&entries)

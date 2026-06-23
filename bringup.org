@@ -2773,6 +2773,74 @@ the full WHD post-frame flow around interrupt clearing, read abort, and the
 first host-to-device SDPCM control message rather than adding generic CMD52
 retries.
 
+* 2026-06-23 WHD-order poll-read diagnostic
+
+Added =(wifi-poll-read-frame)= as a single Lisp diagnostic for the first WHD-like
+receive path after firmware startup:
+
+1. Acknowledge WLAN host interrupt bits in the backplane =SDIO_INT_STATUS=.
+2. Read one frame from function 2.
+3. Sample selected-card CCCR state and host interrupt registers.
+
+Validation:
+
+#+begin_example
+cargo fmt
+tools/build-lisp.scm --wifi-firmware
+tools/flash-lisp.scm
+tools/serial-console.scm
+tools/send-lisp.scm '(wifi-start-firmware)'
+tools/send-lisp.scm '(wifi-poll-read-frame)'
+#+end_example
+
+The board still reaches the existing ready status after downloading and starting
+the CYW4343W firmware. In this run the post-start ARM snapshot reported
+=core-up . #f= while =RESETSTATUS= still showed bit 0 set, even though F2 was
+ready and the startup frame could be read. Treat that field as a timing or
+snapshot hint until it is cross-checked against the vendor driver.
+
+Poll-read output:
+
+#+begin_example
+(wifi-poll-read-frame)
+=> ((ack.status . ready) (ack.INT_STATUS.before . #x008200c0)
+    (ack.INT_STATUS.clear . #x000000c0)
+    (ack.INT_STATUS.after . #x00820000)
+    (ack.INT_STATUS.final-response . #x00001000)
+    (frame.status . ready) (frame.valid . #t)
+    (frame.length . #x0000000c) (frame.channel . #x00000001)
+    (frame.bus-data-credit . #x00000010)
+    (frame.header-response . #x00001000)
+    (frame.body-response . #x00001000)
+    (post.status . io-enable-read-failed)
+    (post.CCCR.IO_ENABLE . #x00000000)
+    (post.CCCR.IO_READY . #x00000000)
+    (post.CCCR.INTPEND . #x00000000)
+    (post.CCCR.IO_ENABLE.response . #x00000000)
+    (post.CCCR.IO_READY.response . #x00000000)
+    (post.CCCR.INTPEND.response . #x00000000)
+    (post.HOST.NORM_INT . #x00000100)
+    (post.HOST.ERR_INT . #x00000000)
+    (ack.last-error)
+    (frame.last-error)
+    (post.last-error (code . command-status-error)
+      (NORM_INT . #x00008100)
+      (ERR_INT . #x00000001)
+      (PSTATE . #x03f30001)
+      (CMD_R . #x0000341a)
+      (ARGUMENT . #x00000400)
+      (PSTATE.after-write . #x03f30001)
+      (NORM_INT.after-write . #x00008100)
+      (ERR_INT.after-write . #x00000001)))
+#+end_example
+
+Interpretation: acknowledging =I_HMB_FRAME_IND= and =I_HMB_HOST_INT= before
+consuming the startup frame does not prevent the next selected-card CMD52 from
+failing with a command-status error. The F2 frame itself is valid and carries a
+bus-data credit of 16. The next Wi-Fi step should focus on host SDHC transfer
+cleanup and the first host-to-device SDPCM control exchange, using the Infineon
+HAL retry/reset behavior and WHD control path as references.
+
 * Next actions
 
 1. Add REPL history and better editing across continuation lines.

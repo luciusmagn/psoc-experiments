@@ -528,6 +528,38 @@ impl lisp::Board for PsocBoard<'_> {
         }
     }
 
+    fn wifi_poll_read_frame(&mut self) -> lisp::WifiSdioPollReadFrameReport {
+        let ack = wifi_sdio::ack_interrupts(self.p);
+        let frame = wifi_sdio::f2_read_frame(self.p);
+        let post = wifi_sdio::interrupt_state(self.p);
+        lisp::WifiSdioPollReadFrameReport {
+            ack_status: wifi_sdio_interrupt_ack_status(ack.status),
+            ack_int_status_before: ack.int_status_before,
+            ack_clear_value: ack.clear_value,
+            ack_int_status_after: ack.int_status_after,
+            ack_final_response: ack.final_response,
+            frame_status: wifi_sdio_f2_frame_status(frame.status),
+            frame_valid: frame.valid,
+            frame_length: frame.length,
+            frame_channel: frame.channel,
+            frame_bus_data_credit: frame.bus_data_credit,
+            frame_header_response: frame.header_response,
+            frame_body_response: frame.body_response,
+            post_status: wifi_sdio_interrupt_state_status(post.status),
+            post_io_enable: post.io_enable,
+            post_io_ready: post.io_ready,
+            post_interrupt_pending: post.interrupt_pending,
+            post_io_enable_response: post.io_enable_response,
+            post_io_ready_response: post.io_ready_response,
+            post_interrupt_pending_response: post.interrupt_pending_response,
+            post_host_normal_int: post.host_normal_int,
+            post_host_error_int: post.host_error_int,
+            ack_last_error: ack.last_error.map(wifi_sdio_command_error_report),
+            frame_last_error: frame.last_error.map(wifi_sdio_command_error_report),
+            post_last_error: post.last_error.map(wifi_sdio_command_error_report),
+        }
+    }
+
     fn wifi_ack_interrupts(&mut self) -> lisp::WifiSdioInterruptAckReport {
         wifi_sdio_interrupt_ack_report(wifi_sdio::ack_interrupts(self.p))
     }
