@@ -68,6 +68,11 @@ pub trait Board {
         -> WifiSdioCmd53ReadReport;
     fn wifi_backplane_read(&mut self, address: u32, count: u8) -> WifiSdioBackplaneReadReport;
     fn wifi_backplane_write8(&mut self, address: u32, value: u8) -> WifiSdioBackplaneWrite8Report;
+    fn wifi_backplane_write32(
+        &mut self,
+        address: u32,
+        value: u32,
+    ) -> WifiSdioBackplaneWrite32Report;
     fn wifi_core_state(&mut self, base: u32) -> WifiSdioCoreStateReport;
     fn wifi_reset_core(&mut self, base: u32) -> WifiSdioCoreResetReport;
     fn sdhc_registers(&mut self) -> SdhcReport;
@@ -271,6 +276,10 @@ pub struct WifiSdioHostReport {
     pub gp_out: u32,
     pub gp_in: u32,
     pub xfer_mode: u16,
+    pub block_size: u16,
+    pub block_count: u16,
+    pub sdmasa: u32,
+    pub bgap_ctrl: u8,
     pub host_ctrl1: u8,
     pub host_ctrl2: u16,
     pub tout_ctrl: u8,
@@ -413,6 +422,20 @@ pub struct WifiSdioBackplaneWrite8Report {
 }
 
 #[derive(Clone, Copy)]
+pub struct WifiSdioBackplaneWrite32Report {
+    pub status: &'static [u8],
+    pub setup_status: &'static [u8],
+    pub address: u32,
+    pub value: u32,
+    pub window_base: u32,
+    pub window_address: u32,
+    pub response: u32,
+    pub readback: u32,
+    pub last_error: Option<WifiSdioCommandErrorReport>,
+    pub host: WifiSdioHostReport,
+}
+
+#[derive(Clone, Copy)]
 pub struct WifiSdioCoreStateReport {
     pub status: &'static [u8],
     pub setup_status: &'static [u8],
@@ -527,6 +550,7 @@ pub enum Primitive {
     WifiCmd53Read,
     WifiBackplaneRead,
     WifiBackplaneWrite8,
+    WifiBackplaneWrite32,
     WifiCoreState,
     WifiResetCore,
     SdhcRegs,
@@ -590,6 +614,7 @@ impl Primitive {
             Self::WifiCmd53Read => "wifi-cmd53-read",
             Self::WifiBackplaneRead => "wifi-backplane-read",
             Self::WifiBackplaneWrite8 => "wifi-backplane-write8",
+            Self::WifiBackplaneWrite32 => "wifi-backplane-write32",
             Self::WifiCoreState => "wifi-core-state",
             Self::WifiResetCore => "wifi-reset-core",
             Self::SdhcRegs => "sdhc-regs",
@@ -805,6 +830,7 @@ impl Machine {
         self.install_primitive(b"wifi-cmd53-read", Primitive::WifiCmd53Read)?;
         self.install_primitive(b"wifi-backplane-read", Primitive::WifiBackplaneRead)?;
         self.install_primitive(b"wifi-backplane-write8", Primitive::WifiBackplaneWrite8)?;
+        self.install_primitive(b"wifi-backplane-write32", Primitive::WifiBackplaneWrite32)?;
         self.install_primitive(b"wifi-core-state", Primitive::WifiCoreState)?;
         self.install_primitive(b"wifi-reset-core", Primitive::WifiResetCore)?;
         self.install_primitive(b"sdhc-regs", Primitive::SdhcRegs)?;
@@ -1530,6 +1556,14 @@ impl Machine {
                 let value = self.expect_u8(args[1])?;
                 self.wifi_sdio_backplane_write8_report(board.wifi_backplane_write8(address, value))
             }
+            Primitive::WifiBackplaneWrite32 => {
+                self.expect_count(args, 2)?;
+                let address = self.expect_u32(args[0])?;
+                let value = self.expect_u32(args[1])?;
+                self.wifi_sdio_backplane_write32_report(
+                    board.wifi_backplane_write32(address, value),
+                )
+            }
             Primitive::WifiCoreState => {
                 self.expect_count(args, 1)?;
                 let base = self.expect_u32(args[0])?;
@@ -1902,6 +1936,7 @@ impl Machine {
             b"wifi-cmd53-read",
             b"wifi-backplane-read",
             b"wifi-backplane-write8",
+            b"wifi-backplane-write32",
             b"wifi-core-state",
             b"wifi-reset-core",
             b"sdhc-regs",
@@ -2423,6 +2458,36 @@ impl Machine {
         self.make_list_from_values(&entries)
     }
 
+    fn wifi_sdio_backplane_write32_report(
+        &mut self,
+        report: WifiSdioBackplaneWrite32Report,
+    ) -> LispResult<Value> {
+        let status = self.symbol_entry(b"status", report.status)?;
+        let setup_status = self.symbol_entry(b"setup-status", report.setup_status)?;
+        let address = self.word_entry(b"address", report.address)?;
+        let value = self.word_entry(b"value", report.value)?;
+        let window_base = self.word_entry(b"window-base", report.window_base)?;
+        let window_address = self.word_entry(b"window-address", report.window_address)?;
+        let response = self.word_entry(b"response", report.response)?;
+        let readback = self.word_entry(b"readback", report.readback)?;
+        let last_error = self.wifi_sdio_error_entry(b"last-error", report.last_error)?;
+        let host = self.wifi_sdio_host_report(report.host)?;
+        let host = self.entry(b"SDHC0", host)?;
+        let entries = [
+            status,
+            setup_status,
+            address,
+            value,
+            window_base,
+            window_address,
+            response,
+            readback,
+            last_error,
+            host,
+        ];
+        self.make_list_from_values(&entries)
+    }
+
     fn wifi_sdio_core_state_report(
         &mut self,
         report: WifiSdioCoreStateReport,
@@ -2519,6 +2584,10 @@ impl Machine {
         let gp_out = self.word_entry(b"GP_OUT", report.gp_out)?;
         let gp_in = self.word_entry(b"GP_IN", report.gp_in)?;
         let xfer_mode = self.word_entry(b"XFER_MODE", report.xfer_mode as u32)?;
+        let block_size = self.word_entry(b"BLOCKSIZE", report.block_size as u32)?;
+        let block_count = self.word_entry(b"BLOCKCOUNT", report.block_count as u32)?;
+        let sdmasa = self.word_entry(b"SDMASA", report.sdmasa)?;
+        let bgap_ctrl = self.word_entry(b"BGAP_CTRL", report.bgap_ctrl as u32)?;
         let host_ctrl1 = self.word_entry(b"HOST_CTRL1", report.host_ctrl1 as u32)?;
         let host_ctrl2 = self.word_entry(b"HOST_CTRL2", report.host_ctrl2 as u32)?;
         let tout_ctrl = self.word_entry(b"TOUT_CTRL", report.tout_ctrl as u32)?;
@@ -2547,6 +2616,10 @@ impl Machine {
             gp_out,
             gp_in,
             xfer_mode,
+            block_size,
+            block_count,
+            sdmasa,
+            bgap_ctrl,
             host_ctrl1,
             host_ctrl2,
             tout_ctrl,

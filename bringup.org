@@ -1444,6 +1444,50 @@ wrapper reset path. Multi-step Wi-Fi operations should continue to be
 single HAL calls because the existing public diagnostic forms power-cycle
 and reinitialize Wi-Fi during setup.
 
+* 2026-06-23 Wi-Fi CMD53 write diagnostic
+
+Added =(wifi-backplane-write32 address value)= to exercise CMD53 byte-mode
+backplane writes. The form uses the same WHD address translation as
+4-byte reads, attempts a 4-byte write, and returns a same-session readback
+field if the write transfer completes. The =SDHC0= diagnostic report now
+also includes =BLOCKSIZE=, =BLOCKCOUNT=, =SDMASA=, and =BGAP_CTRL=.
+
+The first target was WHD's CYW43430 SOCSRAM bank index register:
+
+#+begin_example
+(wifi-backplane-write32 #x18004010 #x00000003)
+=> ((status . transfer-timeout) (setup-status . ready)
+    (address . #x18004010) (value . #x00000003)
+    (window-base . #x18000000) (window-address . #x0000c010)
+    (response . #x00001000) (readback . #x00000000)
+    (last-error)
+    (SDHC0 ... (XFER_MODE . #x00000002)
+               (BLOCKSIZE . #x00000004)
+               (BLOCKCOUNT . #x00000000)
+               (SDMASA . #x00000001)
+               (SW_RST . #x00000004)
+               (PSTATE . #x03e30006)
+               (ARGUMENT . #x95802004)
+               (RESP01 . #x00001000) ...))
+#+end_example
+
+The R5 response was clean, but the data phase did not complete. The host
+ended with =CMD_INHIBIT_DAT= and =DAT_LINE_ACTIVE= set and required a data
+line reset, so the problem is in the CMD53 write data path rather than the
+command phase.
+
+Experiments that did not change the failure:
+
+1. byte-mode write with and without SDHC block-count enable;
+2. fixed-address CMD53 write instead of WHD's incrementing-address mode;
+3. 1-bit SDIO bus width instead of 4-bit;
+4. releasing the SOCSRAM wrapper before the write.
+
+The current checked-in diagnostic keeps WHD-compatible incrementing
+address mode, PDL-style transfer register setup, and 4-bit SDIO setup.
+Next useful tests are a block-mode RAM write/readback diagnostic and a
+closer comparison with Infineon's HAL bulk-transfer path.
+
 * Next actions
 
 1. Add REPL history and better editing across continuation lines.

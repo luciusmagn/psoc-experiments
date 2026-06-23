@@ -362,6 +362,14 @@ impl lisp::Board for PsocBoard<'_> {
         wifi_sdio_backplane_write8_report(wifi_sdio::backplane_write8(self.p, address, value))
     }
 
+    fn wifi_backplane_write32(
+        &mut self,
+        address: u32,
+        value: u32,
+    ) -> lisp::WifiSdioBackplaneWrite32Report {
+        wifi_sdio_backplane_write32_report(wifi_sdio::backplane_write32(self.p, address, value))
+    }
+
     fn wifi_core_state(&mut self, base: u32) -> lisp::WifiSdioCoreStateReport {
         wifi_sdio_core_state_report(wifi_sdio::core_state(self.p, base))
     }
@@ -636,6 +644,48 @@ fn wifi_sdio_backplane_write8_status(
     }
 }
 
+fn wifi_sdio_backplane_write32_status(
+    status: wifi_sdio::WifiSdioBackplaneWrite32Status,
+) -> &'static [u8] {
+    match status {
+        wifi_sdio::WifiSdioBackplaneWrite32Status::Ready => b"ready",
+        wifi_sdio::WifiSdioBackplaneWrite32Status::SetupFailed => b"setup-failed",
+        wifi_sdio::WifiSdioBackplaneWrite32Status::InvalidAddress => b"invalid-address",
+        wifi_sdio::WifiSdioBackplaneWrite32Status::AlpWriteFailed => b"alp-write-failed",
+        wifi_sdio::WifiSdioBackplaneWrite32Status::AlpReadFailed => b"alp-read-failed",
+        wifi_sdio::WifiSdioBackplaneWrite32Status::AlpTimeout => b"alp-timeout",
+        wifi_sdio::WifiSdioBackplaneWrite32Status::AlpClearFailed => b"alp-clear-failed",
+        wifi_sdio::WifiSdioBackplaneWrite32Status::WindowHighWriteFailed => {
+            b"window-high-write-failed"
+        }
+        wifi_sdio::WifiSdioBackplaneWrite32Status::WindowMidWriteFailed => {
+            b"window-mid-write-failed"
+        }
+        wifi_sdio::WifiSdioBackplaneWrite32Status::WindowLowWriteFailed => {
+            b"window-low-write-failed"
+        }
+        wifi_sdio::WifiSdioBackplaneWrite32Status::DataSetupBusy => b"data-setup-busy",
+        wifi_sdio::WifiSdioBackplaneWrite32Status::Cmd53Failed => b"cmd53-failed",
+        wifi_sdio::WifiSdioBackplaneWrite32Status::BufferWriteTimeout => b"buffer-write-timeout",
+        wifi_sdio::WifiSdioBackplaneWrite32Status::BufferEnableTimeout => b"buffer-enable-timeout",
+        wifi_sdio::WifiSdioBackplaneWrite32Status::TransferTimeout => b"transfer-timeout",
+        wifi_sdio::WifiSdioBackplaneWrite32Status::DataLineBusy => b"data-line-busy",
+        wifi_sdio::WifiSdioBackplaneWrite32Status::ReadbackDataSetupBusy => {
+            b"readback-data-setup-busy"
+        }
+        wifi_sdio::WifiSdioBackplaneWrite32Status::ReadbackCmd53Failed => b"readback-cmd53-failed",
+        wifi_sdio::WifiSdioBackplaneWrite32Status::ReadbackBufferReadTimeout => {
+            b"readback-buffer-read-timeout"
+        }
+        wifi_sdio::WifiSdioBackplaneWrite32Status::ReadbackBufferEnableTimeout => {
+            b"readback-buffer-enable-timeout"
+        }
+        wifi_sdio::WifiSdioBackplaneWrite32Status::ReadbackTransferTimeout => {
+            b"readback-transfer-timeout"
+        }
+    }
+}
+
 fn wifi_sdio_core_state_status(status: wifi_sdio::WifiSdioCoreStateStatus) -> &'static [u8] {
     match status {
         wifi_sdio::WifiSdioCoreStateStatus::Ready => b"ready",
@@ -811,6 +861,23 @@ fn wifi_sdio_backplane_write8_report(
     }
 }
 
+fn wifi_sdio_backplane_write32_report(
+    report: wifi_sdio::WifiSdioBackplaneWrite32Report,
+) -> lisp::WifiSdioBackplaneWrite32Report {
+    lisp::WifiSdioBackplaneWrite32Report {
+        status: wifi_sdio_backplane_write32_status(report.status),
+        setup_status: wifi_sdio_backplane_status(report.setup_status),
+        address: report.address,
+        value: report.value,
+        window_base: report.window_base,
+        window_address: report.window_address,
+        response: report.response,
+        readback: report.readback,
+        last_error: report.last_error.map(wifi_sdio_command_error_report),
+        host: wifi_sdio_host_report(report.host),
+    }
+}
+
 fn wifi_sdio_core_state_report(
     report: wifi_sdio::WifiSdioCoreStateReport,
 ) -> lisp::WifiSdioCoreStateReport {
@@ -868,6 +935,10 @@ fn wifi_sdio_host_report(snapshot: wifi_sdio::WifiSdioHostSnapshot) -> lisp::Wif
         gp_out: snapshot.gp_out,
         gp_in: snapshot.gp_in,
         xfer_mode: snapshot.xfer_mode,
+        block_size: snapshot.block_size,
+        block_count: snapshot.block_count,
+        sdmasa: snapshot.sdmasa,
+        bgap_ctrl: snapshot.bgap_ctrl,
         host_ctrl1: snapshot.host_ctrl1,
         host_ctrl2: snapshot.host_ctrl2,
         tout_ctrl: snapshot.tout_ctrl,
