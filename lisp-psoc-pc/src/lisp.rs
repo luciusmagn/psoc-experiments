@@ -1,7 +1,7 @@
 use core::fmt::{self, Write};
 
 const MAX_OBJECTS: usize = 448;
-const MAX_SYMBOLS: usize = 224;
+const MAX_SYMBOLS: usize = 512;
 const MAX_GLOBALS: usize = 112;
 const MAX_SYMBOL_BYTES: usize = 32;
 pub const MAX_STRING_BYTES: usize = 96;

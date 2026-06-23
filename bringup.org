@@ -2841,6 +2841,52 @@ bus-data credit of 16. The next Wi-Fi step should focus on host SDHC transfer
 cleanup and the first host-to-device SDPCM control exchange, using the Infineon
 HAL retry/reset behavior and WHD control path as references.
 
+* 2026-06-23 Lisp symbol capacity for Wi-Fi diagnostics
+
+Long Wi-Fi diagnostic sessions can intern enough report key and status symbols
+to hit the old 224-entry symbol table. During a live check of
+=wifi-f2-read-frame= followed by =wifi-host-reset-lines= and
+=wifi-interrupt-state=, the third form failed with:
+
+#+begin_example
+error: symbol table full
+#+end_example
+
+Raised the fixed symbol table capacity to 512 entries so board-side diagnostics
+remain usable across repeated large reports. This does not change the evaluator
+semantics or Wi-Fi transport behavior.
+
+Validation:
+
+#+begin_example
+cargo fmt
+tools/build-flash-lisp.scm --wifi-firmware
+tools/serial-console.scm
+tools/send-lisp.scm '(wifi-start-firmware)'
+tools/send-lisp.scm '(wifi-f2-read-frame)'
+tools/send-lisp.scm '(wifi-host-reset-lines)'
+tools/send-lisp.scm '(wifi-interrupt-state)'
+#+end_example
+
+The repeated large reports printed successfully after the capacity increase.
+The reset-after-frame check is still not a Wi-Fi recovery: after a valid
+12-byte startup frame and a host command/data reset, selected-card CCCR reads
+complete without a Lisp-side command error but return zero values and zero
+responses:
+
+#+begin_example
+(wifi-interrupt-state)
+=> ((status . ready)
+    (CCCR.IO_ENABLE . #x00000000)
+    (CCCR.IO_READY . #x00000000)
+    (CCCR.INTERRUPT_ENABLE . #x00000000)
+    (CCCR.INTERRUPT_PENDING . #x00000000)
+    (CCCR.BUS_CONTROL . #x00000000)
+    (HOST.NORM_INT . #x00000100)
+    (HOST.ERR_INT . #x00000000)
+    (last-error))
+#+end_example
+
 * Next actions
 
 1. Add REPL history and better editing across continuation lines.
