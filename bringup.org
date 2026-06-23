@@ -1628,9 +1628,59 @@ chip is prepared in one uninterrupted HAL operation. The old
 =#x18004010= timeout was caused by running the bank-index write outside
 the full WHD SOCSRAM preparation sequence.
 
-Next useful tests are a known-idempotent CMD52 write target, a block-mode
-RAM write/readback diagnostic, and a closer comparison with Infineon's HAL
-bulk-transfer path.
+Next useful tests are a known-idempotent CMD52 write target, a
+firmware-sized block loader path, and a closer comparison with Infineon's
+HAL bulk-transfer path.
+
+* 2026-06-23 Wi-Fi SOCSRAM block probe
+
+Added =(wifi-socram-block-probe address seed)= as a 64-byte SOCSRAM
+diagnostic. It runs the same CYW43430 setup path as
+=(wifi-socram-probe ...)=, reads the original 64 bytes, writes a
+deterministic 16-word pattern generated from =seed= using CMD53 block-mode
+ADMA, reads the block back, restores the original 64 bytes, and verifies
+the restore. The Lisp report returns checksums and the first mismatch
+instead of dumping the whole block over serial.
+
+Live validation after flashing:
+
+#+begin_example
+(led off)
+=> #f
+
+(wifi-socram-block-probe #x00000000 #x11223344)
+=> ((status . ready)
+    (setup-status . ready)
+    (read-status . ready)
+    (write-status . ready)
+    (address . #x00000000)
+    (seed . #x11223344)
+    (original-checksum . #x01a8abc3)
+    (readback-checksum . #xdcd34301)
+    (restored-checksum . #x01a8abc3)
+    (mismatch-index . #xffffffff)
+    (mismatch-expected . #x00000000)
+    (mismatch-actual . #x00000000)
+    (last-response . #x00001000)
+    (last-error)
+    (SDHC0 ... (XFER_MODE . #x00000012)
+               (BLOCKSIZE . #x00000040)
+               (ADMA_SA_LOW . #x08001050)
+               (ADMA_ERR_STAT . #x00000000)
+               (HOST_CTRL1 . #x000000d2)
+               (MBIU_CTRL . #x0000000f)
+               (PSTATE . #x03f30000)
+               (ARGUMENT . #x1c000001)
+               (RESP01 . #x00001000) ...))
+
+(wifi-backplane-read #x18000000 4)
+=> ... (bytes #x000000a6 #x000000a9 #x00000031 #x00000015) ...
+#+end_example
+
+This confirms that 64-byte CMD53 block-mode ADMA writes and reads can
+round-trip SOCSRAM and restore the original block when the CYW43430 RAM
+download setup is kept inside one HAL operation. The chip-id read still
+works afterward.
 
 * Next actions
 
@@ -1638,5 +1688,9 @@ bulk-transfer path.
 2. Add a FAT/exFAT-aware storage layer after raw block reads/writes work.
 3. Test the newer Infineon target =infineon/cy8cxxa.cfg= as a replacement
    for obsolete =target/psoc6_2m.cfg=.
-4. Start Wi-Fi from a known-good Infineon or Zephyr sample before trying
+4. Find or import a CYW43430 firmware blob and board NVRAM source that can
+   be kept out of git when licensing or secrets require it.
+5. Add a firmware-sized SOCSRAM loader using the now-working 64-byte block
+   transfer path.
+6. Start Wi-Fi from a known-good Infineon or Zephyr sample before trying
    to hand-port CYW4343W support.

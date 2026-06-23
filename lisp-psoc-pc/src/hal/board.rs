@@ -384,6 +384,14 @@ impl lisp::Board for PsocBoard<'_> {
         wifi_sdio_socram_probe_report(wifi_sdio::socram_probe(self.p, address, pattern))
     }
 
+    fn wifi_socram_block_probe(
+        &mut self,
+        address: u32,
+        seed: u32,
+    ) -> lisp::WifiSdioSocramBlockProbeReport {
+        wifi_sdio_socram_block_probe_report(wifi_sdio::socram_block_probe(self.p, address, seed))
+    }
+
     fn wifi_core_state(&mut self, base: u32) -> lisp::WifiSdioCoreStateReport {
         wifi_sdio_core_state_report(wifi_sdio::core_state(self.p, base))
     }
@@ -711,6 +719,38 @@ fn wifi_sdio_socram_probe_status(status: wifi_sdio::WifiSdioSocramProbeStatus) -
     }
 }
 
+fn wifi_sdio_socram_block_probe_status(
+    status: wifi_sdio::WifiSdioSocramBlockProbeStatus,
+) -> &'static [u8] {
+    match status {
+        wifi_sdio::WifiSdioSocramBlockProbeStatus::Ready => b"ready",
+        wifi_sdio::WifiSdioSocramBlockProbeStatus::SetupFailed => b"setup-failed",
+        wifi_sdio::WifiSdioSocramBlockProbeStatus::InvalidAddress => b"invalid-address",
+        wifi_sdio::WifiSdioSocramBlockProbeStatus::AlpWriteFailed => b"alp-write-failed",
+        wifi_sdio::WifiSdioSocramBlockProbeStatus::AlpReadFailed => b"alp-read-failed",
+        wifi_sdio::WifiSdioSocramBlockProbeStatus::AlpTimeout => b"alp-timeout",
+        wifi_sdio::WifiSdioSocramBlockProbeStatus::AlpClearFailed => b"alp-clear-failed",
+        wifi_sdio::WifiSdioSocramBlockProbeStatus::ArmDisableFailed => b"arm-disable-failed",
+        wifi_sdio::WifiSdioSocramBlockProbeStatus::SocramDisableFailed => b"socram-disable-failed",
+        wifi_sdio::WifiSdioSocramBlockProbeStatus::SocramResetFailed => b"socram-reset-failed",
+        wifi_sdio::WifiSdioSocramBlockProbeStatus::BankIndexWriteFailed => {
+            b"bank-index-write-failed"
+        }
+        wifi_sdio::WifiSdioSocramBlockProbeStatus::BankPdaWriteFailed => b"bank-pda-write-failed",
+        wifi_sdio::WifiSdioSocramBlockProbeStatus::OriginalReadFailed => b"original-read-failed",
+        wifi_sdio::WifiSdioSocramBlockProbeStatus::ProbeWriteFailed => b"probe-write-failed",
+        wifi_sdio::WifiSdioSocramBlockProbeStatus::ProbeReadFailed => b"probe-read-failed",
+        wifi_sdio::WifiSdioSocramBlockProbeStatus::ProbeReadbackMismatch => {
+            b"probe-readback-mismatch"
+        }
+        wifi_sdio::WifiSdioSocramBlockProbeStatus::RestoreWriteFailed => b"restore-write-failed",
+        wifi_sdio::WifiSdioSocramBlockProbeStatus::RestoreReadFailed => b"restore-read-failed",
+        wifi_sdio::WifiSdioSocramBlockProbeStatus::RestoreReadbackMismatch => {
+            b"restore-readback-mismatch"
+        }
+    }
+}
+
 fn wifi_sdio_core_state_status(status: wifi_sdio::WifiSdioCoreStateStatus) -> &'static [u8] {
     match status {
         wifi_sdio::WifiSdioCoreStateStatus::Ready => b"ready",
@@ -915,6 +955,28 @@ fn wifi_sdio_socram_probe_report(
         original: report.original,
         readback: report.readback,
         restored: report.restored,
+        last_response: report.last_response,
+        last_error: report.last_error.map(wifi_sdio_command_error_report),
+        host: wifi_sdio_host_report(report.host),
+    }
+}
+
+fn wifi_sdio_socram_block_probe_report(
+    report: wifi_sdio::WifiSdioSocramBlockProbeReport,
+) -> lisp::WifiSdioSocramBlockProbeReport {
+    lisp::WifiSdioSocramBlockProbeReport {
+        status: wifi_sdio_socram_block_probe_status(report.status),
+        setup_status: wifi_sdio_backplane_status(report.setup_status),
+        read_status: wifi_sdio_backplane_read_status(report.read_status),
+        write_status: wifi_sdio_backplane_write32_status(report.write_status),
+        address: report.address,
+        seed: report.seed,
+        original_checksum: report.original_checksum,
+        readback_checksum: report.readback_checksum,
+        restored_checksum: report.restored_checksum,
+        mismatch_index: report.mismatch_index,
+        mismatch_expected: report.mismatch_expected,
+        mismatch_actual: report.mismatch_actual,
         last_response: report.last_response,
         last_error: report.last_error.map(wifi_sdio_command_error_report),
         host: wifi_sdio_host_report(report.host),

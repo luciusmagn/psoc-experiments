@@ -50,6 +50,8 @@ const SDIO_CMD53_PREVIEW_BYTES: usize = 16;
 const SDIO_CMD53_MAX_READ_BYTES: u16 = 64;
 const SDIO_CMD53_WORD_BYTES: u16 = 4;
 const SDIO_CMD53_BLOCK_BYTES: u16 = 64;
+const SDIO_CMD53_BLOCK_WORDS: usize = 16;
+const SOCSRAM_BLOCK_PROBE_NO_MISMATCH: u32 = 0xffff_ffff;
 const SDIO_CCCR_IO_ENABLE: u32 = 0x02;
 const SDIO_CCCR_IO_READY: u32 = 0x03;
 const SDIO_CCCR_INTERRUPT_ENABLE: u32 = 0x04;
@@ -133,6 +135,7 @@ struct AdmaDescriptorTable([u32; 2]);
 
 static mut CMD53_WRITE_ADMA_DESCRIPTOR: AdmaDescriptorTable = AdmaDescriptorTable([0; 2]);
 static mut CMD53_WRITE_WORD: u32 = 0;
+static mut CMD53_WRITE_BLOCK_WORDS: [u32; SDIO_CMD53_BLOCK_WORDS] = [0; SDIO_CMD53_BLOCK_WORDS];
 
 #[derive(Clone, Copy)]
 pub enum WifiSdioStatus {
@@ -285,6 +288,29 @@ pub enum WifiSdioSocramProbeStatus {
 }
 
 #[derive(Clone, Copy)]
+pub enum WifiSdioSocramBlockProbeStatus {
+    Ready,
+    SetupFailed,
+    InvalidAddress,
+    AlpWriteFailed,
+    AlpReadFailed,
+    AlpTimeout,
+    AlpClearFailed,
+    ArmDisableFailed,
+    SocramDisableFailed,
+    SocramResetFailed,
+    BankIndexWriteFailed,
+    BankPdaWriteFailed,
+    OriginalReadFailed,
+    ProbeWriteFailed,
+    ProbeReadFailed,
+    ProbeReadbackMismatch,
+    RestoreWriteFailed,
+    RestoreReadFailed,
+    RestoreReadbackMismatch,
+}
+
+#[derive(Clone, Copy)]
 pub enum WifiSdioCoreStateStatus {
     Ready,
     SetupFailed,
@@ -406,6 +432,76 @@ struct BackplaneWordWriteFailure {
     window_address: u32,
     response: u32,
     last_error: Option<CommandError>,
+}
+
+struct BackplaneBlockRead {
+    words: [u32; SDIO_CMD53_BLOCK_WORDS],
+    response: u32,
+}
+
+struct BackplaneBlockWrite {
+    response: u32,
+}
+
+enum BackplaneBlockReadError {
+    InvalidAddress,
+    Window(BackplaneWindowError),
+    DataSetupBusy,
+    Cmd53(CommandError),
+    Data {
+        response: u32,
+        status: WifiSdioCmd53ReadStatus,
+    },
+}
+
+enum BackplaneBlockWriteError {
+    InvalidAddress,
+    Window(BackplaneWindowError),
+    DataSetupBusy,
+    Cmd53(CommandError),
+    Data {
+        response: u32,
+        status: WifiSdioBackplaneWrite32Status,
+    },
+}
+
+struct SocramPrepared {
+    setup_status: WifiSdioBackplaneStatus,
+    last_response: u32,
+}
+
+enum SocramPrepareError {
+    Setup {
+        setup_status: WifiSdioBackplaneStatus,
+        last_error: Option<CommandError>,
+    },
+    Alp {
+        setup_status: WifiSdioBackplaneStatus,
+        error: AlpError,
+    },
+    ArmDisable {
+        setup_status: WifiSdioBackplaneStatus,
+        last_response: u32,
+        error: CoreResetStepError,
+    },
+    SocramDisable {
+        setup_status: WifiSdioBackplaneStatus,
+        last_response: u32,
+        error: CoreResetStepError,
+    },
+    SocramReset {
+        setup_status: WifiSdioBackplaneStatus,
+        last_response: u32,
+        error: CoreResetStepError,
+    },
+    BankIndexWrite {
+        setup_status: WifiSdioBackplaneStatus,
+        error: BackplaneWordWriteFailure,
+    },
+    BankPdaWrite {
+        setup_status: WifiSdioBackplaneStatus,
+        error: BackplaneWordWriteFailure,
+    },
 }
 
 #[derive(Clone, Copy)]
@@ -605,6 +701,24 @@ pub struct WifiSdioSocramProbeReport {
     pub original: u32,
     pub readback: u32,
     pub restored: u32,
+    pub last_response: u32,
+    pub last_error: Option<CommandError>,
+    pub host: WifiSdioHostSnapshot,
+}
+
+pub struct WifiSdioSocramBlockProbeReport {
+    pub status: WifiSdioSocramBlockProbeStatus,
+    pub setup_status: WifiSdioBackplaneStatus,
+    pub read_status: WifiSdioBackplaneReadStatus,
+    pub write_status: WifiSdioBackplaneWrite32Status,
+    pub address: u32,
+    pub seed: u32,
+    pub original_checksum: u32,
+    pub readback_checksum: u32,
+    pub restored_checksum: u32,
+    pub mismatch_index: u32,
+    pub mismatch_expected: u32,
+    pub mismatch_actual: u32,
     pub last_response: u32,
     pub last_error: Option<CommandError>,
     pub host: WifiSdioHostSnapshot,
@@ -1918,6 +2032,84 @@ fn write_backplane_u32_after_setup(
     })
 }
 
+fn read_backplane_block_after_setup(
+    core: &sdhc0::CORE,
+    address: u32,
+) -> Result<BackplaneBlockRead, BackplaneBlockReadError> {
+    if address & 0x03 != 0 || backplane_read_crosses_window(address, SDIO_CMD53_BLOCK_BYTES as u8) {
+        return Err(BackplaneBlockReadError::InvalidAddress);
+    }
+
+    set_backplane_window(core, address).map_err(BackplaneBlockReadError::Window)?;
+    let window_address = backplane_window_address(address, SDIO_CMD53_BLOCK_BYTES as u8);
+
+    if !configure_cmd53_read(core, SDIO_CMD53_BLOCK_BYTES as u8, true) {
+        return Err(BackplaneBlockReadError::DataSetupBusy);
+    }
+
+    let argument = cmd53_argument(
+        false,
+        SDIO_BACKPLANE_FUNCTION,
+        true,
+        true,
+        window_address,
+        1,
+    );
+    let response = send_command(
+        core,
+        Command {
+            index: 53,
+            argument,
+            response: ResponseType::Len48,
+            command_type: CommandType::Normal,
+            data_present: true,
+            crc_check: true,
+            index_check: true,
+        },
+    )
+    .map_err(BackplaneBlockReadError::Cmd53)?;
+
+    let words = read_cmd53_words(core)
+        .map_err(|status| BackplaneBlockReadError::Data { response, status })?;
+    Ok(BackplaneBlockRead { words, response })
+}
+
+fn write_backplane_block_after_setup(
+    core: &sdhc0::CORE,
+    address: u32,
+    words: &[u32; SDIO_CMD53_BLOCK_WORDS],
+) -> Result<BackplaneBlockWrite, BackplaneBlockWriteError> {
+    if address & 0x03 != 0 || backplane_read_crosses_window(address, SDIO_CMD53_BLOCK_BYTES as u8) {
+        return Err(BackplaneBlockWriteError::InvalidAddress);
+    }
+
+    set_backplane_window(core, address).map_err(BackplaneBlockWriteError::Window)?;
+    let window_address = backplane_window_address(address, SDIO_CMD53_BLOCK_BYTES as u8);
+    let descriptor_address = prepare_cmd53_write_words(words, SDIO_CMD53_BLOCK_BYTES);
+    if !configure_cmd53_write_adma(core, SDIO_CMD53_BLOCK_BYTES as u8, true, descriptor_address) {
+        return Err(BackplaneBlockWriteError::DataSetupBusy);
+    }
+
+    let argument = cmd53_argument(true, SDIO_BACKPLANE_FUNCTION, true, true, window_address, 1);
+    let response = send_command(
+        core,
+        Command {
+            index: 53,
+            argument,
+            response: ResponseType::Len48,
+            command_type: CommandType::Normal,
+            data_present: true,
+            crc_check: true,
+            index_check: true,
+        },
+    )
+    .map_err(BackplaneBlockWriteError::Cmd53)?;
+
+    wait_cmd53_adma_write_complete(core)
+        .map_err(|status| BackplaneBlockWriteError::Data { response, status })?;
+    Ok(BackplaneBlockWrite { response })
+}
+
 pub fn backplane_write32_bytes(
     p: &Peripherals,
     address: u32,
@@ -2076,142 +2268,30 @@ pub fn socram_probe(p: &Peripherals, address: u32, pattern: u32) -> WifiSdioSocr
         );
     }
 
-    let setup = setup_backplane(p);
-    if !matches!(setup.status, WifiSdioBackplaneStatus::Ready) {
-        return socram_probe_report(
-            p,
-            WifiSdioSocramProbeStatus::SetupFailed,
-            setup.status,
-            WifiSdioBackplaneWrite32Status::Ready,
-            address,
-            pattern,
-            0,
-            0,
-            0,
-            0,
-            setup.last_error,
-        );
-    }
-
-    let core = &p.SDHC0.core;
-    let mut last_response = match request_alp_clock(core) {
-        Ok(response) => response,
+    let prepared = match prepare_cyw43430_socram(p) {
+        Ok(prepared) => prepared,
         Err(error) => {
-            let (status, response, last_error) = socram_probe_alp_error(error);
+            let (status, setup_status, write_status, last_response, last_error) =
+                socram_probe_prepare_error(error);
             return socram_probe_report(
                 p,
                 status,
-                setup.status,
-                WifiSdioBackplaneWrite32Status::Ready,
+                setup_status,
+                write_status,
                 address,
                 pattern,
                 0,
                 0,
                 0,
-                response,
+                last_response,
                 last_error,
             );
         }
     };
 
-    if let Err(error) = disable_core_registers(core, CYW43430_ARM_WRAPPER_BASE, &mut last_response)
-    {
-        let (_, last_error) = core_reset_step_error(error);
-        return socram_probe_report(
-            p,
-            WifiSdioSocramProbeStatus::ArmDisableFailed,
-            setup.status,
-            WifiSdioBackplaneWrite32Status::Ready,
-            address,
-            pattern,
-            0,
-            0,
-            0,
-            last_response,
-            Some(last_error),
-        );
-    }
-
-    if let Err(error) =
-        disable_core_registers(core, CYW43430_SOCSRAM_WRAPPER_BASE, &mut last_response)
-    {
-        let (_, last_error) = core_reset_step_error(error);
-        return socram_probe_report(
-            p,
-            WifiSdioSocramProbeStatus::SocramDisableFailed,
-            setup.status,
-            WifiSdioBackplaneWrite32Status::Ready,
-            address,
-            pattern,
-            0,
-            0,
-            0,
-            last_response,
-            Some(last_error),
-        );
-    }
-
-    if let Err(error) =
-        reset_core_registers(core, CYW43430_SOCSRAM_WRAPPER_BASE, &mut last_response)
-    {
-        let (_, last_error) = core_reset_step_error(error);
-        return socram_probe_report(
-            p,
-            WifiSdioSocramProbeStatus::SocramResetFailed,
-            setup.status,
-            WifiSdioBackplaneWrite32Status::Ready,
-            address,
-            pattern,
-            0,
-            0,
-            0,
-            last_response,
-            Some(last_error),
-        );
-    }
-
-    match write_backplane_u32_after_setup(core, CYW43430_SOCSRAM_BANKX_INDEX, 3, last_response) {
-        Ok(write) => {
-            last_response = write.response;
-        }
-        Err(error) => {
-            return socram_probe_report(
-                p,
-                WifiSdioSocramProbeStatus::BankIndexWriteFailed,
-                setup.status,
-                error.status,
-                address,
-                pattern,
-                0,
-                0,
-                0,
-                error.response,
-                error.last_error,
-            );
-        }
-    }
-
-    match write_backplane_u32_after_setup(core, CYW43430_SOCSRAM_BANKX_PDA, 0, last_response) {
-        Ok(write) => {
-            last_response = write.response;
-        }
-        Err(error) => {
-            return socram_probe_report(
-                p,
-                WifiSdioSocramProbeStatus::BankPdaWriteFailed,
-                setup.status,
-                error.status,
-                address,
-                pattern,
-                0,
-                0,
-                0,
-                error.response,
-                error.last_error,
-            );
-        }
-    }
-
+    let core = &p.SDHC0.core;
+    let setup_status = prepared.setup_status;
+    let mut last_response = prepared.last_response;
     let original = match read_backplane_u32_bytes(core, address) {
         Ok(read) => {
             last_response = read.response;
@@ -2222,7 +2302,7 @@ pub fn socram_probe(p: &Peripherals, address: u32, pattern: u32) -> WifiSdioSocr
             return socram_probe_report(
                 p,
                 WifiSdioSocramProbeStatus::OriginalReadFailed,
-                setup.status,
+                setup_status,
                 write_status,
                 address,
                 pattern,
@@ -2244,7 +2324,7 @@ pub fn socram_probe(p: &Peripherals, address: u32, pattern: u32) -> WifiSdioSocr
             return socram_probe_report(
                 p,
                 WifiSdioSocramProbeStatus::ProbeWriteFailed,
-                setup.status,
+                setup_status,
                 error.status,
                 address,
                 pattern,
@@ -2261,7 +2341,7 @@ pub fn socram_probe(p: &Peripherals, address: u32, pattern: u32) -> WifiSdioSocr
         return socram_probe_report(
             p,
             WifiSdioSocramProbeStatus::ProbeReadbackMismatch,
-            setup.status,
+            setup_status,
             WifiSdioBackplaneWrite32Status::Ready,
             address,
             pattern,
@@ -2282,7 +2362,7 @@ pub fn socram_probe(p: &Peripherals, address: u32, pattern: u32) -> WifiSdioSocr
             return socram_probe_report(
                 p,
                 WifiSdioSocramProbeStatus::RestoreWriteFailed,
-                setup.status,
+                setup_status,
                 error.status,
                 address,
                 pattern,
@@ -2299,7 +2379,7 @@ pub fn socram_probe(p: &Peripherals, address: u32, pattern: u32) -> WifiSdioSocr
         return socram_probe_report(
             p,
             WifiSdioSocramProbeStatus::RestoreReadbackMismatch,
-            setup.status,
+            setup_status,
             WifiSdioBackplaneWrite32Status::Ready,
             address,
             pattern,
@@ -2314,7 +2394,7 @@ pub fn socram_probe(p: &Peripherals, address: u32, pattern: u32) -> WifiSdioSocr
     socram_probe_report(
         p,
         WifiSdioSocramProbeStatus::Ready,
-        setup.status,
+        setup_status,
         WifiSdioBackplaneWrite32Status::Ready,
         address,
         pattern,
@@ -2324,6 +2404,568 @@ pub fn socram_probe(p: &Peripherals, address: u32, pattern: u32) -> WifiSdioSocr
         last_response,
         None,
     )
+}
+
+pub fn socram_block_probe(
+    p: &Peripherals,
+    address: u32,
+    seed: u32,
+) -> WifiSdioSocramBlockProbeReport {
+    if address & 0x03 != 0 || backplane_read_crosses_window(address, SDIO_CMD53_BLOCK_BYTES as u8) {
+        return socram_block_probe_report(
+            p,
+            WifiSdioSocramBlockProbeStatus::InvalidAddress,
+            WifiSdioBackplaneStatus::Ready,
+            WifiSdioBackplaneReadStatus::InvalidAddress,
+            WifiSdioBackplaneWrite32Status::InvalidAddress,
+            address,
+            seed,
+            0,
+            0,
+            0,
+            SOCSRAM_BLOCK_PROBE_NO_MISMATCH,
+            0,
+            0,
+            0,
+            None,
+        );
+    }
+
+    let prepared = match prepare_cyw43430_socram(p) {
+        Ok(prepared) => prepared,
+        Err(error) => {
+            let (status, setup_status, write_status, last_response, last_error) =
+                socram_block_probe_prepare_error(error);
+            return socram_block_probe_report(
+                p,
+                status,
+                setup_status,
+                WifiSdioBackplaneReadStatus::Ready,
+                write_status,
+                address,
+                seed,
+                0,
+                0,
+                0,
+                SOCSRAM_BLOCK_PROBE_NO_MISMATCH,
+                0,
+                0,
+                last_response,
+                last_error,
+            );
+        }
+    };
+
+    let core = &p.SDHC0.core;
+    let setup_status = prepared.setup_status;
+    let mut last_response = prepared.last_response;
+    let original = match read_backplane_block_after_setup(core, address) {
+        Ok(read) => {
+            last_response = read.response;
+            read.words
+        }
+        Err(error) => {
+            let (read_status, response, last_error) = backplane_block_read_error(error);
+            return socram_block_probe_report(
+                p,
+                WifiSdioSocramBlockProbeStatus::OriginalReadFailed,
+                setup_status,
+                read_status,
+                WifiSdioBackplaneWrite32Status::Ready,
+                address,
+                seed,
+                0,
+                0,
+                0,
+                SOCSRAM_BLOCK_PROBE_NO_MISMATCH,
+                0,
+                0,
+                response_or_last(response, last_response),
+                last_error,
+            );
+        }
+    };
+
+    let original_checksum = checksum_words(&original);
+    let probe_words = socram_block_probe_words(seed);
+    let mut read_status = WifiSdioBackplaneReadStatus::Ready;
+    let mut readback_checksum = 0;
+    let mut pending_status = WifiSdioSocramBlockProbeStatus::Ready;
+    let mut pending_last_response = 0;
+    let mut pending_last_error = None;
+    let mut mismatch_index = SOCSRAM_BLOCK_PROBE_NO_MISMATCH;
+    let mut mismatch_expected = 0;
+    let mut mismatch_actual = 0;
+
+    match write_backplane_block_after_setup(core, address, &probe_words) {
+        Ok(write) => {
+            last_response = write.response;
+        }
+        Err(error) => {
+            let (write_status, response, last_error) = backplane_block_write_error(error);
+            return socram_block_probe_report(
+                p,
+                WifiSdioSocramBlockProbeStatus::ProbeWriteFailed,
+                setup_status,
+                read_status,
+                write_status,
+                address,
+                seed,
+                original_checksum,
+                0,
+                0,
+                SOCSRAM_BLOCK_PROBE_NO_MISMATCH,
+                0,
+                0,
+                response_or_last(response, last_response),
+                last_error,
+            );
+        }
+    }
+
+    match read_backplane_block_after_setup(core, address) {
+        Ok(read) => {
+            last_response = read.response;
+            let readback = read.words;
+            readback_checksum = checksum_words(&readback);
+            let mismatch = mismatch_words(&probe_words, &readback);
+            if mismatch.0 != SOCSRAM_BLOCK_PROBE_NO_MISMATCH {
+                pending_status = WifiSdioSocramBlockProbeStatus::ProbeReadbackMismatch;
+                mismatch_index = mismatch.0;
+                mismatch_expected = mismatch.1;
+                mismatch_actual = mismatch.2;
+            }
+        }
+        Err(error) => {
+            let (status, response, last_error) = backplane_block_read_error(error);
+            read_status = status;
+            pending_status = WifiSdioSocramBlockProbeStatus::ProbeReadFailed;
+            pending_last_response = response_or_last(response, last_response);
+            pending_last_error = last_error;
+        }
+    }
+
+    match write_backplane_block_after_setup(core, address, &original) {
+        Ok(write) => {
+            last_response = write.response;
+        }
+        Err(error) => {
+            let (write_status, response, last_error) = backplane_block_write_error(error);
+            return socram_block_probe_report(
+                p,
+                WifiSdioSocramBlockProbeStatus::RestoreWriteFailed,
+                setup_status,
+                read_status,
+                write_status,
+                address,
+                seed,
+                original_checksum,
+                readback_checksum,
+                0,
+                SOCSRAM_BLOCK_PROBE_NO_MISMATCH,
+                0,
+                0,
+                response_or_last(response, last_response),
+                last_error,
+            );
+        }
+    }
+
+    let restored = match read_backplane_block_after_setup(core, address) {
+        Ok(read) => {
+            last_response = read.response;
+            read.words
+        }
+        Err(error) => {
+            let (status, response, last_error) = backplane_block_read_error(error);
+            return socram_block_probe_report(
+                p,
+                WifiSdioSocramBlockProbeStatus::RestoreReadFailed,
+                setup_status,
+                status,
+                WifiSdioBackplaneWrite32Status::Ready,
+                address,
+                seed,
+                original_checksum,
+                readback_checksum,
+                0,
+                SOCSRAM_BLOCK_PROBE_NO_MISMATCH,
+                0,
+                0,
+                response_or_last(response, last_response),
+                last_error,
+            );
+        }
+    };
+
+    let restored_checksum = checksum_words(&restored);
+    let restore_mismatch = mismatch_words(&original, &restored);
+    if restore_mismatch.0 != SOCSRAM_BLOCK_PROBE_NO_MISMATCH {
+        return socram_block_probe_report(
+            p,
+            WifiSdioSocramBlockProbeStatus::RestoreReadbackMismatch,
+            setup_status,
+            WifiSdioBackplaneReadStatus::Ready,
+            WifiSdioBackplaneWrite32Status::Ready,
+            address,
+            seed,
+            original_checksum,
+            readback_checksum,
+            restored_checksum,
+            restore_mismatch.0,
+            restore_mismatch.1,
+            restore_mismatch.2,
+            last_response,
+            None,
+        );
+    }
+
+    if !matches!(pending_status, WifiSdioSocramBlockProbeStatus::Ready) {
+        return socram_block_probe_report(
+            p,
+            pending_status,
+            setup_status,
+            read_status,
+            WifiSdioBackplaneWrite32Status::Ready,
+            address,
+            seed,
+            original_checksum,
+            readback_checksum,
+            restored_checksum,
+            mismatch_index,
+            mismatch_expected,
+            mismatch_actual,
+            response_or_last(pending_last_response, last_response),
+            pending_last_error,
+        );
+    }
+
+    socram_block_probe_report(
+        p,
+        WifiSdioSocramBlockProbeStatus::Ready,
+        setup_status,
+        WifiSdioBackplaneReadStatus::Ready,
+        WifiSdioBackplaneWrite32Status::Ready,
+        address,
+        seed,
+        original_checksum,
+        readback_checksum,
+        restored_checksum,
+        SOCSRAM_BLOCK_PROBE_NO_MISMATCH,
+        0,
+        0,
+        last_response,
+        None,
+    )
+}
+
+fn prepare_cyw43430_socram(p: &Peripherals) -> Result<SocramPrepared, SocramPrepareError> {
+    let setup = setup_backplane(p);
+    if !matches!(setup.status, WifiSdioBackplaneStatus::Ready) {
+        return Err(SocramPrepareError::Setup {
+            setup_status: setup.status,
+            last_error: setup.last_error,
+        });
+    }
+
+    let core = &p.SDHC0.core;
+    let mut last_response = request_alp_clock(core).map_err(|error| SocramPrepareError::Alp {
+        setup_status: setup.status,
+        error,
+    })?;
+
+    disable_core_registers(core, CYW43430_ARM_WRAPPER_BASE, &mut last_response).map_err(
+        |error| SocramPrepareError::ArmDisable {
+            setup_status: setup.status,
+            last_response,
+            error,
+        },
+    )?;
+    disable_core_registers(core, CYW43430_SOCSRAM_WRAPPER_BASE, &mut last_response).map_err(
+        |error| SocramPrepareError::SocramDisable {
+            setup_status: setup.status,
+            last_response,
+            error,
+        },
+    )?;
+    reset_core_registers(core, CYW43430_SOCSRAM_WRAPPER_BASE, &mut last_response).map_err(
+        |error| SocramPrepareError::SocramReset {
+            setup_status: setup.status,
+            last_response,
+            error,
+        },
+    )?;
+
+    match write_backplane_u32_after_setup(core, CYW43430_SOCSRAM_BANKX_INDEX, 3, last_response) {
+        Ok(write) => {
+            last_response = write.response;
+        }
+        Err(error) => {
+            return Err(SocramPrepareError::BankIndexWrite {
+                setup_status: setup.status,
+                error,
+            });
+        }
+    }
+
+    match write_backplane_u32_after_setup(core, CYW43430_SOCSRAM_BANKX_PDA, 0, last_response) {
+        Ok(write) => {
+            last_response = write.response;
+        }
+        Err(error) => {
+            return Err(SocramPrepareError::BankPdaWrite {
+                setup_status: setup.status,
+                error,
+            });
+        }
+    }
+
+    Ok(SocramPrepared {
+        setup_status: setup.status,
+        last_response,
+    })
+}
+
+fn socram_probe_prepare_error(
+    error: SocramPrepareError,
+) -> (
+    WifiSdioSocramProbeStatus,
+    WifiSdioBackplaneStatus,
+    WifiSdioBackplaneWrite32Status,
+    u32,
+    Option<CommandError>,
+) {
+    match error {
+        SocramPrepareError::Setup {
+            setup_status,
+            last_error,
+        } => (
+            WifiSdioSocramProbeStatus::SetupFailed,
+            setup_status,
+            WifiSdioBackplaneWrite32Status::Ready,
+            0,
+            last_error,
+        ),
+        SocramPrepareError::Alp {
+            setup_status,
+            error,
+        } => {
+            let (status, response, last_error) = socram_probe_alp_error(error);
+            (
+                status,
+                setup_status,
+                WifiSdioBackplaneWrite32Status::Ready,
+                response,
+                last_error,
+            )
+        }
+        SocramPrepareError::ArmDisable {
+            setup_status,
+            last_response,
+            error,
+        } => {
+            let (_, last_error) = core_reset_step_error(error);
+            (
+                WifiSdioSocramProbeStatus::ArmDisableFailed,
+                setup_status,
+                WifiSdioBackplaneWrite32Status::Ready,
+                last_response,
+                Some(last_error),
+            )
+        }
+        SocramPrepareError::SocramDisable {
+            setup_status,
+            last_response,
+            error,
+        } => {
+            let (_, last_error) = core_reset_step_error(error);
+            (
+                WifiSdioSocramProbeStatus::SocramDisableFailed,
+                setup_status,
+                WifiSdioBackplaneWrite32Status::Ready,
+                last_response,
+                Some(last_error),
+            )
+        }
+        SocramPrepareError::SocramReset {
+            setup_status,
+            last_response,
+            error,
+        } => {
+            let (_, last_error) = core_reset_step_error(error);
+            (
+                WifiSdioSocramProbeStatus::SocramResetFailed,
+                setup_status,
+                WifiSdioBackplaneWrite32Status::Ready,
+                last_response,
+                Some(last_error),
+            )
+        }
+        SocramPrepareError::BankIndexWrite {
+            setup_status,
+            error,
+        } => (
+            WifiSdioSocramProbeStatus::BankIndexWriteFailed,
+            setup_status,
+            error.status,
+            error.response,
+            error.last_error,
+        ),
+        SocramPrepareError::BankPdaWrite {
+            setup_status,
+            error,
+        } => (
+            WifiSdioSocramProbeStatus::BankPdaWriteFailed,
+            setup_status,
+            error.status,
+            error.response,
+            error.last_error,
+        ),
+    }
+}
+
+fn socram_block_probe_prepare_error(
+    error: SocramPrepareError,
+) -> (
+    WifiSdioSocramBlockProbeStatus,
+    WifiSdioBackplaneStatus,
+    WifiSdioBackplaneWrite32Status,
+    u32,
+    Option<CommandError>,
+) {
+    match error {
+        SocramPrepareError::Setup {
+            setup_status,
+            last_error,
+        } => (
+            WifiSdioSocramBlockProbeStatus::SetupFailed,
+            setup_status,
+            WifiSdioBackplaneWrite32Status::Ready,
+            0,
+            last_error,
+        ),
+        SocramPrepareError::Alp {
+            setup_status,
+            error,
+        } => {
+            let (status, response, last_error) = socram_block_probe_alp_error(error);
+            (
+                status,
+                setup_status,
+                WifiSdioBackplaneWrite32Status::Ready,
+                response,
+                last_error,
+            )
+        }
+        SocramPrepareError::ArmDisable {
+            setup_status,
+            last_response,
+            error,
+        } => {
+            let (_, last_error) = core_reset_step_error(error);
+            (
+                WifiSdioSocramBlockProbeStatus::ArmDisableFailed,
+                setup_status,
+                WifiSdioBackplaneWrite32Status::Ready,
+                last_response,
+                Some(last_error),
+            )
+        }
+        SocramPrepareError::SocramDisable {
+            setup_status,
+            last_response,
+            error,
+        } => {
+            let (_, last_error) = core_reset_step_error(error);
+            (
+                WifiSdioSocramBlockProbeStatus::SocramDisableFailed,
+                setup_status,
+                WifiSdioBackplaneWrite32Status::Ready,
+                last_response,
+                Some(last_error),
+            )
+        }
+        SocramPrepareError::SocramReset {
+            setup_status,
+            last_response,
+            error,
+        } => {
+            let (_, last_error) = core_reset_step_error(error);
+            (
+                WifiSdioSocramBlockProbeStatus::SocramResetFailed,
+                setup_status,
+                WifiSdioBackplaneWrite32Status::Ready,
+                last_response,
+                Some(last_error),
+            )
+        }
+        SocramPrepareError::BankIndexWrite {
+            setup_status,
+            error,
+        } => (
+            WifiSdioSocramBlockProbeStatus::BankIndexWriteFailed,
+            setup_status,
+            error.status,
+            error.response,
+            error.last_error,
+        ),
+        SocramPrepareError::BankPdaWrite {
+            setup_status,
+            error,
+        } => (
+            WifiSdioSocramBlockProbeStatus::BankPdaWriteFailed,
+            setup_status,
+            error.status,
+            error.response,
+            error.last_error,
+        ),
+    }
+}
+
+fn socram_block_probe_words(seed: u32) -> [u32; SDIO_CMD53_BLOCK_WORDS] {
+    let mut words = [0u32; SDIO_CMD53_BLOCK_WORDS];
+    let mut state = seed ^ 0x9e37_79b9;
+    for word in words.iter_mut() {
+        state = state.wrapping_add(0x9e37_79b9);
+        let mut mixed = state;
+        mixed ^= mixed >> 16;
+        mixed = mixed.wrapping_mul(0x7feb_352d);
+        mixed ^= mixed >> 15;
+        mixed = mixed.wrapping_mul(0x846c_a68b);
+        mixed ^= mixed >> 16;
+        *word = mixed;
+    }
+    words
+}
+
+fn checksum_words(words: &[u32; SDIO_CMD53_BLOCK_WORDS]) -> u32 {
+    let mut checksum = 0x811c_9dc5;
+    for word in words.iter() {
+        checksum ^= *word;
+        checksum = checksum.wrapping_mul(0x0100_0193);
+    }
+    checksum
+}
+
+fn mismatch_words(
+    expected: &[u32; SDIO_CMD53_BLOCK_WORDS],
+    actual: &[u32; SDIO_CMD53_BLOCK_WORDS],
+) -> (u32, u32, u32) {
+    for index in 0..SDIO_CMD53_BLOCK_WORDS {
+        if expected[index] != actual[index] {
+            return (index as u32, expected[index], actual[index]);
+        }
+    }
+
+    (SOCSRAM_BLOCK_PROBE_NO_MISMATCH, 0, 0)
+}
+
+fn response_or_last(response: u32, last_response: u32) -> u32 {
+    if response == 0 {
+        last_response
+    } else {
+        response
+    }
 }
 
 pub fn core_state(p: &Peripherals, base: u32) -> WifiSdioCoreStateReport {
@@ -2597,23 +3239,20 @@ pub fn cmd53_read(
     }
 
     let core = &p.SDHC0.core;
-    let alp_response = match request_alp_clock(core) {
-        Ok(response) => response,
-        Err(error) => {
-            let (status, response, last_error) = cmd53_read_alp_error(error);
-            return cmd53_read_report(
-                p,
-                status,
-                setup.status,
-                function,
-                address,
-                count,
-                response,
-                [0; SDIO_CMD53_PREVIEW_BYTES],
-                last_error,
-            );
-        }
-    };
+    if let Err(error) = request_alp_clock(core) {
+        let (status, response, last_error) = cmd53_read_alp_error(error);
+        return cmd53_read_report(
+            p,
+            status,
+            setup.status,
+            function,
+            address,
+            count,
+            response,
+            [0; SDIO_CMD53_PREVIEW_BYTES],
+            last_error,
+        );
+    }
 
     let block_mode = count as u16 == SDIO_CMD53_BLOCK_BYTES;
     if !configure_cmd53_read(core, count, block_mode) {
@@ -2983,6 +3622,31 @@ fn socram_probe_alp_error(
     }
 }
 
+fn socram_block_probe_alp_error(
+    error: AlpError,
+) -> (WifiSdioSocramBlockProbeStatus, u32, Option<CommandError>) {
+    match error {
+        AlpError::Write(error) => (
+            WifiSdioSocramBlockProbeStatus::AlpWriteFailed,
+            0,
+            Some(error),
+        ),
+        AlpError::Read { response, error } => (
+            WifiSdioSocramBlockProbeStatus::AlpReadFailed,
+            response,
+            Some(error),
+        ),
+        AlpError::Timeout { response } => {
+            (WifiSdioSocramBlockProbeStatus::AlpTimeout, response, None)
+        }
+        AlpError::Clear { response, error } => (
+            WifiSdioSocramBlockProbeStatus::AlpClearFailed,
+            response,
+            Some(error),
+        ),
+    }
+}
+
 fn core_state_alp_error(error: AlpError) -> (WifiSdioCoreStateStatus, u32, Option<CommandError>) {
     match error {
         AlpError::Write(error) => (WifiSdioCoreStateStatus::AlpWriteFailed, 0, Some(error)),
@@ -3201,6 +3865,50 @@ fn backplane_write32_byte_readback_error(
             WifiSdioBackplaneWrite32Status::ReadbackCmd52Failed,
             Some(error),
         ),
+    }
+}
+
+fn backplane_block_read_error(
+    error: BackplaneBlockReadError,
+) -> (WifiSdioBackplaneReadStatus, u32, Option<CommandError>) {
+    match error {
+        BackplaneBlockReadError::InvalidAddress => {
+            (WifiSdioBackplaneReadStatus::InvalidAddress, 0, None)
+        }
+        BackplaneBlockReadError::Window(error) => {
+            let (status, error) = backplane_window_error(error);
+            (status, 0, Some(error))
+        }
+        BackplaneBlockReadError::DataSetupBusy => {
+            (WifiSdioBackplaneReadStatus::DataSetupBusy, 0, None)
+        }
+        BackplaneBlockReadError::Cmd53(error) => {
+            (WifiSdioBackplaneReadStatus::Cmd53Failed, 0, Some(error))
+        }
+        BackplaneBlockReadError::Data { response, status } => {
+            (backplane_read_data_status(status), response, None)
+        }
+    }
+}
+
+fn backplane_block_write_error(
+    error: BackplaneBlockWriteError,
+) -> (WifiSdioBackplaneWrite32Status, u32, Option<CommandError>) {
+    match error {
+        BackplaneBlockWriteError::InvalidAddress => {
+            (WifiSdioBackplaneWrite32Status::InvalidAddress, 0, None)
+        }
+        BackplaneBlockWriteError::Window(error) => {
+            let (status, error) = backplane_write32_window_error(error);
+            (status, 0, Some(error))
+        }
+        BackplaneBlockWriteError::DataSetupBusy => {
+            (WifiSdioBackplaneWrite32Status::DataSetupBusy, 0, None)
+        }
+        BackplaneBlockWriteError::Cmd53(error) => {
+            (WifiSdioBackplaneWrite32Status::Cmd53Failed, 0, Some(error))
+        }
+        BackplaneBlockWriteError::Data { response, status } => (status, response, None),
     }
 }
 
@@ -3459,6 +4167,25 @@ fn prepare_cmd53_write_word(value: u32, byte_count: u16) -> u32 {
     }
 }
 
+fn prepare_cmd53_write_words(words: &[u32; SDIO_CMD53_BLOCK_WORDS], byte_count: u16) -> u32 {
+    let descriptor =
+        ADMA_ATTR_VALID | ADMA_ATTR_END | ADMA_ACT_TRAN | ((byte_count as u32) << ADMA_LEN_SHIFT);
+
+    unsafe {
+        let buffer = core::ptr::addr_of_mut!(CMD53_WRITE_BLOCK_WORDS) as *mut u32;
+        for (index, word) in words.iter().enumerate() {
+            core::ptr::write_volatile(buffer.add(index), *word);
+        }
+
+        let descriptor_table = core::ptr::addr_of_mut!(CMD53_WRITE_ADMA_DESCRIPTOR) as *mut u32;
+        core::ptr::write_volatile(descriptor_table, descriptor);
+        core::ptr::write_volatile(descriptor_table.add(1), buffer as u32);
+        cortex_m::asm::dsb();
+
+        descriptor_table as u32
+    }
+}
+
 fn wait_command_and_data_lines_free(core: &sdhc0::CORE) -> bool {
     const BUSY_MASK: u32 = PSTATE_CMD_INHIBIT | PSTATE_CMD_INHIBIT_DAT | PSTATE_DAT_LINE_ACTIVE;
 
@@ -3506,6 +4233,32 @@ fn read_cmd53_bytes(
     }
 
     Ok(bytes)
+}
+
+fn read_cmd53_words(
+    core: &sdhc0::CORE,
+) -> Result<[u32; SDIO_CMD53_BLOCK_WORDS], WifiSdioCmd53ReadStatus> {
+    if !wait_buffer_read_ready(core) {
+        let _ = software_reset_data_line(core);
+        return Err(WifiSdioCmd53ReadStatus::BufferReadTimeout);
+    }
+
+    let mut words = [0u32; SDIO_CMD53_BLOCK_WORDS];
+    for word in words.iter_mut() {
+        if !wait_buffer_read_enable(core) {
+            let _ = software_reset_data_line(core);
+            return Err(WifiSdioCmd53ReadStatus::BufferEnableTimeout);
+        }
+
+        *word = core.buf_data_r.read().bits();
+    }
+
+    if !wait_transfer_complete(core) {
+        let _ = software_reset_data_line(core);
+        return Err(WifiSdioCmd53ReadStatus::TransferTimeout);
+    }
+
+    Ok(words)
 }
 
 fn wait_cmd53_adma_write_complete(
@@ -3760,6 +4513,42 @@ fn socram_probe_report(
     }
 }
 
+fn socram_block_probe_report(
+    p: &Peripherals,
+    status: WifiSdioSocramBlockProbeStatus,
+    setup_status: WifiSdioBackplaneStatus,
+    read_status: WifiSdioBackplaneReadStatus,
+    write_status: WifiSdioBackplaneWrite32Status,
+    address: u32,
+    seed: u32,
+    original_checksum: u32,
+    readback_checksum: u32,
+    restored_checksum: u32,
+    mismatch_index: u32,
+    mismatch_expected: u32,
+    mismatch_actual: u32,
+    last_response: u32,
+    last_error: Option<CommandError>,
+) -> WifiSdioSocramBlockProbeReport {
+    WifiSdioSocramBlockProbeReport {
+        status,
+        setup_status,
+        read_status,
+        write_status,
+        address,
+        seed,
+        original_checksum,
+        readback_checksum,
+        restored_checksum,
+        mismatch_index,
+        mismatch_expected,
+        mismatch_actual,
+        last_response,
+        last_error,
+        host: host_snapshot(p),
+    }
+}
+
 fn core_state_report(
     p: &Peripherals,
     status: WifiSdioCoreStateStatus,
@@ -3917,7 +4706,6 @@ fn report(
     rca: u16,
     last_error: Option<CommandError>,
 ) -> WifiSdioReport {
-    let core = &p.SDHC0.core;
     WifiSdioReport {
         status,
         cmd5_response,
