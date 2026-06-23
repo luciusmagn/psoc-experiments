@@ -87,6 +87,7 @@ pub trait Board {
     fn wifi_load_firmware(&mut self) -> WifiSdioFirmwareLoadReport;
     fn wifi_start_firmware(&mut self) -> WifiSdioFirmwareStartReport;
     fn wifi_f2_read_header(&mut self) -> WifiSdioF2HeaderReport;
+    fn wifi_f2_read_frame(&mut self) -> WifiSdioF2FrameReport;
     fn wifi_core_state(&mut self, base: u32) -> WifiSdioCoreStateReport;
     fn wifi_reset_core(&mut self, base: u32) -> WifiSdioCoreResetReport;
     fn sdhc_registers(&mut self) -> SdhcReport;
@@ -551,6 +552,32 @@ pub struct WifiSdioF2HeaderReport {
 }
 
 #[derive(Clone, Copy)]
+pub struct WifiSdioF2FrameReport {
+    pub status: &'static [u8],
+    pub header_status: &'static [u8],
+    pub body_status: &'static [u8],
+    pub header_response: u32,
+    pub body_response: u32,
+    pub bytes: [u8; 16],
+    pub byte_count: u8,
+    pub length: u16,
+    pub checksum: u16,
+    pub valid: bool,
+    pub sequence: u8,
+    pub channel_and_flags: u8,
+    pub channel: u8,
+    pub flags: u8,
+    pub next_length: u8,
+    pub header_length: u8,
+    pub wireless_flow_control: u8,
+    pub bus_data_credit: u8,
+    pub reserved0: u8,
+    pub reserved1: u8,
+    pub last_error: Option<WifiSdioCommandErrorReport>,
+    pub host: WifiSdioHostReport,
+}
+
+#[derive(Clone, Copy)]
 pub struct WifiSdioCoreStateReport {
     pub status: &'static [u8],
     pub setup_status: &'static [u8],
@@ -672,6 +699,7 @@ pub enum Primitive {
     WifiLoadFirmware,
     WifiStartFirmware,
     WifiF2ReadHeader,
+    WifiF2ReadFrame,
     WifiCoreState,
     WifiResetCore,
     SdhcRegs,
@@ -742,6 +770,7 @@ impl Primitive {
             Self::WifiLoadFirmware => "wifi-load-firmware",
             Self::WifiStartFirmware => "wifi-start-firmware",
             Self::WifiF2ReadHeader => "wifi-f2-read-header",
+            Self::WifiF2ReadFrame => "wifi-f2-read-frame",
             Self::WifiCoreState => "wifi-core-state",
             Self::WifiResetCore => "wifi-reset-core",
             Self::SdhcRegs => "sdhc-regs",
@@ -967,6 +996,7 @@ impl Machine {
         self.install_primitive(b"wifi-load-firmware", Primitive::WifiLoadFirmware)?;
         self.install_primitive(b"wifi-start-firmware", Primitive::WifiStartFirmware)?;
         self.install_primitive(b"wifi-f2-read-header", Primitive::WifiF2ReadHeader)?;
+        self.install_primitive(b"wifi-f2-read-frame", Primitive::WifiF2ReadFrame)?;
         self.install_primitive(b"wifi-core-state", Primitive::WifiCoreState)?;
         self.install_primitive(b"wifi-reset-core", Primitive::WifiResetCore)?;
         self.install_primitive(b"sdhc-regs", Primitive::SdhcRegs)?;
@@ -1734,6 +1764,10 @@ impl Machine {
                 self.expect_count(args, 0)?;
                 self.wifi_sdio_f2_header_report(board.wifi_f2_read_header())
             }
+            Primitive::WifiF2ReadFrame => {
+                self.expect_count(args, 0)?;
+                self.wifi_sdio_f2_frame_report(board.wifi_f2_read_frame())
+            }
             Primitive::WifiCoreState => {
                 self.expect_count(args, 1)?;
                 let base = self.expect_u32(args[0])?;
@@ -2113,6 +2147,7 @@ impl Machine {
             b"wifi-load-firmware",
             b"wifi-start-firmware",
             b"wifi-f2-read-header",
+            b"wifi-f2-read-frame",
             b"wifi-core-state",
             b"wifi-reset-core",
             b"sdhc-regs",
@@ -2857,6 +2892,61 @@ impl Machine {
         let host = self.entry(b"SDHC0", host)?;
         let entries = [
             status, response, length, checksum, valid, byte0, byte1, byte2, byte3, last_error, host,
+        ];
+        self.make_list_from_values(&entries)
+    }
+
+    fn wifi_sdio_f2_frame_report(&mut self, report: WifiSdioF2FrameReport) -> LispResult<Value> {
+        let status = self.symbol_entry(b"status", report.status)?;
+        let header_status = self.symbol_entry(b"header-status", report.header_status)?;
+        let body_status = self.symbol_entry(b"body-status", report.body_status)?;
+        let length = self.word_entry(b"length", report.length as u32)?;
+        let checksum = self.word_entry(b"checksum", report.checksum as u32)?;
+        let valid = self.bool_entry(b"valid", report.valid)?;
+        let byte_count = self.word_entry(b"byte-count", report.byte_count as u32)?;
+        let bytes = self.wifi_byte_list_entry(b"bytes", &report.bytes, report.byte_count)?;
+        let sequence = self.word_entry(b"sequence", report.sequence as u32)?;
+        let channel_and_flags =
+            self.word_entry(b"channel-and-flags", report.channel_and_flags as u32)?;
+        let channel = self.word_entry(b"channel", report.channel as u32)?;
+        let flags = self.word_entry(b"flags", report.flags as u32)?;
+        let next_length = self.word_entry(b"next-length", report.next_length as u32)?;
+        let header_length = self.word_entry(b"header-length", report.header_length as u32)?;
+        let wireless_flow_control = self.word_entry(
+            b"wireless-flow-control",
+            report.wireless_flow_control as u32,
+        )?;
+        let bus_data_credit = self.word_entry(b"bus-data-credit", report.bus_data_credit as u32)?;
+        let reserved0 = self.word_entry(b"reserved0", report.reserved0 as u32)?;
+        let reserved1 = self.word_entry(b"reserved1", report.reserved1 as u32)?;
+        let header_response = self.word_entry(b"header-response", report.header_response)?;
+        let body_response = self.word_entry(b"body-response", report.body_response)?;
+        let last_error = self.wifi_sdio_error_entry(b"last-error", report.last_error)?;
+        let host = self.wifi_sdio_host_report(report.host)?;
+        let host = self.entry(b"SDHC0", host)?;
+        let entries = [
+            status,
+            header_status,
+            body_status,
+            length,
+            checksum,
+            valid,
+            byte_count,
+            bytes,
+            sequence,
+            channel_and_flags,
+            channel,
+            flags,
+            next_length,
+            header_length,
+            wireless_flow_control,
+            bus_data_credit,
+            reserved0,
+            reserved1,
+            header_response,
+            body_response,
+            last_error,
+            host,
         ];
         self.make_list_from_values(&entries)
     }

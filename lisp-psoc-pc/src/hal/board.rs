@@ -411,6 +411,10 @@ impl lisp::Board for PsocBoard<'_> {
         wifi_sdio_f2_header_report(wifi_sdio::f2_read_header(self.p))
     }
 
+    fn wifi_f2_read_frame(&mut self) -> lisp::WifiSdioF2FrameReport {
+        wifi_sdio_f2_frame_report(wifi_sdio::f2_read_frame(self.p))
+    }
+
     fn wifi_core_state(&mut self, base: u32) -> lisp::WifiSdioCoreStateReport {
         wifi_sdio_core_state_report(wifi_sdio::core_state(self.p, base))
     }
@@ -826,6 +830,18 @@ fn wifi_sdio_firmware_start_status(
     }
 }
 
+fn wifi_sdio_f2_frame_status(status: wifi_sdio::WifiSdioF2FrameStatus) -> &'static [u8] {
+    match status {
+        wifi_sdio::WifiSdioF2FrameStatus::Ready => b"ready",
+        wifi_sdio::WifiSdioF2FrameStatus::HeaderReadFailed => b"header-read-failed",
+        wifi_sdio::WifiSdioF2FrameStatus::InvalidHeader => b"invalid-header",
+        wifi_sdio::WifiSdioF2FrameStatus::FrameTooShort => b"frame-too-short",
+        wifi_sdio::WifiSdioF2FrameStatus::FrameTooLarge => b"frame-too-large",
+        wifi_sdio::WifiSdioF2FrameStatus::UnsupportedLength => b"unsupported-length",
+        wifi_sdio::WifiSdioF2FrameStatus::BodyReadFailed => b"body-read-failed",
+    }
+}
+
 fn wifi_sdio_core_state_status(status: wifi_sdio::WifiSdioCoreStateStatus) -> &'static [u8] {
     match status {
         wifi_sdio::WifiSdioCoreStateStatus::Ready => b"ready",
@@ -1123,6 +1139,35 @@ fn wifi_sdio_f2_header_report(
         length: report.length,
         checksum: report.checksum,
         valid: report.valid,
+        last_error: report.last_error.map(wifi_sdio_command_error_report),
+        host: wifi_sdio_host_report(report.host),
+    }
+}
+
+fn wifi_sdio_f2_frame_report(
+    report: wifi_sdio::WifiSdioF2FrameReport,
+) -> lisp::WifiSdioF2FrameReport {
+    lisp::WifiSdioF2FrameReport {
+        status: wifi_sdio_f2_frame_status(report.status),
+        header_status: wifi_sdio_cmd53_read_status(report.header_status),
+        body_status: wifi_sdio_cmd53_read_status(report.body_status),
+        header_response: report.header_response,
+        body_response: report.body_response,
+        bytes: report.bytes,
+        byte_count: report.byte_count,
+        length: report.length,
+        checksum: report.checksum,
+        valid: report.valid,
+        sequence: report.sequence,
+        channel_and_flags: report.channel_and_flags,
+        channel: report.channel,
+        flags: report.flags,
+        next_length: report.next_length,
+        header_length: report.header_length,
+        wireless_flow_control: report.wireless_flow_control,
+        bus_data_credit: report.bus_data_credit,
+        reserved0: report.reserved0,
+        reserved1: report.reserved1,
         last_error: report.last_error.map(wifi_sdio_command_error_report),
         host: wifi_sdio_host_report(report.host),
     }

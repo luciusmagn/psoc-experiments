@@ -1903,13 +1903,71 @@ frame. The next Wi-Fi milestone is reading all =#x000c= bytes of that initial
 frame, parsing the SDPCM header/control fields, and acknowledging the interrupt
 without resetting or reinitializing the chip.
 
+* 2026-06-23 Wi-Fi F2 startup frame read
+
+Added =(wifi-f2-read-frame)= as a stateful SDPCM startup-frame diagnostic after
+=(wifi-start-firmware)=. It follows WHD's conservative receive sequence for the
+initial frame: read the four-byte function-2 hardware tag from address zero,
+validate the length/checksum pair, then read the remaining bytes from function
+2 address zero without resetting or reinitializing the SDIO chip state.
+
+The diagnostic is intentionally bounded to the existing 16-byte CMD53 preview
+buffer and aligned transfer path. That covers the observed startup frame and
+keeps general packet allocation as a separate milestone.
+
+Live validation after flashing the blob-enabled image:
+
+#+begin_example
+(wifi-start-firmware)
+=> ((status . ready) ... (IORDY . #x00000006)
+    (F2-attempts . #x0000001f)
+    (SDHC0 ... (NORM_INT . #x00000100)
+               (ERR_INT . #x00000000) ...))
+
+(wifi-f2-read-frame)
+=> ((status . ready)
+    (header-status . ready)
+    (body-status . ready)
+    (length . #x0000000c)
+    (checksum . #x0000fff3)
+    (valid . #t)
+    (byte-count . #x0000000c)
+    (bytes #x0000000c #x00000000 #x000000f3 #x000000ff
+           #x00000000 #x00000001 #x00000000 #x0000000c
+           #x00000000 #x00000010 #x00000000 #x00000000)
+    (sequence . #x00000000)
+    (channel-and-flags . #x00000001)
+    (channel . #x00000001)
+    (flags . #x00000000)
+    (next-length . #x00000000)
+    (header-length . #x0000000c)
+    (wireless-flow-control . #x00000000)
+    (bus-data-credit . #x00000010)
+    (header-response . #x00001000)
+    (body-response . #x00001000)
+    (last-error)
+    (SDHC0 ... (BLOCKSIZE . #x00000008)
+               (NORM_INT . #x00000100)
+               (ERR_INT . #x00000000)
+               (ARGUMENT . #x24000008)
+               (RESP01 . #x00001000) ...))
+#+end_example
+
+This initial frame is a 12-byte SDPCM header-only control/update packet. Its
+software header reports sequence =#x00=, channel =#x01=, header length =#x0c=,
+no wireless flow-control, and bus data credit =#x10=. WHD treats this shape as
+a credit/flow-control update with no payload. The next Wi-Fi milestone is
+interrupt acknowledgement and then the first host-to-device SDPCM control
+message.
+
 * Next actions
 
 1. Add REPL history and better editing across continuation lines.
 2. Add a FAT/exFAT-aware storage layer after raw block reads/writes work.
 3. Test the newer Infineon target =infineon/cy8cxxa.cfg= as a replacement
    for obsolete =target/psoc6_2m.cfg=.
-4. Add full SDPCM/F2 frame read and interrupt acknowledgement diagnostics now
-   that the initial function-2 hardware tag is valid.
-5. Start Wi-Fi from a known-good Infineon or Zephyr sample before trying
+4. Add SDPCM interrupt acknowledgement now that the initial startup frame can
+   be consumed and decoded.
+5. Send the first host-to-device SDPCM control message after the credit update.
+6. Start Wi-Fi from a known-good Infineon or Zephyr sample before trying
    to hand-port the full CYW4343W network stack.
