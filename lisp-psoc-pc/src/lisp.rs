@@ -69,6 +69,7 @@ pub trait Board {
     fn wifi_backplane_read(&mut self, address: u32, count: u8) -> WifiSdioBackplaneReadReport;
     fn wifi_backplane_write8(&mut self, address: u32, value: u8) -> WifiSdioBackplaneWrite8Report;
     fn wifi_core_state(&mut self, base: u32) -> WifiSdioCoreStateReport;
+    fn wifi_reset_core(&mut self, base: u32) -> WifiSdioCoreResetReport;
     fn sdhc_registers(&mut self) -> SdhcReport;
     fn reboot(&mut self) -> !;
 }
@@ -429,6 +430,30 @@ pub struct WifiSdioCoreStateReport {
     pub host: WifiSdioHostReport,
 }
 
+#[derive(Clone, Copy)]
+pub struct WifiSdioCoreSnapshotReport {
+    pub ioctrl: u8,
+    pub resetctrl: u8,
+    pub resetstatus: u8,
+    pub clock_enabled: bool,
+    pub force_gated: bool,
+    pub in_reset: bool,
+    pub reset_busy: bool,
+    pub core_up: bool,
+}
+
+#[derive(Clone, Copy)]
+pub struct WifiSdioCoreResetReport {
+    pub status: &'static [u8],
+    pub setup_status: &'static [u8],
+    pub base: u32,
+    pub before: WifiSdioCoreSnapshotReport,
+    pub after: WifiSdioCoreSnapshotReport,
+    pub last_response: u32,
+    pub last_error: Option<WifiSdioCommandErrorReport>,
+    pub host: WifiSdioHostReport,
+}
+
 type LispResult<T> = Result<T, Error>;
 
 #[derive(Clone, Copy)]
@@ -503,6 +528,7 @@ pub enum Primitive {
     WifiBackplaneRead,
     WifiBackplaneWrite8,
     WifiCoreState,
+    WifiResetCore,
     SdhcRegs,
     Heap,
     Gc,
@@ -565,6 +591,7 @@ impl Primitive {
             Self::WifiBackplaneRead => "wifi-backplane-read",
             Self::WifiBackplaneWrite8 => "wifi-backplane-write8",
             Self::WifiCoreState => "wifi-core-state",
+            Self::WifiResetCore => "wifi-reset-core",
             Self::SdhcRegs => "sdhc-regs",
             Self::Heap => "heap",
             Self::Gc => "gc",
@@ -779,6 +806,7 @@ impl Machine {
         self.install_primitive(b"wifi-backplane-read", Primitive::WifiBackplaneRead)?;
         self.install_primitive(b"wifi-backplane-write8", Primitive::WifiBackplaneWrite8)?;
         self.install_primitive(b"wifi-core-state", Primitive::WifiCoreState)?;
+        self.install_primitive(b"wifi-reset-core", Primitive::WifiResetCore)?;
         self.install_primitive(b"sdhc-regs", Primitive::SdhcRegs)?;
         self.install_primitive(b"heap", Primitive::Heap)?;
         self.install_primitive(b"gc", Primitive::Gc)?;
@@ -1507,6 +1535,11 @@ impl Machine {
                 let base = self.expect_u32(args[0])?;
                 self.wifi_sdio_core_state_report(board.wifi_core_state(base))
             }
+            Primitive::WifiResetCore => {
+                self.expect_count(args, 1)?;
+                let base = self.expect_u32(args[0])?;
+                self.wifi_sdio_core_reset_report(board.wifi_reset_core(base))
+            }
             Primitive::SdhcRegs => {
                 self.expect_count(args, 0)?;
                 self.sdhc_report(board.sdhc_registers())
@@ -1870,6 +1903,7 @@ impl Machine {
             b"wifi-backplane-read",
             b"wifi-backplane-write8",
             b"wifi-core-state",
+            b"wifi-reset-core",
             b"sdhc-regs",
             b"heap",
             b"gc",
@@ -2420,6 +2454,59 @@ impl Machine {
             in_reset,
             reset_busy,
             core_up,
+            last_response,
+            last_error,
+            host,
+        ];
+        self.make_list_from_values(&entries)
+    }
+
+    fn wifi_sdio_core_snapshot_report(
+        &mut self,
+        report: WifiSdioCoreSnapshotReport,
+    ) -> LispResult<Value> {
+        let ioctrl = self.word_entry(b"IOCTRL", report.ioctrl as u32)?;
+        let resetctrl = self.word_entry(b"RESETCTRL", report.resetctrl as u32)?;
+        let resetstatus = self.word_entry(b"RESETSTATUS", report.resetstatus as u32)?;
+        let clock_enabled = self.bool_entry(b"clock-enabled", report.clock_enabled)?;
+        let force_gated = self.bool_entry(b"force-gated", report.force_gated)?;
+        let in_reset = self.bool_entry(b"in-reset", report.in_reset)?;
+        let reset_busy = self.bool_entry(b"reset-busy", report.reset_busy)?;
+        let core_up = self.bool_entry(b"core-up", report.core_up)?;
+        let entries = [
+            ioctrl,
+            resetctrl,
+            resetstatus,
+            clock_enabled,
+            force_gated,
+            in_reset,
+            reset_busy,
+            core_up,
+        ];
+        self.make_list_from_values(&entries)
+    }
+
+    fn wifi_sdio_core_reset_report(
+        &mut self,
+        report: WifiSdioCoreResetReport,
+    ) -> LispResult<Value> {
+        let status = self.symbol_entry(b"status", report.status)?;
+        let setup_status = self.symbol_entry(b"setup-status", report.setup_status)?;
+        let base = self.word_entry(b"base", report.base)?;
+        let before = self.wifi_sdio_core_snapshot_report(report.before)?;
+        let before = self.entry(b"before", before)?;
+        let after = self.wifi_sdio_core_snapshot_report(report.after)?;
+        let after = self.entry(b"after", after)?;
+        let last_response = self.word_entry(b"last-response", report.last_response)?;
+        let last_error = self.wifi_sdio_error_entry(b"last-error", report.last_error)?;
+        let host = self.wifi_sdio_host_report(report.host)?;
+        let host = self.entry(b"SDHC0", host)?;
+        let entries = [
+            status,
+            setup_status,
+            base,
+            before,
+            after,
             last_response,
             last_error,
             host,

@@ -1415,6 +1415,35 @@ wrapper base is =#x18104000=. Both currently come up held in reset after
 our SDIO setup, which matches the state expected before the firmware
 download sequence starts manipulating cores.
 
+* 2026-06-23 Wi-Fi core reset primitive
+
+Added =(wifi-reset-core base)= as a single HAL-level operation. It runs
+the SDIO backplane setup once, requests ALP once, captures the wrapper
+state, performs WHD's no-CPU-halt disable/reset-device-core sequence, and
+returns both =before= and =after= register snapshots.
+
+The first live validation used the 43430 SOCSRAM wrapper at =#x18104000=:
+
+#+begin_example
+(wifi-core-state #x18104000)
+=> ((status . ready) ... (IOCTRL . #x00000000)
+    (RESETCTRL . #x00000001) (RESETSTATUS . #x00000000)
+    (core-up . #f) ...)
+
+(wifi-reset-core #x18104000)
+=> ((status . ready) (setup-status . ready) (base . #x18104000)
+    (before (IOCTRL . #x00000000) (RESETCTRL . #x00000001)
+            (RESETSTATUS . #x00000000) (core-up . #f))
+    (after (IOCTRL . #x00000001) (RESETCTRL . #x00000000)
+           (RESETSTATUS . #x00000000) (core-up . #t))
+    (last-response . #x00001000) (last-error) ...)
+#+end_example
+
+This confirms that one-byte backplane writes are sufficient for the AI
+wrapper reset path. Multi-step Wi-Fi operations should continue to be
+single HAL calls because the existing public diagnostic forms power-cycle
+and reinitialize Wi-Fi during setup.
+
 * Next actions
 
 1. Add REPL history and better editing across continuation lines.

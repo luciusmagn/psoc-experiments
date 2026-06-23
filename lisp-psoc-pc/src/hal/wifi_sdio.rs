@@ -84,6 +84,10 @@ const AI_RESETSTATUS_OFFSET: u32 = 0x804;
 const SICF_CLOCK_EN: u8 = 0x01;
 const SICF_FGC: u8 = 0x02;
 const AIRC_RESET: u8 = 0x01;
+const CORE_CONTROL_NONE: u8 = 0;
+const CORE_CONTROL_RESET: u8 = AIRC_RESET;
+const CORE_CONTROL_CLOCKED: u8 = SICF_CLOCK_EN;
+const CORE_CONTROL_FORCE_CLOCKED: u8 = SICF_FGC | SICF_CLOCK_EN;
 const XFER_MODE_BLOCK_COUNT_ENABLE: u16 = 1 << 1;
 const XFER_MODE_READ: u16 = 1 << 4;
 
@@ -234,6 +238,33 @@ pub enum WifiSdioCoreStateStatus {
 }
 
 #[derive(Clone, Copy)]
+pub enum WifiSdioCoreResetStatus {
+    Ready,
+    SetupFailed,
+    AlpWriteFailed,
+    AlpReadFailed,
+    AlpTimeout,
+    AlpClearFailed,
+    WindowHighWriteFailed,
+    WindowMidWriteFailed,
+    WindowLowWriteFailed,
+    BeforeIoctrlReadFailed,
+    BeforeResetctrlReadFailed,
+    BeforeResetstatusReadFailed,
+    DisableResetctrlReadFailed,
+    DisableIoctrlWriteFailed,
+    DisableIoctrlReadFailed,
+    DisableResetctrlWriteFailed,
+    ResetIoctrlWriteFailed,
+    ResetIoctrlReadFailed,
+    ResetctrlWriteFailed,
+    FinalIoctrlWriteFailed,
+    AfterIoctrlReadFailed,
+    AfterResetctrlReadFailed,
+    AfterResetstatusReadFailed,
+}
+
+#[derive(Clone, Copy)]
 pub struct CommandError {
     pub code: CommandErrorCode,
     pub normal_int: u16,
@@ -277,9 +308,48 @@ enum BackplaneByteReadError {
 }
 
 #[derive(Clone, Copy)]
+enum BackplaneByteWriteError {
+    Window(BackplaneWindowError),
+    Cmd52(CommandError),
+}
+
+#[derive(Clone, Copy)]
 struct BackplaneByteRead {
     value: u8,
     response: u32,
+}
+
+#[derive(Clone, Copy)]
+struct BackplaneByteWrite {
+    response: u32,
+}
+
+#[derive(Clone, Copy)]
+enum CoreRegisterAccess {
+    Ioctrl,
+    Resetctrl,
+    Resetstatus,
+}
+
+#[derive(Clone, Copy)]
+enum CoreStateReadError {
+    Window(BackplaneWindowError),
+    Cmd52 {
+        access: CoreRegisterAccess,
+        error: CommandError,
+    },
+}
+
+#[derive(Clone, Copy)]
+enum CoreResetStepError {
+    DisableResetctrlRead(BackplaneByteReadError),
+    DisableIoctrlWrite(BackplaneByteWriteError),
+    DisableIoctrlRead(BackplaneByteReadError),
+    DisableResetctrlWrite(BackplaneByteWriteError),
+    ResetIoctrlWrite(BackplaneByteWriteError),
+    ResetIoctrlRead(BackplaneByteReadError),
+    ResetctrlWrite(BackplaneByteWriteError),
+    FinalIoctrlWrite(BackplaneByteWriteError),
 }
 
 pub struct WifiSdioHostSnapshot {
@@ -419,6 +489,18 @@ pub struct WifiSdioBackplaneWrite8Report {
     pub host: WifiSdioHostSnapshot,
 }
 
+#[derive(Clone, Copy)]
+pub struct WifiSdioCoreSnapshot {
+    pub ioctrl: u8,
+    pub resetctrl: u8,
+    pub resetstatus: u8,
+    pub clock_enabled: bool,
+    pub force_gated: bool,
+    pub in_reset: bool,
+    pub reset_busy: bool,
+    pub core_up: bool,
+}
+
 pub struct WifiSdioCoreStateReport {
     pub status: WifiSdioCoreStateStatus,
     pub setup_status: WifiSdioBackplaneStatus,
@@ -431,6 +513,17 @@ pub struct WifiSdioCoreStateReport {
     pub in_reset: bool,
     pub reset_busy: bool,
     pub core_up: bool,
+    pub last_response: u32,
+    pub last_error: Option<CommandError>,
+    pub host: WifiSdioHostSnapshot,
+}
+
+pub struct WifiSdioCoreResetReport {
+    pub status: WifiSdioCoreResetStatus,
+    pub setup_status: WifiSdioBackplaneStatus,
+    pub base: u32,
+    pub before: WifiSdioCoreSnapshot,
+    pub after: WifiSdioCoreSnapshot,
     pub last_response: u32,
     pub last_error: Option<CommandError>,
     pub host: WifiSdioHostSnapshot,
@@ -1627,6 +1720,105 @@ pub fn core_state(p: &Peripherals, base: u32) -> WifiSdioCoreStateReport {
     )
 }
 
+pub fn reset_core(p: &Peripherals, base: u32) -> WifiSdioCoreResetReport {
+    let setup = setup_backplane(p);
+    if !matches!(setup.status, WifiSdioBackplaneStatus::Ready) {
+        return core_reset_report(
+            p,
+            WifiSdioCoreResetStatus::SetupFailed,
+            setup.status,
+            base,
+            empty_core_snapshot(),
+            empty_core_snapshot(),
+            0,
+            setup.last_error,
+        );
+    }
+
+    let core = &p.SDHC0.core;
+    let mut last_response = match request_alp_clock(core) {
+        Ok(response) => response,
+        Err(error) => {
+            let (status, response, last_error) = core_reset_alp_error(error);
+            return core_reset_report(
+                p,
+                status,
+                setup.status,
+                base,
+                empty_core_snapshot(),
+                empty_core_snapshot(),
+                response,
+                last_error,
+            );
+        }
+    };
+
+    let before = match read_core_snapshot(core, base) {
+        Ok((snapshot, response)) => {
+            last_response = response;
+            snapshot
+        }
+        Err(error) => {
+            let (status, last_error) = before_core_snapshot_error(error);
+            return core_reset_report(
+                p,
+                status,
+                setup.status,
+                base,
+                empty_core_snapshot(),
+                empty_core_snapshot(),
+                last_response,
+                Some(last_error),
+            );
+        }
+    };
+
+    if let Err(error) = reset_core_registers(core, base, &mut last_response) {
+        let (status, last_error) = core_reset_step_error(error);
+        return core_reset_report(
+            p,
+            status,
+            setup.status,
+            base,
+            before,
+            empty_core_snapshot(),
+            last_response,
+            Some(last_error),
+        );
+    }
+
+    let after = match read_core_snapshot(core, base) {
+        Ok((snapshot, response)) => {
+            last_response = response;
+            snapshot
+        }
+        Err(error) => {
+            let (status, last_error) = after_core_snapshot_error(error);
+            return core_reset_report(
+                p,
+                status,
+                setup.status,
+                base,
+                before,
+                empty_core_snapshot(),
+                last_response,
+                Some(last_error),
+            );
+        }
+    };
+
+    core_reset_report(
+        p,
+        WifiSdioCoreResetStatus::Ready,
+        setup.status,
+        base,
+        before,
+        after,
+        last_response,
+        None,
+    )
+}
+
 pub fn cmd53_read(
     p: &Peripherals,
     function: u8,
@@ -2050,6 +2242,195 @@ fn core_state_alp_error(error: AlpError) -> (WifiSdioCoreStateStatus, u32, Optio
     }
 }
 
+fn core_reset_alp_error(error: AlpError) -> (WifiSdioCoreResetStatus, u32, Option<CommandError>) {
+    match error {
+        AlpError::Write(error) => (WifiSdioCoreResetStatus::AlpWriteFailed, 0, Some(error)),
+        AlpError::Read { response, error } => (
+            WifiSdioCoreResetStatus::AlpReadFailed,
+            response,
+            Some(error),
+        ),
+        AlpError::Timeout { response } => (WifiSdioCoreResetStatus::AlpTimeout, response, None),
+        AlpError::Clear { response, error } => (
+            WifiSdioCoreResetStatus::AlpClearFailed,
+            response,
+            Some(error),
+        ),
+    }
+}
+
+fn read_core_snapshot(
+    core: &sdhc0::CORE,
+    base: u32,
+) -> Result<(WifiSdioCoreSnapshot, u32), CoreStateReadError> {
+    let ioctrl = read_backplane_u8(core, base + AI_IOCTRL_OFFSET)
+        .map_err(|error| core_state_read_error(error, CoreRegisterAccess::Ioctrl))?;
+    let resetctrl = read_backplane_u8(core, base + AI_RESETCTRL_OFFSET)
+        .map_err(|error| core_state_read_error(error, CoreRegisterAccess::Resetctrl))?;
+    let resetstatus = read_backplane_u8(core, base + AI_RESETSTATUS_OFFSET)
+        .map_err(|error| core_state_read_error(error, CoreRegisterAccess::Resetstatus))?;
+
+    Ok((
+        core_snapshot_from_registers(ioctrl.value, resetctrl.value, resetstatus.value),
+        resetstatus.response,
+    ))
+}
+
+fn core_state_read_error(
+    error: BackplaneByteReadError,
+    access: CoreRegisterAccess,
+) -> CoreStateReadError {
+    match error {
+        BackplaneByteReadError::Window(error) => CoreStateReadError::Window(error),
+        BackplaneByteReadError::Cmd52(error) => CoreStateReadError::Cmd52 { access, error },
+    }
+}
+
+fn reset_core_registers(
+    core: &sdhc0::CORE,
+    base: u32,
+    last_response: &mut u32,
+) -> Result<(), CoreResetStepError> {
+    disable_core_registers(core, base, last_response)?;
+
+    *last_response = write_backplane_u8(core, base + AI_IOCTRL_OFFSET, CORE_CONTROL_FORCE_CLOCKED)
+        .map_err(CoreResetStepError::ResetIoctrlWrite)?
+        .response;
+    *last_response = read_backplane_u8(core, base + AI_IOCTRL_OFFSET)
+        .map_err(CoreResetStepError::ResetIoctrlRead)?
+        .response;
+    *last_response = write_backplane_u8(core, base + AI_RESETCTRL_OFFSET, CORE_CONTROL_NONE)
+        .map_err(CoreResetStepError::ResetctrlWrite)?
+        .response;
+    delay_ms(1);
+    *last_response = write_backplane_u8(core, base + AI_IOCTRL_OFFSET, CORE_CONTROL_CLOCKED)
+        .map_err(CoreResetStepError::FinalIoctrlWrite)?
+        .response;
+    Ok(())
+}
+
+fn disable_core_registers(
+    core: &sdhc0::CORE,
+    base: u32,
+    last_response: &mut u32,
+) -> Result<(), CoreResetStepError> {
+    let resetctrl = read_backplane_u8(core, base + AI_RESETCTRL_OFFSET)
+        .map_err(CoreResetStepError::DisableResetctrlRead)?;
+    *last_response = resetctrl.response;
+    let resetctrl = read_backplane_u8(core, base + AI_RESETCTRL_OFFSET)
+        .map_err(CoreResetStepError::DisableResetctrlRead)?;
+    *last_response = resetctrl.response;
+    if resetctrl.value & CORE_CONTROL_RESET != 0 {
+        return Ok(());
+    }
+
+    *last_response = write_backplane_u8(core, base + AI_IOCTRL_OFFSET, CORE_CONTROL_NONE)
+        .map_err(CoreResetStepError::DisableIoctrlWrite)?
+        .response;
+    *last_response = read_backplane_u8(core, base + AI_IOCTRL_OFFSET)
+        .map_err(CoreResetStepError::DisableIoctrlRead)?
+        .response;
+    delay_ms(1);
+    *last_response = write_backplane_u8(core, base + AI_RESETCTRL_OFFSET, CORE_CONTROL_RESET)
+        .map_err(CoreResetStepError::DisableResetctrlWrite)?
+        .response;
+    delay_ms(1);
+    Ok(())
+}
+
+fn before_core_snapshot_error(
+    error: CoreStateReadError,
+) -> (WifiSdioCoreResetStatus, CommandError) {
+    match error {
+        CoreStateReadError::Window(error) => core_reset_window_error(error),
+        CoreStateReadError::Cmd52 { access, error } => {
+            let status = match access {
+                CoreRegisterAccess::Ioctrl => WifiSdioCoreResetStatus::BeforeIoctrlReadFailed,
+                CoreRegisterAccess::Resetctrl => WifiSdioCoreResetStatus::BeforeResetctrlReadFailed,
+                CoreRegisterAccess::Resetstatus => {
+                    WifiSdioCoreResetStatus::BeforeResetstatusReadFailed
+                }
+            };
+            (status, error)
+        }
+    }
+}
+
+fn after_core_snapshot_error(error: CoreStateReadError) -> (WifiSdioCoreResetStatus, CommandError) {
+    match error {
+        CoreStateReadError::Window(error) => core_reset_window_error(error),
+        CoreStateReadError::Cmd52 { access, error } => {
+            let status = match access {
+                CoreRegisterAccess::Ioctrl => WifiSdioCoreResetStatus::AfterIoctrlReadFailed,
+                CoreRegisterAccess::Resetctrl => WifiSdioCoreResetStatus::AfterResetctrlReadFailed,
+                CoreRegisterAccess::Resetstatus => {
+                    WifiSdioCoreResetStatus::AfterResetstatusReadFailed
+                }
+            };
+            (status, error)
+        }
+    }
+}
+
+fn core_reset_step_error(error: CoreResetStepError) -> (WifiSdioCoreResetStatus, CommandError) {
+    match error {
+        CoreResetStepError::DisableResetctrlRead(error) => {
+            core_reset_byte_read_error(error, WifiSdioCoreResetStatus::DisableResetctrlReadFailed)
+        }
+        CoreResetStepError::DisableIoctrlWrite(error) => {
+            core_reset_byte_write_error(error, WifiSdioCoreResetStatus::DisableIoctrlWriteFailed)
+        }
+        CoreResetStepError::DisableIoctrlRead(error) => {
+            core_reset_byte_read_error(error, WifiSdioCoreResetStatus::DisableIoctrlReadFailed)
+        }
+        CoreResetStepError::DisableResetctrlWrite(error) => {
+            core_reset_byte_write_error(error, WifiSdioCoreResetStatus::DisableResetctrlWriteFailed)
+        }
+        CoreResetStepError::ResetIoctrlWrite(error) => {
+            core_reset_byte_write_error(error, WifiSdioCoreResetStatus::ResetIoctrlWriteFailed)
+        }
+        CoreResetStepError::ResetIoctrlRead(error) => {
+            core_reset_byte_read_error(error, WifiSdioCoreResetStatus::ResetIoctrlReadFailed)
+        }
+        CoreResetStepError::ResetctrlWrite(error) => {
+            core_reset_byte_write_error(error, WifiSdioCoreResetStatus::ResetctrlWriteFailed)
+        }
+        CoreResetStepError::FinalIoctrlWrite(error) => {
+            core_reset_byte_write_error(error, WifiSdioCoreResetStatus::FinalIoctrlWriteFailed)
+        }
+    }
+}
+
+fn core_reset_byte_read_error(
+    error: BackplaneByteReadError,
+    cmd52_status: WifiSdioCoreResetStatus,
+) -> (WifiSdioCoreResetStatus, CommandError) {
+    match error {
+        BackplaneByteReadError::Window(error) => core_reset_window_error(error),
+        BackplaneByteReadError::Cmd52(error) => (cmd52_status, error),
+    }
+}
+
+fn core_reset_byte_write_error(
+    error: BackplaneByteWriteError,
+    cmd52_status: WifiSdioCoreResetStatus,
+) -> (WifiSdioCoreResetStatus, CommandError) {
+    match error {
+        BackplaneByteWriteError::Window(error) => core_reset_window_error(error),
+        BackplaneByteWriteError::Cmd52(error) => (cmd52_status, error),
+    }
+}
+
+fn core_reset_window_error(error: BackplaneWindowError) -> (WifiSdioCoreResetStatus, CommandError) {
+    match error {
+        BackplaneWindowError::High(error) => {
+            (WifiSdioCoreResetStatus::WindowHighWriteFailed, error)
+        }
+        BackplaneWindowError::Mid(error) => (WifiSdioCoreResetStatus::WindowMidWriteFailed, error),
+        BackplaneWindowError::Low(error) => (WifiSdioCoreResetStatus::WindowLowWriteFailed, error),
+    }
+}
+
 fn read_backplane_u8(
     core: &sdhc0::CORE,
     address: u32,
@@ -2062,6 +2443,19 @@ fn read_backplane_u8(
         value: read.0,
         response: read.1,
     })
+}
+
+fn write_backplane_u8(
+    core: &sdhc0::CORE,
+    address: u32,
+    value: u8,
+) -> Result<BackplaneByteWrite, BackplaneByteWriteError> {
+    set_backplane_window(core, address).map_err(BackplaneByteWriteError::Window)?;
+    let window_address = backplane_window_address(address, 1);
+    let response =
+        cmd52_write_function_byte_selected(core, SDIO_BACKPLANE_FUNCTION, window_address, value)
+            .map_err(BackplaneByteWriteError::Cmd52)?;
+    Ok(BackplaneByteWrite { response })
 }
 
 fn set_backplane_window(core: &sdhc0::CORE, address: u32) -> Result<u32, BackplaneWindowError> {
@@ -2430,14 +2824,39 @@ fn core_state_report(
     last_response: u32,
     last_error: Option<CommandError>,
 ) -> WifiSdioCoreStateReport {
-    let clock_enabled = ioctrl & SICF_CLOCK_EN != 0;
-    let force_gated = ioctrl & SICF_FGC != 0;
-    let in_reset = resetctrl & AIRC_RESET != 0;
-    let reset_busy = resetstatus != 0;
+    let snapshot = core_snapshot_from_registers(ioctrl, resetctrl, resetstatus);
     WifiSdioCoreStateReport {
         status,
         setup_status,
         base,
+        ioctrl,
+        resetctrl,
+        resetstatus,
+        clock_enabled: snapshot.clock_enabled,
+        force_gated: snapshot.force_gated,
+        in_reset: snapshot.in_reset,
+        reset_busy: snapshot.reset_busy,
+        core_up: snapshot.core_up,
+        last_response,
+        last_error,
+        host: host_snapshot(p),
+    }
+}
+
+fn empty_core_snapshot() -> WifiSdioCoreSnapshot {
+    core_snapshot_from_registers(0, 0, 0)
+}
+
+fn core_snapshot_from_registers(
+    ioctrl: u8,
+    resetctrl: u8,
+    resetstatus: u8,
+) -> WifiSdioCoreSnapshot {
+    let clock_enabled = ioctrl & SICF_CLOCK_EN != 0;
+    let force_gated = ioctrl & SICF_FGC != 0;
+    let in_reset = resetctrl & AIRC_RESET != 0;
+    let reset_busy = resetstatus != 0;
+    WifiSdioCoreSnapshot {
         ioctrl,
         resetctrl,
         resetstatus,
@@ -2446,6 +2865,25 @@ fn core_state_report(
         in_reset,
         reset_busy,
         core_up: clock_enabled && !force_gated && !in_reset && !reset_busy,
+    }
+}
+
+fn core_reset_report(
+    p: &Peripherals,
+    status: WifiSdioCoreResetStatus,
+    setup_status: WifiSdioBackplaneStatus,
+    base: u32,
+    before: WifiSdioCoreSnapshot,
+    after: WifiSdioCoreSnapshot,
+    last_response: u32,
+    last_error: Option<CommandError>,
+) -> WifiSdioCoreResetReport {
+    WifiSdioCoreResetReport {
+        status,
+        setup_status,
+        base,
+        before,
+        after,
         last_response,
         last_error,
         host: host_snapshot(p),
