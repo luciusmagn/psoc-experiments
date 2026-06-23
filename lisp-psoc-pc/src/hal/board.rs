@@ -380,6 +380,10 @@ impl lisp::Board for PsocBoard<'_> {
         ))
     }
 
+    fn wifi_socram_probe(&mut self, address: u32, pattern: u32) -> lisp::WifiSdioSocramProbeReport {
+        wifi_sdio_socram_probe_report(wifi_sdio::socram_probe(self.p, address, pattern))
+    }
+
     fn wifi_core_state(&mut self, base: u32) -> lisp::WifiSdioCoreStateReport {
         wifi_sdio_core_state_report(wifi_sdio::core_state(self.p, base))
     }
@@ -683,6 +687,30 @@ fn wifi_sdio_backplane_write32_status(
     }
 }
 
+fn wifi_sdio_socram_probe_status(status: wifi_sdio::WifiSdioSocramProbeStatus) -> &'static [u8] {
+    match status {
+        wifi_sdio::WifiSdioSocramProbeStatus::Ready => b"ready",
+        wifi_sdio::WifiSdioSocramProbeStatus::SetupFailed => b"setup-failed",
+        wifi_sdio::WifiSdioSocramProbeStatus::InvalidAddress => b"invalid-address",
+        wifi_sdio::WifiSdioSocramProbeStatus::AlpWriteFailed => b"alp-write-failed",
+        wifi_sdio::WifiSdioSocramProbeStatus::AlpReadFailed => b"alp-read-failed",
+        wifi_sdio::WifiSdioSocramProbeStatus::AlpTimeout => b"alp-timeout",
+        wifi_sdio::WifiSdioSocramProbeStatus::AlpClearFailed => b"alp-clear-failed",
+        wifi_sdio::WifiSdioSocramProbeStatus::ArmDisableFailed => b"arm-disable-failed",
+        wifi_sdio::WifiSdioSocramProbeStatus::SocramDisableFailed => b"socram-disable-failed",
+        wifi_sdio::WifiSdioSocramProbeStatus::SocramResetFailed => b"socram-reset-failed",
+        wifi_sdio::WifiSdioSocramProbeStatus::BankIndexWriteFailed => b"bank-index-write-failed",
+        wifi_sdio::WifiSdioSocramProbeStatus::BankPdaWriteFailed => b"bank-pda-write-failed",
+        wifi_sdio::WifiSdioSocramProbeStatus::OriginalReadFailed => b"original-read-failed",
+        wifi_sdio::WifiSdioSocramProbeStatus::ProbeWriteFailed => b"probe-write-failed",
+        wifi_sdio::WifiSdioSocramProbeStatus::ProbeReadbackMismatch => b"probe-readback-mismatch",
+        wifi_sdio::WifiSdioSocramProbeStatus::RestoreWriteFailed => b"restore-write-failed",
+        wifi_sdio::WifiSdioSocramProbeStatus::RestoreReadbackMismatch => {
+            b"restore-readback-mismatch"
+        }
+    }
+}
+
 fn wifi_sdio_core_state_status(status: wifi_sdio::WifiSdioCoreStateStatus) -> &'static [u8] {
     match status {
         wifi_sdio::WifiSdioCoreStateStatus::Ready => b"ready",
@@ -870,6 +898,24 @@ fn wifi_sdio_backplane_write32_report(
         window_address: report.window_address,
         response: report.response,
         readback: report.readback,
+        last_error: report.last_error.map(wifi_sdio_command_error_report),
+        host: wifi_sdio_host_report(report.host),
+    }
+}
+
+fn wifi_sdio_socram_probe_report(
+    report: wifi_sdio::WifiSdioSocramProbeReport,
+) -> lisp::WifiSdioSocramProbeReport {
+    lisp::WifiSdioSocramProbeReport {
+        status: wifi_sdio_socram_probe_status(report.status),
+        setup_status: wifi_sdio_backplane_status(report.setup_status),
+        write_status: wifi_sdio_backplane_write32_status(report.write_status),
+        address: report.address,
+        pattern: report.pattern,
+        original: report.original,
+        readback: report.readback,
+        restored: report.restored,
+        last_response: report.last_response,
         last_error: report.last_error.map(wifi_sdio_command_error_report),
         host: wifi_sdio_host_report(report.host),
     }

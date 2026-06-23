@@ -1585,6 +1585,49 @@ Any meaningful SOCSRAM write/readback test must be implemented as one HAL
 operation that performs setup, core reset, RAM write, and RAM readback
 without reinitializing between steps.
 
+* 2026-06-23 Wi-Fi SOCSRAM probe
+
+Added =(wifi-socram-probe address pattern)= as a single HAL operation for
+the CYW43430 firmware-download path. It runs the same setup shape WHD uses
+for this chip:
+
+1. setup SDIO and request ALP;
+2. disable the WLAN ARM wrapper at =#x18103000=;
+3. disable and reset the SOCSRAM wrapper at =#x18104000=;
+4. write =SOCSRAM_BANKX_INDEX= at =#x18004010= to =#x00000003=;
+5. write =SOCSRAM_BANKX_PDA= at =#x18004044= to =#x00000000=;
+6. read the target RAM word, write the probe pattern, verify it, restore
+   the original word, and verify the restore.
+
+Live validation:
+
+#+begin_example
+(wifi-socram-probe #x00000000 #x11223344)
+=> ((status . ready)
+    (setup-status . ready)
+    (write-status . ready)
+    (address . #x00000000)
+    (pattern . #x11223344)
+    (original . #x60008184)
+    (readback . #x11223344)
+    (restored . #x60008184)
+    (last-response . #x00001000)
+    (last-error)
+    (SDHC0 ... (XFER_MODE . #x00000003)
+               (ADMA_SA_LOW . #x08001010)
+               (ADMA_ERR_STAT . #x00000000)
+               (PSTATE . #x03f30000)
+               (RESP01 . #x00001060) ...))
+
+(wifi-backplane-read #x18000000 4)
+=> ... (bytes #x000000a6 #x000000a9 #x00000031 #x00000015) ...
+#+end_example
+
+This confirms that byte-mode CMD53 ADMA writes to SOCSRAM work when the
+chip is prepared in one uninterrupted HAL operation. The old
+=#x18004010= timeout was caused by running the bank-index write outside
+the full WHD SOCSRAM preparation sequence.
+
 Next useful tests are a known-idempotent CMD52 write target, a block-mode
 RAM write/readback diagnostic, and a closer comparison with Infineon's HAL
 bulk-transfer path.

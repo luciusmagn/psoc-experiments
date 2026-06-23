@@ -78,6 +78,7 @@ pub trait Board {
         address: u32,
         value: u32,
     ) -> WifiSdioBackplaneWrite32Report;
+    fn wifi_socram_probe(&mut self, address: u32, pattern: u32) -> WifiSdioSocramProbeReport;
     fn wifi_core_state(&mut self, base: u32) -> WifiSdioCoreStateReport;
     fn wifi_reset_core(&mut self, base: u32) -> WifiSdioCoreResetReport;
     fn sdhc_registers(&mut self) -> SdhcReport;
@@ -447,6 +448,21 @@ pub struct WifiSdioBackplaneWrite32Report {
 }
 
 #[derive(Clone, Copy)]
+pub struct WifiSdioSocramProbeReport {
+    pub status: &'static [u8],
+    pub setup_status: &'static [u8],
+    pub write_status: &'static [u8],
+    pub address: u32,
+    pub pattern: u32,
+    pub original: u32,
+    pub readback: u32,
+    pub restored: u32,
+    pub last_response: u32,
+    pub last_error: Option<WifiSdioCommandErrorReport>,
+    pub host: WifiSdioHostReport,
+}
+
+#[derive(Clone, Copy)]
 pub struct WifiSdioCoreStateReport {
     pub status: &'static [u8],
     pub setup_status: &'static [u8],
@@ -563,6 +579,7 @@ pub enum Primitive {
     WifiBackplaneWrite8,
     WifiBackplaneWrite32,
     WifiBackplaneWrite32Bytes,
+    WifiSocramProbe,
     WifiCoreState,
     WifiResetCore,
     SdhcRegs,
@@ -628,6 +645,7 @@ impl Primitive {
             Self::WifiBackplaneWrite8 => "wifi-backplane-write8",
             Self::WifiBackplaneWrite32 => "wifi-backplane-write32",
             Self::WifiBackplaneWrite32Bytes => "wifi-backplane-write32-bytes",
+            Self::WifiSocramProbe => "wifi-socram-probe",
             Self::WifiCoreState => "wifi-core-state",
             Self::WifiResetCore => "wifi-reset-core",
             Self::SdhcRegs => "sdhc-regs",
@@ -848,6 +866,7 @@ impl Machine {
             b"wifi-backplane-write32-bytes",
             Primitive::WifiBackplaneWrite32Bytes,
         )?;
+        self.install_primitive(b"wifi-socram-probe", Primitive::WifiSocramProbe)?;
         self.install_primitive(b"wifi-core-state", Primitive::WifiCoreState)?;
         self.install_primitive(b"wifi-reset-core", Primitive::WifiResetCore)?;
         self.install_primitive(b"sdhc-regs", Primitive::SdhcRegs)?;
@@ -1589,6 +1608,12 @@ impl Machine {
                     board.wifi_backplane_write32_bytes(address, value),
                 )
             }
+            Primitive::WifiSocramProbe => {
+                self.expect_count(args, 2)?;
+                let address = self.expect_u32(args[0])?;
+                let pattern = self.expect_u32(args[1])?;
+                self.wifi_sdio_socram_probe_report(board.wifi_socram_probe(address, pattern))
+            }
             Primitive::WifiCoreState => {
                 self.expect_count(args, 1)?;
                 let base = self.expect_u32(args[0])?;
@@ -1963,6 +1988,7 @@ impl Machine {
             b"wifi-backplane-write8",
             b"wifi-backplane-write32",
             b"wifi-backplane-write32-bytes",
+            b"wifi-socram-probe",
             b"wifi-core-state",
             b"wifi-reset-core",
             b"sdhc-regs",
@@ -2508,6 +2534,38 @@ impl Machine {
             window_address,
             response,
             readback,
+            last_error,
+            host,
+        ];
+        self.make_list_from_values(&entries)
+    }
+
+    fn wifi_sdio_socram_probe_report(
+        &mut self,
+        report: WifiSdioSocramProbeReport,
+    ) -> LispResult<Value> {
+        let status = self.symbol_entry(b"status", report.status)?;
+        let setup_status = self.symbol_entry(b"setup-status", report.setup_status)?;
+        let write_status = self.symbol_entry(b"write-status", report.write_status)?;
+        let address = self.word_entry(b"address", report.address)?;
+        let pattern = self.word_entry(b"pattern", report.pattern)?;
+        let original = self.word_entry(b"original", report.original)?;
+        let readback = self.word_entry(b"readback", report.readback)?;
+        let restored = self.word_entry(b"restored", report.restored)?;
+        let last_response = self.word_entry(b"last-response", report.last_response)?;
+        let last_error = self.wifi_sdio_error_entry(b"last-error", report.last_error)?;
+        let host = self.wifi_sdio_host_report(report.host)?;
+        let host = self.entry(b"SDHC0", host)?;
+        let entries = [
+            status,
+            setup_status,
+            write_status,
+            address,
+            pattern,
+            original,
+            readback,
+            restored,
+            last_response,
             last_error,
             host,
         ];
