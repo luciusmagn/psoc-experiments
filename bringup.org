@@ -29,7 +29,7 @@ Working serial capture:
 
 #+begin_example
 lisp> (help)
-=> (help quote if define lambda begin let + - * / mod = < <= > >= not eq? nil? atom? pair? number? symbol? bool? cons car cdr list led heartbeat button millis reg32 poke32 regs sd-status sd-pins sd-pinmux sd-clock sd-init sd-read sd-read0 sdhc-regs heap gc reboot)
+=> (help quote if define lambda begin let + - * / mod = < <= > >= not eq? nil? atom? pair? number? symbol? bool? string? cons car cdr list led heartbeat button millis reg32 poke32 regs sd-status sd-pins sd-pinmux sd-clock sd-init sd-read sd-read0 sd-write-fill format-store save-file read-file load ls cat wifi-sdio-init wifi-cmd52-read wifi-cmd52-write wifi-enable-functions wifi-setup-backplane wifi-cmd53-read wifi-backplane-read wifi-backplane-write8 wifi-backplane-write32 wifi-backplane-write32-bytes wifi-socram-probe wifi-socram-block-probe wifi-load-firmware wifi-start-firmware wifi-f2-read-header wifi-f2-read-frame wifi-ack-interrupts wifi-interrupt-state wifi-keep-awake wifi-host-reset-lines wifi-abort-read wifi-core-state wifi-reset-core sdhc-regs heap gc reboot)
 
 lisp> (+ 1 2 3)
 => 6
@@ -2139,6 +2139,83 @@ This verifies card detect, SDHC initialization, single-block read, raw-store
 directory read, raw-store write, raw-store read, evaluator load, and boot
 autoload on the currently inserted card. The current store is still a raw-sector
 Lisp store at sector =#x100=, not a FAT/exFAT filesystem.
+
+* 2026-06-23 Explicit raw store format
+
+Added =(format-store)= as a Lisp primitive that clears the raw Lisp store's
+fixed data sectors and then writes a fresh directory sector. The directory is
+written last so a data-sector write failure does not leave a new empty
+directory over stale data.
+
+Live validation on the inserted 32GB card after flashing:
+
+#+begin_example
+(help)
+=> (... sd-write-fill format-store save-file read-file load ls cat ...)
+
+(sd-init)
+=> ((status . ready-sdhc)
+    (CMD8 . #x000001aa)
+    (CMD8.error)
+    (ACMD41.OCR . #xc0ff8000)
+    (attempts . 2) ...)
+
+(format-store)
+=> ((status . ready)
+    (ready . #t)
+    (directory-sector . #x00000100)
+    (data-start-sector . #x00000101)
+    (data-sector-count . 5)
+    (failed-sector . #x00000000))
+
+(ls)
+=> ((status . ready) (ready . #t) (count . 0)
+    (directory-sector . #x00000100)
+    (files))
+
+(save-file "boot.lisp" "(begin (define persisted 41) (+ persisted 1))")
+=> ((status . ready)
+    (ready . #t)
+    (path-len . 9)
+    (content-len . 45)
+    (directory-sector . #x00000100)
+    (data-sector . #x00000101))
+
+(read-file "boot.lisp")
+=> ((status . ready)
+    (ready . #t)
+    (path-len . 9)
+    (content-len . 45)
+    (directory-sector . #x00000100)
+    (data-sector . #x00000101)
+    (content . "(begin (define persisted 41) (+ persisted 1))"))
+
+(cat "boot.lisp")
+=> "(begin (define persisted 41) (+ persisted 1))"
+
+(load "boot.lisp")
+=> 42
+
+(ls)
+=> ((status . ready) (ready . #t) (count . 1)
+    (directory-sector . #x00000100)
+    (files "boot.lisp"))
+#+end_example
+
+FAT32 is feasible and should replace the raw store for normal Lisp files once
+the next storage layer exists. The current Cargo candidate is
+=embedded-sdmmc= 0.9.0 with default features disabled. It is =no_std=, speaks
+FAT16/FAT32 over a 512-byte block-device trait, supports MBR partitions, and
+can read or write files through a volume manager. Constraints to account for:
+
+1. Start with FAT32, not exFAT.
+2. Prefer PC-side formatting first; on-board FAT formatting can come later.
+3. Implement a block-device adapter over =hal::micro_sd=.
+4. Implement a fixed timestamp source until the board has real time.
+5. Load Lisp source by streaming bytes into the reader instead of requiring the
+   current 96-byte string path.
+6. Avoid simultaneous host and firmware writes; unmount the card before using
+   it from the board.
 
 * 2026-06-23 Wi-Fi post-frame SDIO diagnostics
 

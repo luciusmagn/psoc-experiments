@@ -54,6 +54,14 @@ pub struct ListReport {
     pub files: [lisp::StringBytes; DIRECTORY_MAX_FILES],
 }
 
+pub struct FormatReport {
+    pub status: StoreStatus,
+    pub directory_sector: u32,
+    pub data_start_sector: u32,
+    pub data_sector_count: u8,
+    pub failed_sector: u32,
+}
+
 #[derive(Clone, Copy)]
 struct DirectoryEntry {
     index: usize,
@@ -61,6 +69,29 @@ struct DirectoryEntry {
     data_sector: u32,
     content_len: u8,
     checksum: u32,
+}
+
+pub fn format_store(p: &Peripherals) -> FormatReport {
+    let empty_data_words = [0u32; micro_sd::SD_BLOCK_WORDS];
+    let mut index = 0usize;
+    while index < DIRECTORY_MAX_FILES {
+        let data_sector = DATA_START_SECTOR + index as u32;
+        let data_write = micro_sd::write_sector_words(p, data_sector, &empty_data_words);
+        if !matches!(data_write.status, micro_sd::WriteStatus::Ready) {
+            return format_report(StoreStatus::DataWriteFailed, data_sector);
+        }
+        index += 1;
+    }
+
+    let mut directory = [0u8; SECTOR_BYTES];
+    initialize_directory(&mut directory);
+    let directory_words = bytes_to_words(&directory);
+    let directory_write = micro_sd::write_sector_words(p, DIRECTORY_SECTOR, &directory_words);
+    if !matches!(directory_write.status, micro_sd::WriteStatus::Ready) {
+        return format_report(StoreStatus::DirectoryWriteFailed, DIRECTORY_SECTOR);
+    }
+
+    format_report(StoreStatus::Ready, 0)
 }
 
 pub fn write_file(
@@ -301,6 +332,16 @@ fn list_report(
         file_count,
         directory_sector: DIRECTORY_SECTOR,
         files,
+    }
+}
+
+fn format_report(status: StoreStatus, failed_sector: u32) -> FormatReport {
+    FormatReport {
+        status,
+        directory_sector: DIRECTORY_SECTOR,
+        data_start_sector: DATA_START_SECTOR,
+        data_sector_count: DIRECTORY_MAX_FILES as u8,
+        failed_sector,
     }
 }
 

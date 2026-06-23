@@ -56,6 +56,7 @@ pub trait Board {
     fn sd_init(&mut self) -> SdInitReport;
     fn sd_read(&mut self, sector: u32) -> SdReadReport;
     fn sd_write_fill(&mut self, sector: u32, fill_word: u32) -> SdWriteReport;
+    fn format_store(&mut self) -> StoreFormatReport;
     fn save_file(&mut self, path: StringBytes, content: StringBytes) -> StoreWriteReport;
     fn read_file(&mut self, path: StringBytes) -> StoreReadReport;
     fn list_files(&mut self) -> StoreListReport;
@@ -255,6 +256,16 @@ pub struct StoreWriteReport {
     pub content_len: u8,
     pub directory_sector: u32,
     pub data_sector: u32,
+}
+
+#[derive(Clone, Copy)]
+pub struct StoreFormatReport {
+    pub ready: bool,
+    pub status: &'static [u8],
+    pub directory_sector: u32,
+    pub data_start_sector: u32,
+    pub data_sector_count: u8,
+    pub failed_sector: u32,
 }
 
 #[derive(Clone, Copy)]
@@ -766,6 +777,7 @@ pub enum Primitive {
     SdRead,
     SdRead0,
     SdWriteFill,
+    FormatStore,
     SaveFile,
     ReadFile,
     Load,
@@ -842,6 +854,7 @@ impl Primitive {
             Self::SdRead => "sd-read",
             Self::SdRead0 => "sd-read0",
             Self::SdWriteFill => "sd-write-fill",
+            Self::FormatStore => "format-store",
             Self::SaveFile => "save-file",
             Self::ReadFile => "read-file",
             Self::Load => "load",
@@ -1070,6 +1083,7 @@ impl Machine {
         self.install_primitive(b"sd-read", Primitive::SdRead)?;
         self.install_primitive(b"sd-read0", Primitive::SdRead0)?;
         self.install_primitive(b"sd-write-fill", Primitive::SdWriteFill)?;
+        self.install_primitive(b"format-store", Primitive::FormatStore)?;
         self.install_primitive(b"save-file", Primitive::SaveFile)?;
         self.install_primitive(b"read-file", Primitive::ReadFile)?;
         self.install_primitive(b"load", Primitive::Load)?;
@@ -1746,6 +1760,10 @@ impl Machine {
                 let fill_word = self.expect_u32(args[1])?;
                 self.sd_write_report(board.sd_write_fill(sector, fill_word))
             }
+            Primitive::FormatStore => {
+                self.expect_count(args, 0)?;
+                self.store_format_report(board.format_store())
+            }
             Primitive::SaveFile => {
                 self.expect_count(args, 2)?;
                 let path = self.expect_string(args[0])?;
@@ -2249,6 +2267,7 @@ impl Machine {
             b"sd-read",
             b"sd-read0",
             b"sd-write-fill",
+            b"format-store",
             b"save-file",
             b"read-file",
             b"load",
@@ -2528,6 +2547,25 @@ impl Machine {
             content_len,
             directory_sector,
             data_sector,
+        ];
+        self.make_list_from_values(&entries)
+    }
+
+    fn store_format_report(&mut self, report: StoreFormatReport) -> LispResult<Value> {
+        let status = self.symbol_entry(b"status", report.status)?;
+        let ready = self.bool_entry(b"ready", report.ready)?;
+        let directory_sector = self.word_entry(b"directory-sector", report.directory_sector)?;
+        let data_start_sector = self.word_entry(b"data-start-sector", report.data_start_sector)?;
+        let data_sector_count =
+            self.int_entry(b"data-sector-count", report.data_sector_count as i32)?;
+        let failed_sector = self.word_entry(b"failed-sector", report.failed_sector)?;
+        let entries = [
+            status,
+            ready,
+            directory_sector,
+            data_start_sector,
+            data_sector_count,
+            failed_sector,
         ];
         self.make_list_from_values(&entries)
     }

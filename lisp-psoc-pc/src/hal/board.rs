@@ -260,6 +260,18 @@ impl lisp::Board for PsocBoard<'_> {
         }
     }
 
+    fn format_store(&mut self) -> lisp::StoreFormatReport {
+        let report = lisp_store::format_store(self.p);
+        lisp::StoreFormatReport {
+            ready: matches!(report.status, lisp_store::StoreStatus::Ready),
+            status: store_status(report.status),
+            directory_sector: report.directory_sector,
+            data_start_sector: report.data_start_sector,
+            data_sector_count: report.data_sector_count,
+            failed_sector: report.failed_sector,
+        }
+    }
+
     fn save_file(
         &mut self,
         path: lisp::StringBytes,
