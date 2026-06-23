@@ -399,6 +399,14 @@ impl lisp::Board for PsocBoard<'_> {
         ))
     }
 
+    fn wifi_start_firmware(&mut self) -> lisp::WifiSdioFirmwareStartReport {
+        wifi_sdio_firmware_start_report(wifi_sdio::start_firmware(
+            self.p,
+            wifi_resources::cyw4343w_firmware(),
+            wifi_resources::cyw4343w_nvram(),
+        ))
+    }
+
     fn wifi_core_state(&mut self, base: u32) -> lisp::WifiSdioCoreStateReport {
         wifi_sdio_core_state_report(wifi_sdio::core_state(self.p, base))
     }
@@ -779,6 +787,41 @@ fn wifi_sdio_firmware_load_status(status: wifi_sdio::WifiSdioFirmwareLoadStatus)
     }
 }
 
+fn wifi_sdio_firmware_start_status(
+    status: wifi_sdio::WifiSdioFirmwareStartStatus,
+) -> &'static [u8] {
+    match status {
+        wifi_sdio::WifiSdioFirmwareStartStatus::Ready => b"ready",
+        wifi_sdio::WifiSdioFirmwareStartStatus::FirmwareFailed => b"firmware-failed",
+        wifi_sdio::WifiSdioFirmwareStartStatus::NvramMissing => b"nvram-missing",
+        wifi_sdio::WifiSdioFirmwareStartStatus::NvramTooLarge => b"nvram-too-large",
+        wifi_sdio::WifiSdioFirmwareStartStatus::NvramWriteFailed => b"nvram-write-failed",
+        wifi_sdio::WifiSdioFirmwareStartStatus::NvramVerifyReadFailed => {
+            b"nvram-verify-read-failed"
+        }
+        wifi_sdio::WifiSdioFirmwareStartStatus::NvramVerifyMismatch => b"nvram-verify-mismatch",
+        wifi_sdio::WifiSdioFirmwareStartStatus::NvramSizeWriteFailed => b"nvram-size-write-failed",
+        wifi_sdio::WifiSdioFirmwareStartStatus::PullUpWriteFailed => b"pull-up-write-failed",
+        wifi_sdio::WifiSdioFirmwareStartStatus::IoEnableWriteFailed => b"io-enable-write-failed",
+        wifi_sdio::WifiSdioFirmwareStartStatus::InterruptEnableWriteFailed => {
+            b"interrupt-enable-write-failed"
+        }
+        wifi_sdio::WifiSdioFirmwareStartStatus::ArmResetFailed => b"arm-reset-failed",
+        wifi_sdio::WifiSdioFirmwareStartStatus::ArmStateReadFailed => b"arm-state-read-failed",
+        wifi_sdio::WifiSdioFirmwareStartStatus::HtReadFailed => b"ht-read-failed",
+        wifi_sdio::WifiSdioFirmwareStartStatus::HtTimeout => b"ht-timeout",
+        wifi_sdio::WifiSdioFirmwareStartStatus::HostInterruptMaskWriteFailed => {
+            b"host-interrupt-mask-write-failed"
+        }
+        wifi_sdio::WifiSdioFirmwareStartStatus::FunctionInterruptMaskWriteFailed => {
+            b"function-interrupt-mask-write-failed"
+        }
+        wifi_sdio::WifiSdioFirmwareStartStatus::WatermarkWriteFailed => b"watermark-write-failed",
+        wifi_sdio::WifiSdioFirmwareStartStatus::F2ReadyReadFailed => b"f2-ready-read-failed",
+        wifi_sdio::WifiSdioFirmwareStartStatus::F2ReadyTimeout => b"f2-ready-timeout",
+    }
+}
+
 fn wifi_sdio_core_state_status(status: wifi_sdio::WifiSdioCoreStateStatus) -> &'static [u8] {
     match status {
         wifi_sdio::WifiSdioCoreStateStatus::Ready => b"ready",
@@ -1027,6 +1070,39 @@ fn wifi_sdio_firmware_load_report(
         mismatch_offset: report.mismatch_offset,
         mismatch_expected: report.mismatch_expected,
         mismatch_actual: report.mismatch_actual,
+        last_response: report.last_response,
+        last_error: report.last_error.map(wifi_sdio_command_error_report),
+        host: wifi_sdio_host_report(report.host),
+    }
+}
+
+fn wifi_sdio_firmware_start_report(
+    report: wifi_sdio::WifiSdioFirmwareStartReport,
+) -> lisp::WifiSdioFirmwareStartReport {
+    lisp::WifiSdioFirmwareStartReport {
+        status: wifi_sdio_firmware_start_status(report.status),
+        firmware_status: wifi_sdio_firmware_load_status(report.firmware_status),
+        setup_status: wifi_sdio_backplane_status(report.setup_status),
+        read_status: wifi_sdio_backplane_read_status(report.read_status),
+        write_status: wifi_sdio_backplane_write32_status(report.write_status),
+        firmware_bytes: report.firmware_bytes,
+        nvram_bytes: report.nvram_bytes,
+        nvram_rounded_bytes: report.nvram_rounded_bytes,
+        nvram_address: report.nvram_address,
+        nvram_size_word: report.nvram_size_word,
+        firmware_checksum: report.firmware_checksum,
+        nvram_checksum: report.nvram_checksum,
+        nvram_verify_checksum: report.nvram_verify_checksum,
+        mismatch_offset: report.mismatch_offset,
+        mismatch_expected: report.mismatch_expected,
+        mismatch_actual: report.mismatch_actual,
+        arm_before: wifi_sdio_core_snapshot_report(report.arm_before),
+        arm_after: wifi_sdio_core_snapshot_report(report.arm_after),
+        ht_clock_csr: report.ht_clock_csr,
+        ht_attempts: report.ht_attempts,
+        io_enable: report.io_enable,
+        io_ready: report.io_ready,
+        f2_attempts: report.f2_attempts,
         last_response: report.last_response,
         last_error: report.last_error.map(wifi_sdio_command_error_report),
         host: wifi_sdio_host_report(report.host),

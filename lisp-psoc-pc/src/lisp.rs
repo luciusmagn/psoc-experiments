@@ -85,6 +85,7 @@ pub trait Board {
         seed: u32,
     ) -> WifiSdioSocramBlockProbeReport;
     fn wifi_load_firmware(&mut self) -> WifiSdioFirmwareLoadReport;
+    fn wifi_start_firmware(&mut self) -> WifiSdioFirmwareStartReport;
     fn wifi_core_state(&mut self, base: u32) -> WifiSdioCoreStateReport;
     fn wifi_reset_core(&mut self, base: u32) -> WifiSdioCoreResetReport;
     fn sdhc_registers(&mut self) -> SdhcReport;
@@ -507,6 +508,36 @@ pub struct WifiSdioFirmwareLoadReport {
 }
 
 #[derive(Clone, Copy)]
+pub struct WifiSdioFirmwareStartReport {
+    pub status: &'static [u8],
+    pub firmware_status: &'static [u8],
+    pub setup_status: &'static [u8],
+    pub read_status: &'static [u8],
+    pub write_status: &'static [u8],
+    pub firmware_bytes: u32,
+    pub nvram_bytes: u32,
+    pub nvram_rounded_bytes: u32,
+    pub nvram_address: u32,
+    pub nvram_size_word: u32,
+    pub firmware_checksum: u32,
+    pub nvram_checksum: u32,
+    pub nvram_verify_checksum: u32,
+    pub mismatch_offset: u32,
+    pub mismatch_expected: u32,
+    pub mismatch_actual: u32,
+    pub arm_before: WifiSdioCoreSnapshotReport,
+    pub arm_after: WifiSdioCoreSnapshotReport,
+    pub ht_clock_csr: u8,
+    pub ht_attempts: u16,
+    pub io_enable: u8,
+    pub io_ready: u8,
+    pub f2_attempts: u16,
+    pub last_response: u32,
+    pub last_error: Option<WifiSdioCommandErrorReport>,
+    pub host: WifiSdioHostReport,
+}
+
+#[derive(Clone, Copy)]
 pub struct WifiSdioCoreStateReport {
     pub status: &'static [u8],
     pub setup_status: &'static [u8],
@@ -626,6 +657,7 @@ pub enum Primitive {
     WifiSocramProbe,
     WifiSocramBlockProbe,
     WifiLoadFirmware,
+    WifiStartFirmware,
     WifiCoreState,
     WifiResetCore,
     SdhcRegs,
@@ -694,6 +726,7 @@ impl Primitive {
             Self::WifiSocramProbe => "wifi-socram-probe",
             Self::WifiSocramBlockProbe => "wifi-socram-block-probe",
             Self::WifiLoadFirmware => "wifi-load-firmware",
+            Self::WifiStartFirmware => "wifi-start-firmware",
             Self::WifiCoreState => "wifi-core-state",
             Self::WifiResetCore => "wifi-reset-core",
             Self::SdhcRegs => "sdhc-regs",
@@ -917,6 +950,7 @@ impl Machine {
         self.install_primitive(b"wifi-socram-probe", Primitive::WifiSocramProbe)?;
         self.install_primitive(b"wifi-socram-block-probe", Primitive::WifiSocramBlockProbe)?;
         self.install_primitive(b"wifi-load-firmware", Primitive::WifiLoadFirmware)?;
+        self.install_primitive(b"wifi-start-firmware", Primitive::WifiStartFirmware)?;
         self.install_primitive(b"wifi-core-state", Primitive::WifiCoreState)?;
         self.install_primitive(b"wifi-reset-core", Primitive::WifiResetCore)?;
         self.install_primitive(b"sdhc-regs", Primitive::SdhcRegs)?;
@@ -1676,6 +1710,10 @@ impl Machine {
                 self.expect_count(args, 0)?;
                 self.wifi_sdio_firmware_load_report(board.wifi_load_firmware())
             }
+            Primitive::WifiStartFirmware => {
+                self.expect_count(args, 0)?;
+                self.wifi_sdio_firmware_start_report(board.wifi_start_firmware())
+            }
             Primitive::WifiCoreState => {
                 self.expect_count(args, 1)?;
                 let base = self.expect_u32(args[0])?;
@@ -2053,6 +2091,7 @@ impl Machine {
             b"wifi-socram-probe",
             b"wifi-socram-block-probe",
             b"wifi-load-firmware",
+            b"wifi-start-firmware",
             b"wifi-core-state",
             b"wifi-reset-core",
             b"sdhc-regs",
@@ -2709,6 +2748,72 @@ impl Machine {
             mismatch_offset,
             mismatch_expected,
             mismatch_actual,
+            last_response,
+            last_error,
+            host,
+        ];
+        self.make_list_from_values(&entries)
+    }
+
+    fn wifi_sdio_firmware_start_report(
+        &mut self,
+        report: WifiSdioFirmwareStartReport,
+    ) -> LispResult<Value> {
+        let status = self.symbol_entry(b"status", report.status)?;
+        let firmware_status = self.symbol_entry(b"firmware-status", report.firmware_status)?;
+        let setup_status = self.symbol_entry(b"setup-status", report.setup_status)?;
+        let read_status = self.symbol_entry(b"read-status", report.read_status)?;
+        let write_status = self.symbol_entry(b"write-status", report.write_status)?;
+        let firmware_bytes = self.word_entry(b"firmware-bytes", report.firmware_bytes)?;
+        let nvram_bytes = self.word_entry(b"nvram-bytes", report.nvram_bytes)?;
+        let nvram_rounded_bytes =
+            self.word_entry(b"nvram-rounded-bytes", report.nvram_rounded_bytes)?;
+        let nvram_address = self.word_entry(b"nvram-address", report.nvram_address)?;
+        let nvram_size_word = self.word_entry(b"nvram-size-word", report.nvram_size_word)?;
+        let firmware_checksum = self.word_entry(b"firmware-checksum", report.firmware_checksum)?;
+        let nvram_checksum = self.word_entry(b"nvram-checksum", report.nvram_checksum)?;
+        let nvram_verify_checksum =
+            self.word_entry(b"nvram-verify-checksum", report.nvram_verify_checksum)?;
+        let mismatch_offset = self.word_entry(b"mismatch-offset", report.mismatch_offset)?;
+        let mismatch_expected = self.word_entry(b"mismatch-expected", report.mismatch_expected)?;
+        let mismatch_actual = self.word_entry(b"mismatch-actual", report.mismatch_actual)?;
+        let arm_before = self.wifi_sdio_core_snapshot_report(report.arm_before)?;
+        let arm_before = self.entry(b"arm-before", arm_before)?;
+        let arm_after = self.wifi_sdio_core_snapshot_report(report.arm_after)?;
+        let arm_after = self.entry(b"arm-after", arm_after)?;
+        let ht_clock_csr = self.word_entry(b"HT-CLOCK-CSR", report.ht_clock_csr as u32)?;
+        let ht_attempts = self.word_entry(b"HT-attempts", report.ht_attempts as u32)?;
+        let io_enable = self.word_entry(b"IOEN", report.io_enable as u32)?;
+        let io_ready = self.word_entry(b"IORDY", report.io_ready as u32)?;
+        let f2_attempts = self.word_entry(b"F2-attempts", report.f2_attempts as u32)?;
+        let last_response = self.word_entry(b"last-response", report.last_response)?;
+        let last_error = self.wifi_sdio_error_entry(b"last-error", report.last_error)?;
+        let host = self.wifi_sdio_host_report(report.host)?;
+        let host = self.entry(b"SDHC0", host)?;
+        let entries = [
+            status,
+            firmware_status,
+            setup_status,
+            read_status,
+            write_status,
+            firmware_bytes,
+            nvram_bytes,
+            nvram_rounded_bytes,
+            nvram_address,
+            nvram_size_word,
+            firmware_checksum,
+            nvram_checksum,
+            nvram_verify_checksum,
+            mismatch_offset,
+            mismatch_expected,
+            mismatch_actual,
+            arm_before,
+            arm_after,
+            ht_clock_csr,
+            ht_attempts,
+            io_enable,
+            io_ready,
+            f2_attempts,
             last_response,
             last_error,
             host,

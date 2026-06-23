@@ -1795,11 +1795,79 @@ by the block probe. The next Wi-Fi slice should load NVRAM/CLM or identify
 the correct post-download start sequence, not revisit basic SOCSRAM block
 I/O.
 
+* 2026-06-23 Wi-Fi firmware start
+
+Added =(wifi-start-firmware)= as the first one-shot boot operation for the
+CYW43430 firmware. The form reuses the same local-resource feature as
+=(wifi-load-firmware)= and performs the WHD SDIO sequence in one selected
+card session:
+
+1. load and verify =4343WA1.bin= in SOCSRAM;
+2. round =wifi_nvram.bin= to four-byte alignment;
+3. write NVRAM at =CHIP_RAM_SIZE - 4 - rounded-size=;
+4. write the WHD NVRAM size word at =CHIP_RAM_SIZE - 4=;
+5. enable SDIO functions 1 and 2;
+6. release the WLAN ARM wrapper;
+7. wait for =SBSDIO_HT_AVAIL=;
+8. configure the SDIO host interrupt masks and function-2 watermark;
+9. poll CCCR =IORDY= until function 2 is ready.
+
+The NVRAM placement follows WHD's non-43022 path. For the current local
+NVRAM image:
+
+#+begin_example
+nvram bytes         = #x00000286
+rounded NVRAM size = #x00000288
+NVRAM base         = #x0007fd74
+NVRAM size word    = #xff5d00a2
+#+end_example
+
+Live validation after flashing the blob-enabled image:
+
+#+begin_example
+(wifi-start-firmware)
+=> ((status . ready)
+    (firmware-status . ready)
+    (setup-status . ready)
+    (read-status . ready)
+    (write-status . ready)
+    (firmware-bytes . #x00066e2d)
+    (nvram-bytes . #x00000286)
+    (nvram-rounded-bytes . #x00000288)
+    (nvram-address . #x0007fd74)
+    (nvram-size-word . #xff5d00a2)
+    (firmware-checksum . #x51cea20c)
+    (nvram-checksum . #x10657146)
+    (nvram-verify-checksum . #x10657146)
+    (mismatch-offset . #xffffffff)
+    (arm-before ... (core-up . #f))
+    (arm-after ... (core-up . #t))
+    (HT-CLOCK-CSR . #x000000c0)
+    (HT-attempts . #x0000000a)
+    (IOEN . #x00000006)
+    (IORDY . #x00000006)
+    (F2-attempts . #x0000001f)
+    (last-response . #x00001006)
+    (last-error)
+    (SDHC0 ... (NORM_INT . #x00000100)
+               (ERR_INT . #x00000000)
+               (SW_RST . #x00000000)
+               (RESP01 . #x00001006) ...))
+#+end_example
+
+This proves the firmware boots far enough to request HT clock and make
+function 2 ready. =NORM_INT #x100= is the SDHC card-interrupt bit, which
+is consistent with firmware raising an SDIO interrupt after boot. The next
+Wi-Fi milestone is reading and acknowledging SDPCM/F2 frames and finding
+the firmware-ready mailbox/protocol state.
+
 * Next actions
 
 1. Add REPL history and better editing across continuation lines.
 2. Add a FAT/exFAT-aware storage layer after raw block reads/writes work.
 3. Test the newer Infineon target =infineon/cy8cxxa.cfg= as a replacement
    for obsolete =target/psoc6_2m.cfg=.
-4. Start Wi-Fi from a known-good Infineon or Zephyr sample before trying
-   to hand-port CYW4343W support.
+4. Add SDPCM/F2 frame diagnostics now that the CYW43430 firmware boots and
+   function 2 becomes ready.
+5. Start Wi-Fi from a known-good Infineon or Zephyr sample before trying
+   to hand-port the full CYW4343W network stack.

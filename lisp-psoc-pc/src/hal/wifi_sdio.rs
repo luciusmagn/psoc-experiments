@@ -63,25 +63,36 @@ const SDIO_CCCR_F1_BLOCK_SIZE_HIGH: u32 = 0x111;
 const SDIO_CCCR_F2_BLOCK_SIZE_LOW: u32 = 0x210;
 const SDIO_CCCR_F2_BLOCK_SIZE_HIGH: u32 = 0x211;
 const SDIO_BACKPLANE_FUNCTION: u8 = 1;
+const SDIO_FUNCTION_ENABLE_1_2: u8 = 0x06;
+const SDIO_FUNCTION_READY_2: u8 = 0x04;
 const SDIO_BACKPLANE_ADDRESS_LOW: u32 = 0x1000a;
 const SDIO_BACKPLANE_ADDRESS_MID: u32 = 0x1000b;
 const SDIO_BACKPLANE_ADDRESS_HIGH: u32 = 0x1000c;
+const SDIO_FUNCTION2_WATERMARK: u32 = 0x10008;
 const SDIO_CHIP_CLOCK_CSR: u32 = 0x1000e;
+const SDIO_PULL_UP: u32 = 0x1000f;
 const SDIO_FUNCTION_ENABLE_1: u8 = 0x02;
 const SDIO_FUNCTION_READY_1: u8 = 0x02;
 const SDIO_INTERRUPT_MASTER_FUNC1_FUNC2: u8 = 0x07;
+const SDIO_INTERRUPT_MASTER_FUNC2: u8 = 0x05;
+const SDIO_FUNCTION_MASK_F1_F2: u8 = 0x03;
 const SDIO_BUS_WIDTH_MASK: u8 = 0x03;
 const SDIO_BUS_WIDTH_4BIT: u8 = 0x02;
 const SDIO_BLOCK_SIZE_64: u8 = 64;
 const SDIO_READY_MAX_ATTEMPTS: u16 = 1000;
 const SDIO_BACKPLANE_SETUP_MAX_ATTEMPTS: u16 = 1000;
 const SDIO_ALP_AVAIL_MAX_ATTEMPTS: u16 = 100;
+const SDIO_HT_AVAIL_MAX_ATTEMPTS: u16 = 2500;
+const SDIO_F2_READY_MAX_ATTEMPTS: u16 = 1000;
 const SBSDIO_FORCE_ALP: u8 = 0x01;
 const SBSDIO_ALP_AVAIL_REQ: u8 = 0x08;
 const SBSDIO_FORCE_HW_CLKREQ_OFF: u8 = 0x20;
 const SBSDIO_ALP_AVAIL: u8 = 0x40;
+const SBSDIO_HT_AVAIL: u8 = 0x80;
 const SBSDIO_SB_OFT_ADDR_MASK: u32 = 0x07fff;
 const SBSDIO_SB_ACCESS_2_4B_FLAG: u32 = 0x08000;
+const SDIO_F2_WATERMARK: u8 = 8;
+const HOST_INTERRUPT_MASK: u32 = 0x0000_00f0;
 const AI_IOCTRL_OFFSET: u32 = 0x408;
 const AI_RESETCTRL_OFFSET: u32 = 0x800;
 const AI_RESETSTATUS_OFFSET: u32 = 0x804;
@@ -92,6 +103,9 @@ const CORE_CONTROL_NONE: u8 = 0;
 const CORE_CONTROL_RESET: u8 = AIRC_RESET;
 const CORE_CONTROL_CLOCKED: u8 = SICF_CLOCK_EN;
 const CORE_CONTROL_FORCE_CLOCKED: u8 = SICF_FGC | SICF_CLOCK_EN;
+const CYW43430_SDIO_CORE_BASE: u32 = 0x1800_2000;
+const CYW43430_SDIO_INT_HOST_MASK: u32 = CYW43430_SDIO_CORE_BASE + 0x24;
+const CYW43430_SDIO_FUNCTION_INT_MASK: u32 = CYW43430_SDIO_CORE_BASE + 0x34;
 const CYW43430_ARM_WRAPPER_BASE: u32 = 0x1810_3000;
 const CYW43430_SOCSRAM_BASE: u32 = 0x1800_4000;
 const CYW43430_SOCSRAM_WRAPPER_BASE: u32 = 0x1810_4000;
@@ -110,6 +124,7 @@ const ADMA_ACT_TRAN: u32 = 4 << 3;
 const ADMA_LEN_SHIFT: u32 = 16;
 const FNV_OFFSET_BASIS: u32 = 0x811c_9dc5;
 const FNV_PRIME: u32 = 0x0100_0193;
+const NVRAM_IMAGE_SIZE_ALIGNMENT: usize = 4;
 
 const P2_SDIO_DATA_MASK: u32 = 0x0f | (0x0f << 4) | (0x0f << 8) | (0x0f << 12);
 const P2_SDIO_DATA_CFG: u32 = DRIVE_STRONG_INPUT
@@ -334,6 +349,30 @@ pub enum WifiSdioFirmwareLoadStatus {
 }
 
 #[derive(Clone, Copy)]
+pub enum WifiSdioFirmwareStartStatus {
+    Ready,
+    FirmwareFailed,
+    NvramMissing,
+    NvramTooLarge,
+    NvramWriteFailed,
+    NvramVerifyReadFailed,
+    NvramVerifyMismatch,
+    NvramSizeWriteFailed,
+    PullUpWriteFailed,
+    IoEnableWriteFailed,
+    InterruptEnableWriteFailed,
+    ArmResetFailed,
+    ArmStateReadFailed,
+    HtReadFailed,
+    HtTimeout,
+    HostInterruptMaskWriteFailed,
+    FunctionInterruptMaskWriteFailed,
+    WatermarkWriteFailed,
+    F2ReadyReadFailed,
+    F2ReadyTimeout,
+}
+
+#[derive(Clone, Copy)]
 pub enum WifiSdioCoreStateStatus {
     Ready,
     SetupFailed,
@@ -425,6 +464,16 @@ enum BackplaneByteWriteError {
     Cmd52(CommandError),
 }
 
+enum ClockWaitError {
+    Read { attempts: u16, error: CommandError },
+    Timeout { value: u8, attempts: u16 },
+}
+
+enum ReadyWaitError {
+    Read { attempts: u16, error: CommandError },
+    Timeout { value: u8, attempts: u16 },
+}
+
 #[derive(Clone, Copy)]
 struct BackplaneByteRead {
     value: u8,
@@ -464,6 +513,28 @@ struct BackplaneBlockRead {
 
 struct BackplaneBlockWrite {
     response: u32,
+}
+
+struct NvramWrite {
+    address: u32,
+    rounded_bytes: u32,
+    size_word: u32,
+    checksum: u32,
+    last_response: u32,
+}
+
+struct NvramVerify {
+    checksum: u32,
+    mismatch_offset: u32,
+    mismatch_expected: u32,
+    mismatch_actual: u32,
+    last_response: u32,
+}
+
+enum NvramWriteError {
+    TooLarge,
+    Block(BackplaneBlockWriteError),
+    Word(BackplaneWordWriteFailure),
 }
 
 enum BackplaneBlockReadError {
@@ -760,6 +831,35 @@ pub struct WifiSdioFirmwareLoadReport {
     pub mismatch_offset: u32,
     pub mismatch_expected: u32,
     pub mismatch_actual: u32,
+    pub last_response: u32,
+    pub last_error: Option<CommandError>,
+    pub host: WifiSdioHostSnapshot,
+}
+
+pub struct WifiSdioFirmwareStartReport {
+    pub status: WifiSdioFirmwareStartStatus,
+    pub firmware_status: WifiSdioFirmwareLoadStatus,
+    pub setup_status: WifiSdioBackplaneStatus,
+    pub read_status: WifiSdioBackplaneReadStatus,
+    pub write_status: WifiSdioBackplaneWrite32Status,
+    pub firmware_bytes: u32,
+    pub nvram_bytes: u32,
+    pub nvram_rounded_bytes: u32,
+    pub nvram_address: u32,
+    pub nvram_size_word: u32,
+    pub firmware_checksum: u32,
+    pub nvram_checksum: u32,
+    pub nvram_verify_checksum: u32,
+    pub mismatch_offset: u32,
+    pub mismatch_expected: u32,
+    pub mismatch_actual: u32,
+    pub arm_before: WifiSdioCoreSnapshot,
+    pub arm_after: WifiSdioCoreSnapshot,
+    pub ht_clock_csr: u8,
+    pub ht_attempts: u16,
+    pub io_enable: u8,
+    pub io_ready: u8,
+    pub f2_attempts: u16,
     pub last_response: u32,
     pub last_error: Option<CommandError>,
     pub host: WifiSdioHostSnapshot,
@@ -2877,6 +2977,644 @@ pub fn load_firmware(p: &Peripherals, firmware: &[u8]) -> WifiSdioFirmwareLoadRe
     )
 }
 
+pub fn start_firmware(
+    p: &Peripherals,
+    firmware: &[u8],
+    nvram: &[u8],
+) -> WifiSdioFirmwareStartReport {
+    let firmware_report = load_firmware(p, firmware);
+    if !matches!(firmware_report.status, WifiSdioFirmwareLoadStatus::Ready) {
+        return firmware_start_report(
+            p,
+            WifiSdioFirmwareStartStatus::FirmwareFailed,
+            firmware_report.status,
+            firmware_report.setup_status,
+            firmware_report.read_status,
+            firmware_report.write_status,
+            firmware_report.firmware_bytes,
+            0,
+            0,
+            0,
+            0,
+            firmware_report.firmware_checksum,
+            0,
+            0,
+            firmware_report.mismatch_offset,
+            firmware_report.mismatch_expected,
+            firmware_report.mismatch_actual,
+            empty_core_snapshot(),
+            empty_core_snapshot(),
+            0,
+            0,
+            0,
+            0,
+            0,
+            firmware_report.last_response,
+            firmware_report.last_error,
+        );
+    }
+
+    if nvram.is_empty() {
+        return firmware_start_report(
+            p,
+            WifiSdioFirmwareStartStatus::NvramMissing,
+            firmware_report.status,
+            firmware_report.setup_status,
+            WifiSdioBackplaneReadStatus::Ready,
+            WifiSdioBackplaneWrite32Status::Ready,
+            firmware_report.firmware_bytes,
+            0,
+            0,
+            0,
+            0,
+            firmware_report.firmware_checksum,
+            0,
+            0,
+            SOCSRAM_BLOCK_PROBE_NO_MISMATCH,
+            0,
+            0,
+            empty_core_snapshot(),
+            empty_core_snapshot(),
+            0,
+            0,
+            0,
+            0,
+            0,
+            firmware_report.last_response,
+            None,
+        );
+    }
+
+    let core = &p.SDHC0.core;
+    let setup_status = firmware_report.setup_status;
+    let mut last_response = firmware_report.last_response;
+
+    let nvram_write = match write_nvram_image_after_setup(core, nvram, &mut last_response) {
+        Ok(write) => {
+            last_response = write.last_response;
+            write
+        }
+        Err(error) => {
+            let (status, write_status, response, last_error) = nvram_write_error(error);
+            return firmware_start_report(
+                p,
+                status,
+                firmware_report.status,
+                setup_status,
+                WifiSdioBackplaneReadStatus::Ready,
+                write_status,
+                firmware_report.firmware_bytes,
+                nvram.len() as u32,
+                rounded_nvram_len(nvram.len()) as u32,
+                nvram_download_address(rounded_nvram_len(nvram.len())),
+                nvram_size_word(rounded_nvram_len(nvram.len())),
+                firmware_report.firmware_checksum,
+                checksum_padded_bytes(nvram, rounded_nvram_len(nvram.len())),
+                0,
+                SOCSRAM_BLOCK_PROBE_NO_MISMATCH,
+                0,
+                0,
+                empty_core_snapshot(),
+                empty_core_snapshot(),
+                0,
+                0,
+                0,
+                0,
+                0,
+                response_or_last(response, last_response),
+                last_error,
+            );
+        }
+    };
+
+    let nvram_verify = match verify_nvram_image_after_setup(core, nvram, &mut last_response) {
+        Ok(verify) => {
+            last_response = verify.last_response;
+            verify
+        }
+        Err(error) => {
+            let (read_status, response, last_error) = backplane_block_read_error(error);
+            return firmware_start_report(
+                p,
+                WifiSdioFirmwareStartStatus::NvramVerifyReadFailed,
+                firmware_report.status,
+                setup_status,
+                read_status,
+                WifiSdioBackplaneWrite32Status::Ready,
+                firmware_report.firmware_bytes,
+                nvram.len() as u32,
+                nvram_write.rounded_bytes,
+                nvram_write.address,
+                nvram_write.size_word,
+                firmware_report.firmware_checksum,
+                nvram_write.checksum,
+                0,
+                SOCSRAM_BLOCK_PROBE_NO_MISMATCH,
+                0,
+                0,
+                empty_core_snapshot(),
+                empty_core_snapshot(),
+                0,
+                0,
+                0,
+                0,
+                0,
+                response_or_last(response, last_response),
+                last_error,
+            );
+        }
+    };
+
+    if nvram_verify.mismatch_offset != SOCSRAM_BLOCK_PROBE_NO_MISMATCH {
+        return firmware_start_report(
+            p,
+            WifiSdioFirmwareStartStatus::NvramVerifyMismatch,
+            firmware_report.status,
+            setup_status,
+            WifiSdioBackplaneReadStatus::Ready,
+            WifiSdioBackplaneWrite32Status::Ready,
+            firmware_report.firmware_bytes,
+            nvram.len() as u32,
+            nvram_write.rounded_bytes,
+            nvram_write.address,
+            nvram_write.size_word,
+            firmware_report.firmware_checksum,
+            nvram_write.checksum,
+            nvram_verify.checksum,
+            nvram_verify.mismatch_offset,
+            nvram_verify.mismatch_expected,
+            nvram_verify.mismatch_actual,
+            empty_core_snapshot(),
+            empty_core_snapshot(),
+            0,
+            0,
+            0,
+            0,
+            0,
+            last_response,
+            None,
+        );
+    }
+
+    match write_backplane_u32_after_setup(
+        core,
+        CYW43430_SOCSRAM_BYTES as u32 - 4,
+        nvram_write.size_word,
+        last_response,
+    ) {
+        Ok(write) => {
+            last_response = write.response;
+        }
+        Err(error) => {
+            return firmware_start_report(
+                p,
+                WifiSdioFirmwareStartStatus::NvramSizeWriteFailed,
+                firmware_report.status,
+                setup_status,
+                WifiSdioBackplaneReadStatus::Ready,
+                error.status,
+                firmware_report.firmware_bytes,
+                nvram.len() as u32,
+                nvram_write.rounded_bytes,
+                nvram_write.address,
+                nvram_write.size_word,
+                firmware_report.firmware_checksum,
+                nvram_write.checksum,
+                nvram_verify.checksum,
+                SOCSRAM_BLOCK_PROBE_NO_MISMATCH,
+                0,
+                0,
+                empty_core_snapshot(),
+                empty_core_snapshot(),
+                0,
+                0,
+                0,
+                0,
+                0,
+                error.response,
+                error.last_error,
+            );
+        }
+    }
+
+    if let Err(error) =
+        cmd52_write_function_byte_selected(core, SDIO_BACKPLANE_FUNCTION, SDIO_PULL_UP, 0)
+    {
+        return firmware_start_command_error_report(
+            p,
+            WifiSdioFirmwareStartStatus::PullUpWriteFailed,
+            &firmware_report,
+            &nvram_write,
+            &nvram_verify,
+            nvram.len() as u32,
+            last_response,
+            error,
+        );
+    }
+
+    let io_enable =
+        match cmd52_write_byte_selected(core, SDIO_CCCR_IO_ENABLE, SDIO_FUNCTION_ENABLE_1_2) {
+            Ok(response) => {
+                last_response = response;
+                SDIO_FUNCTION_ENABLE_1_2
+            }
+            Err(error) => {
+                return firmware_start_command_error_report(
+                    p,
+                    WifiSdioFirmwareStartStatus::IoEnableWriteFailed,
+                    &firmware_report,
+                    &nvram_write,
+                    &nvram_verify,
+                    nvram.len() as u32,
+                    last_response,
+                    error,
+                );
+            }
+        };
+
+    if let Err(error) = cmd52_write_byte_selected(
+        core,
+        SDIO_CCCR_INTERRUPT_ENABLE,
+        SDIO_INTERRUPT_MASTER_FUNC2,
+    ) {
+        return firmware_start_command_error_report(
+            p,
+            WifiSdioFirmwareStartStatus::InterruptEnableWriteFailed,
+            &firmware_report,
+            &nvram_write,
+            &nvram_verify,
+            nvram.len() as u32,
+            last_response,
+            error,
+        );
+    }
+
+    let arm_before = match read_core_snapshot(core, CYW43430_ARM_WRAPPER_BASE) {
+        Ok((snapshot, response)) => {
+            last_response = response;
+            snapshot
+        }
+        Err(error) => {
+            let (_, last_error) = before_core_snapshot_error(error);
+            return firmware_start_report(
+                p,
+                WifiSdioFirmwareStartStatus::ArmStateReadFailed,
+                firmware_report.status,
+                setup_status,
+                WifiSdioBackplaneReadStatus::Ready,
+                WifiSdioBackplaneWrite32Status::Ready,
+                firmware_report.firmware_bytes,
+                nvram.len() as u32,
+                nvram_write.rounded_bytes,
+                nvram_write.address,
+                nvram_write.size_word,
+                firmware_report.firmware_checksum,
+                nvram_write.checksum,
+                nvram_verify.checksum,
+                SOCSRAM_BLOCK_PROBE_NO_MISMATCH,
+                0,
+                0,
+                empty_core_snapshot(),
+                empty_core_snapshot(),
+                0,
+                0,
+                io_enable,
+                0,
+                0,
+                last_response,
+                Some(last_error),
+            );
+        }
+    };
+
+    if let Err(error) = reset_core_registers(core, CYW43430_ARM_WRAPPER_BASE, &mut last_response) {
+        let (_, last_error) = core_reset_step_error(error);
+        return firmware_start_report(
+            p,
+            WifiSdioFirmwareStartStatus::ArmResetFailed,
+            firmware_report.status,
+            setup_status,
+            WifiSdioBackplaneReadStatus::Ready,
+            WifiSdioBackplaneWrite32Status::Ready,
+            firmware_report.firmware_bytes,
+            nvram.len() as u32,
+            nvram_write.rounded_bytes,
+            nvram_write.address,
+            nvram_write.size_word,
+            firmware_report.firmware_checksum,
+            nvram_write.checksum,
+            nvram_verify.checksum,
+            SOCSRAM_BLOCK_PROBE_NO_MISMATCH,
+            0,
+            0,
+            arm_before,
+            empty_core_snapshot(),
+            0,
+            0,
+            io_enable,
+            0,
+            0,
+            last_response,
+            Some(last_error),
+        );
+    }
+
+    let arm_after = match read_core_snapshot(core, CYW43430_ARM_WRAPPER_BASE) {
+        Ok((snapshot, response)) => {
+            last_response = response;
+            snapshot
+        }
+        Err(error) => {
+            let (_, last_error) = after_core_snapshot_error(error);
+            return firmware_start_report(
+                p,
+                WifiSdioFirmwareStartStatus::ArmStateReadFailed,
+                firmware_report.status,
+                setup_status,
+                WifiSdioBackplaneReadStatus::Ready,
+                WifiSdioBackplaneWrite32Status::Ready,
+                firmware_report.firmware_bytes,
+                nvram.len() as u32,
+                nvram_write.rounded_bytes,
+                nvram_write.address,
+                nvram_write.size_word,
+                firmware_report.firmware_checksum,
+                nvram_write.checksum,
+                nvram_verify.checksum,
+                SOCSRAM_BLOCK_PROBE_NO_MISMATCH,
+                0,
+                0,
+                arm_before,
+                empty_core_snapshot(),
+                0,
+                0,
+                io_enable,
+                0,
+                0,
+                last_response,
+                Some(last_error),
+            );
+        }
+    };
+
+    let (ht_clock_csr, ht_attempts) = match wait_ht_available(core, &mut last_response) {
+        Ok(result) => result,
+        Err(ClockWaitError::Read { attempts, error }) => {
+            return firmware_start_report(
+                p,
+                WifiSdioFirmwareStartStatus::HtReadFailed,
+                firmware_report.status,
+                setup_status,
+                WifiSdioBackplaneReadStatus::Ready,
+                WifiSdioBackplaneWrite32Status::Ready,
+                firmware_report.firmware_bytes,
+                nvram.len() as u32,
+                nvram_write.rounded_bytes,
+                nvram_write.address,
+                nvram_write.size_word,
+                firmware_report.firmware_checksum,
+                nvram_write.checksum,
+                nvram_verify.checksum,
+                SOCSRAM_BLOCK_PROBE_NO_MISMATCH,
+                0,
+                0,
+                arm_before,
+                arm_after,
+                0,
+                attempts,
+                io_enable,
+                0,
+                0,
+                last_response,
+                Some(error),
+            );
+        }
+        Err(ClockWaitError::Timeout { value, attempts }) => {
+            return firmware_start_report(
+                p,
+                WifiSdioFirmwareStartStatus::HtTimeout,
+                firmware_report.status,
+                setup_status,
+                WifiSdioBackplaneReadStatus::Ready,
+                WifiSdioBackplaneWrite32Status::Ready,
+                firmware_report.firmware_bytes,
+                nvram.len() as u32,
+                nvram_write.rounded_bytes,
+                nvram_write.address,
+                nvram_write.size_word,
+                firmware_report.firmware_checksum,
+                nvram_write.checksum,
+                nvram_verify.checksum,
+                SOCSRAM_BLOCK_PROBE_NO_MISMATCH,
+                0,
+                0,
+                arm_before,
+                arm_after,
+                value,
+                attempts,
+                io_enable,
+                0,
+                0,
+                last_response,
+                None,
+            );
+        }
+    };
+
+    match write_backplane_u32_after_setup(
+        core,
+        CYW43430_SDIO_INT_HOST_MASK,
+        HOST_INTERRUPT_MASK,
+        last_response,
+    ) {
+        Ok(write) => {
+            last_response = write.response;
+        }
+        Err(error) => {
+            return firmware_start_report(
+                p,
+                WifiSdioFirmwareStartStatus::HostInterruptMaskWriteFailed,
+                firmware_report.status,
+                setup_status,
+                WifiSdioBackplaneReadStatus::Ready,
+                error.status,
+                firmware_report.firmware_bytes,
+                nvram.len() as u32,
+                nvram_write.rounded_bytes,
+                nvram_write.address,
+                nvram_write.size_word,
+                firmware_report.firmware_checksum,
+                nvram_write.checksum,
+                nvram_verify.checksum,
+                SOCSRAM_BLOCK_PROBE_NO_MISMATCH,
+                0,
+                0,
+                arm_before,
+                arm_after,
+                ht_clock_csr,
+                ht_attempts,
+                io_enable,
+                0,
+                0,
+                error.response,
+                error.last_error,
+            );
+        }
+    }
+
+    match write_backplane_u8(
+        core,
+        CYW43430_SDIO_FUNCTION_INT_MASK,
+        SDIO_FUNCTION_MASK_F1_F2,
+    ) {
+        Ok(write) => {
+            last_response = write.response;
+        }
+        Err(error) => {
+            let (_, last_error) = backplane_write8_window_or_cmd_error(error);
+            return firmware_start_report(
+                p,
+                WifiSdioFirmwareStartStatus::FunctionInterruptMaskWriteFailed,
+                firmware_report.status,
+                setup_status,
+                WifiSdioBackplaneReadStatus::Ready,
+                WifiSdioBackplaneWrite32Status::Ready,
+                firmware_report.firmware_bytes,
+                nvram.len() as u32,
+                nvram_write.rounded_bytes,
+                nvram_write.address,
+                nvram_write.size_word,
+                firmware_report.firmware_checksum,
+                nvram_write.checksum,
+                nvram_verify.checksum,
+                SOCSRAM_BLOCK_PROBE_NO_MISMATCH,
+                0,
+                0,
+                arm_before,
+                arm_after,
+                ht_clock_csr,
+                ht_attempts,
+                io_enable,
+                0,
+                0,
+                last_response,
+                Some(last_error),
+            );
+        }
+    }
+
+    if let Err(error) = cmd52_write_function_byte_selected(
+        core,
+        SDIO_BACKPLANE_FUNCTION,
+        SDIO_FUNCTION2_WATERMARK,
+        SDIO_F2_WATERMARK,
+    ) {
+        return firmware_start_command_error_report(
+            p,
+            WifiSdioFirmwareStartStatus::WatermarkWriteFailed,
+            &firmware_report,
+            &nvram_write,
+            &nvram_verify,
+            nvram.len() as u32,
+            last_response,
+            error,
+        );
+    }
+
+    let (io_ready, f2_attempts) = match wait_f2_ready(core, &mut last_response) {
+        Ok(result) => result,
+        Err(ReadyWaitError::Read { attempts, error }) => {
+            return firmware_start_report(
+                p,
+                WifiSdioFirmwareStartStatus::F2ReadyReadFailed,
+                firmware_report.status,
+                setup_status,
+                WifiSdioBackplaneReadStatus::Ready,
+                WifiSdioBackplaneWrite32Status::Ready,
+                firmware_report.firmware_bytes,
+                nvram.len() as u32,
+                nvram_write.rounded_bytes,
+                nvram_write.address,
+                nvram_write.size_word,
+                firmware_report.firmware_checksum,
+                nvram_write.checksum,
+                nvram_verify.checksum,
+                SOCSRAM_BLOCK_PROBE_NO_MISMATCH,
+                0,
+                0,
+                arm_before,
+                arm_after,
+                ht_clock_csr,
+                ht_attempts,
+                io_enable,
+                0,
+                attempts,
+                last_response,
+                Some(error),
+            );
+        }
+        Err(ReadyWaitError::Timeout { value, attempts }) => {
+            return firmware_start_report(
+                p,
+                WifiSdioFirmwareStartStatus::F2ReadyTimeout,
+                firmware_report.status,
+                setup_status,
+                WifiSdioBackplaneReadStatus::Ready,
+                WifiSdioBackplaneWrite32Status::Ready,
+                firmware_report.firmware_bytes,
+                nvram.len() as u32,
+                nvram_write.rounded_bytes,
+                nvram_write.address,
+                nvram_write.size_word,
+                firmware_report.firmware_checksum,
+                nvram_write.checksum,
+                nvram_verify.checksum,
+                SOCSRAM_BLOCK_PROBE_NO_MISMATCH,
+                0,
+                0,
+                arm_before,
+                arm_after,
+                ht_clock_csr,
+                ht_attempts,
+                io_enable,
+                value,
+                attempts,
+                last_response,
+                None,
+            );
+        }
+    };
+
+    firmware_start_report(
+        p,
+        WifiSdioFirmwareStartStatus::Ready,
+        firmware_report.status,
+        setup_status,
+        WifiSdioBackplaneReadStatus::Ready,
+        WifiSdioBackplaneWrite32Status::Ready,
+        firmware_report.firmware_bytes,
+        nvram.len() as u32,
+        nvram_write.rounded_bytes,
+        nvram_write.address,
+        nvram_write.size_word,
+        firmware_report.firmware_checksum,
+        nvram_write.checksum,
+        nvram_verify.checksum,
+        SOCSRAM_BLOCK_PROBE_NO_MISMATCH,
+        0,
+        0,
+        arm_before,
+        arm_after,
+        ht_clock_csr,
+        ht_attempts,
+        io_enable,
+        io_ready,
+        f2_attempts,
+        last_response,
+        None,
+    )
+}
+
 fn prepare_cyw43430_socram(p: &Peripherals) -> Result<SocramPrepared, SocramPrepareError> {
     let setup = setup_backplane(p);
     if !matches!(setup.status, WifiSdioBackplaneStatus::Ready) {
@@ -3275,6 +4013,15 @@ fn checksum_bytes(bytes: &[u8]) -> u32 {
     checksum
 }
 
+fn checksum_padded_bytes(bytes: &[u8], rounded_len: usize) -> u32 {
+    let mut checksum = FNV_OFFSET_BASIS;
+    for index in 0..rounded_len {
+        let byte = if index < bytes.len() { bytes[index] } else { 0 };
+        checksum = checksum_byte(checksum, byte);
+    }
+    checksum
+}
+
 fn firmware_chunk_count(byte_count: usize) -> u32 {
     ((byte_count + SDIO_CMD53_BLOCK_BYTES as usize - 1) / SDIO_CMD53_BLOCK_BYTES as usize) as u32
 }
@@ -3304,6 +4051,182 @@ fn firmware_chunk_words(
 
 fn word_byte(words: &[u32; SDIO_CMD53_BLOCK_WORDS], byte_index: usize) -> u8 {
     ((words[byte_index / 4] >> ((byte_index & 0x03) * 8)) & 0xff) as u8
+}
+
+fn wait_ht_available(
+    core: &sdhc0::CORE,
+    last_response: &mut u32,
+) -> Result<(u8, u16), ClockWaitError> {
+    let mut attempts = 0u16;
+    let mut value = 0u8;
+    while attempts < SDIO_HT_AVAIL_MAX_ATTEMPTS {
+        attempts += 1;
+        let read =
+            cmd52_read_function_byte_selected(core, SDIO_BACKPLANE_FUNCTION, SDIO_CHIP_CLOCK_CSR)
+                .map_err(|error| ClockWaitError::Read { attempts, error })?;
+        value = read.0;
+        *last_response = read.1;
+        if value & SBSDIO_HT_AVAIL != 0 {
+            return Ok((value, attempts));
+        }
+        delay_ms(1);
+    }
+
+    Err(ClockWaitError::Timeout { value, attempts })
+}
+
+fn wait_f2_ready(core: &sdhc0::CORE, last_response: &mut u32) -> Result<(u8, u16), ReadyWaitError> {
+    let mut attempts = 0u16;
+    let mut value = 0u8;
+    while attempts < SDIO_F2_READY_MAX_ATTEMPTS {
+        attempts += 1;
+        let read = cmd52_read_byte_selected(core, SDIO_CCCR_IO_READY)
+            .map_err(|error| ReadyWaitError::Read { attempts, error })?;
+        value = read.0;
+        *last_response = read.1;
+        if value & SDIO_FUNCTION_READY_2 != 0 {
+            return Ok((value, attempts));
+        }
+        delay_ms(1);
+    }
+
+    Err(ReadyWaitError::Timeout { value, attempts })
+}
+
+fn rounded_nvram_len(byte_count: usize) -> usize {
+    let remainder = byte_count % NVRAM_IMAGE_SIZE_ALIGNMENT;
+    if remainder == 0 {
+        byte_count
+    } else {
+        byte_count + NVRAM_IMAGE_SIZE_ALIGNMENT - remainder
+    }
+}
+
+fn nvram_download_address(rounded_len: usize) -> u32 {
+    CYW43430_SOCSRAM_BYTES as u32 - 4 - rounded_len as u32
+}
+
+fn nvram_size_word(rounded_len: usize) -> u32 {
+    let word_count = (rounded_len / 4) as u32;
+    (!word_count << 16) | word_count
+}
+
+fn padded_byte(bytes: &[u8], index: usize) -> u8 {
+    if index < bytes.len() {
+        bytes[index]
+    } else {
+        0
+    }
+}
+
+fn padded_word(bytes: &[u8], offset: usize) -> u32 {
+    let b0 = padded_byte(bytes, offset) as u32;
+    let b1 = padded_byte(bytes, offset + 1) as u32;
+    let b2 = padded_byte(bytes, offset + 2) as u32;
+    let b3 = padded_byte(bytes, offset + 3) as u32;
+    b0 | (b1 << 8) | (b2 << 16) | (b3 << 24)
+}
+
+fn write_nvram_image_after_setup(
+    core: &sdhc0::CORE,
+    nvram: &[u8],
+    last_response: &mut u32,
+) -> Result<NvramWrite, NvramWriteError> {
+    let rounded_len = rounded_nvram_len(nvram.len());
+    if rounded_len == 0 {
+        return Err(NvramWriteError::TooLarge);
+    }
+    if rounded_len > CYW43430_SOCSRAM_BYTES - 4 {
+        return Err(NvramWriteError::TooLarge);
+    }
+
+    let address = nvram_download_address(rounded_len);
+    let mut offset = 0usize;
+    while rounded_len - offset >= SDIO_CMD53_BLOCK_BYTES as usize {
+        let chunk_len = SDIO_CMD53_BLOCK_BYTES as usize;
+        let words = firmware_chunk_words(nvram, offset, chunk_len);
+        let write = write_backplane_block_after_setup(core, address + offset as u32, &words)
+            .map_err(NvramWriteError::Block)?;
+        *last_response = write.response;
+        offset += SDIO_CMD53_BLOCK_BYTES as usize;
+    }
+
+    while offset < rounded_len {
+        let value = padded_word(nvram, offset);
+        let write =
+            write_backplane_u32_after_setup(core, address + offset as u32, value, *last_response)
+                .map_err(NvramWriteError::Word)?;
+        *last_response = write.response;
+        offset += 4;
+    }
+
+    Ok(NvramWrite {
+        address,
+        rounded_bytes: rounded_len as u32,
+        size_word: nvram_size_word(rounded_len),
+        checksum: checksum_padded_bytes(nvram, rounded_len),
+        last_response: *last_response,
+    })
+}
+
+fn verify_nvram_image_after_setup(
+    core: &sdhc0::CORE,
+    nvram: &[u8],
+    last_response: &mut u32,
+) -> Result<NvramVerify, BackplaneBlockReadError> {
+    let rounded_len = rounded_nvram_len(nvram.len());
+    let address = nvram_download_address(rounded_len);
+    let mut verify_checksum = FNV_OFFSET_BASIS;
+    let mut mismatch_offset = SOCSRAM_BLOCK_PROBE_NO_MISMATCH;
+    let mut mismatch_expected = 0;
+    let mut mismatch_actual = 0;
+    let mut offset = 0usize;
+
+    while rounded_len - offset >= SDIO_CMD53_BLOCK_BYTES as usize {
+        let read = read_backplane_block_after_setup(core, address + offset as u32)?;
+        *last_response = read.response;
+        for chunk_offset in 0..SDIO_CMD53_BLOCK_BYTES as usize {
+            let expected = padded_byte(nvram, offset + chunk_offset);
+            let actual = word_byte(&read.words, chunk_offset);
+            verify_checksum = checksum_byte(verify_checksum, actual);
+            if mismatch_offset == SOCSRAM_BLOCK_PROBE_NO_MISMATCH && expected != actual {
+                mismatch_offset = (offset + chunk_offset) as u32;
+                mismatch_expected = expected as u32;
+                mismatch_actual = actual as u32;
+            }
+        }
+        offset += SDIO_CMD53_BLOCK_BYTES as usize;
+    }
+
+    while offset < rounded_len {
+        let read =
+            read_backplane_u32_bytes(core, address + offset as u32).map_err(
+                |error| match error {
+                    BackplaneByteReadError::Window(error) => BackplaneBlockReadError::Window(error),
+                    BackplaneByteReadError::Cmd52(error) => BackplaneBlockReadError::Cmd53(error),
+                },
+            )?;
+        *last_response = read.response;
+        for byte_index in 0..4 {
+            let expected = padded_byte(nvram, offset + byte_index);
+            let actual = ((read.value >> (byte_index * 8)) & 0xff) as u8;
+            verify_checksum = checksum_byte(verify_checksum, actual);
+            if mismatch_offset == SOCSRAM_BLOCK_PROBE_NO_MISMATCH && expected != actual {
+                mismatch_offset = (offset + byte_index) as u32;
+                mismatch_expected = expected as u32;
+                mismatch_actual = actual as u32;
+            }
+        }
+        offset += 4;
+    }
+
+    Ok(NvramVerify {
+        checksum: verify_checksum,
+        mismatch_offset,
+        mismatch_expected,
+        mismatch_actual,
+        last_response: *last_response,
+    })
 }
 
 fn mismatch_words(
@@ -4022,6 +4945,50 @@ fn firmware_load_alp_error(
             response,
             Some(error),
         ),
+    }
+}
+
+fn nvram_write_error(
+    error: NvramWriteError,
+) -> (
+    WifiSdioFirmwareStartStatus,
+    WifiSdioBackplaneWrite32Status,
+    u32,
+    Option<CommandError>,
+) {
+    match error {
+        NvramWriteError::TooLarge => (
+            WifiSdioFirmwareStartStatus::NvramTooLarge,
+            WifiSdioBackplaneWrite32Status::InvalidAddress,
+            0,
+            None,
+        ),
+        NvramWriteError::Block(error) => {
+            let (status, response, last_error) = backplane_block_write_error(error);
+            (
+                WifiSdioFirmwareStartStatus::NvramWriteFailed,
+                status,
+                response,
+                last_error,
+            )
+        }
+        NvramWriteError::Word(error) => (
+            WifiSdioFirmwareStartStatus::NvramWriteFailed,
+            error.status,
+            error.response,
+            error.last_error,
+        ),
+    }
+}
+
+fn backplane_write8_window_or_cmd_error(
+    error: BackplaneByteWriteError,
+) -> (WifiSdioBackplaneWrite8Status, CommandError) {
+    match error {
+        BackplaneByteWriteError::Window(error) => backplane_write8_window_error(error),
+        BackplaneByteWriteError::Cmd52(error) => {
+            (WifiSdioBackplaneWrite8Status::Cmd52Failed, error)
+        }
     }
 }
 
@@ -4961,6 +5928,104 @@ fn firmware_load_report(
         last_error,
         host: host_snapshot(p),
     }
+}
+
+fn firmware_start_report(
+    p: &Peripherals,
+    status: WifiSdioFirmwareStartStatus,
+    firmware_status: WifiSdioFirmwareLoadStatus,
+    setup_status: WifiSdioBackplaneStatus,
+    read_status: WifiSdioBackplaneReadStatus,
+    write_status: WifiSdioBackplaneWrite32Status,
+    firmware_bytes: u32,
+    nvram_bytes: u32,
+    nvram_rounded_bytes: u32,
+    nvram_address: u32,
+    nvram_size_word: u32,
+    firmware_checksum: u32,
+    nvram_checksum: u32,
+    nvram_verify_checksum: u32,
+    mismatch_offset: u32,
+    mismatch_expected: u32,
+    mismatch_actual: u32,
+    arm_before: WifiSdioCoreSnapshot,
+    arm_after: WifiSdioCoreSnapshot,
+    ht_clock_csr: u8,
+    ht_attempts: u16,
+    io_enable: u8,
+    io_ready: u8,
+    f2_attempts: u16,
+    last_response: u32,
+    last_error: Option<CommandError>,
+) -> WifiSdioFirmwareStartReport {
+    WifiSdioFirmwareStartReport {
+        status,
+        firmware_status,
+        setup_status,
+        read_status,
+        write_status,
+        firmware_bytes,
+        nvram_bytes,
+        nvram_rounded_bytes,
+        nvram_address,
+        nvram_size_word,
+        firmware_checksum,
+        nvram_checksum,
+        nvram_verify_checksum,
+        mismatch_offset,
+        mismatch_expected,
+        mismatch_actual,
+        arm_before,
+        arm_after,
+        ht_clock_csr,
+        ht_attempts,
+        io_enable,
+        io_ready,
+        f2_attempts,
+        last_response,
+        last_error,
+        host: host_snapshot(p),
+    }
+}
+
+fn firmware_start_command_error_report(
+    p: &Peripherals,
+    status: WifiSdioFirmwareStartStatus,
+    firmware_report: &WifiSdioFirmwareLoadReport,
+    nvram_write: &NvramWrite,
+    nvram_verify: &NvramVerify,
+    nvram_bytes: u32,
+    last_response: u32,
+    error: CommandError,
+) -> WifiSdioFirmwareStartReport {
+    firmware_start_report(
+        p,
+        status,
+        firmware_report.status,
+        firmware_report.setup_status,
+        WifiSdioBackplaneReadStatus::Ready,
+        WifiSdioBackplaneWrite32Status::Ready,
+        firmware_report.firmware_bytes,
+        nvram_bytes,
+        nvram_write.rounded_bytes,
+        nvram_write.address,
+        nvram_write.size_word,
+        firmware_report.firmware_checksum,
+        nvram_write.checksum,
+        nvram_verify.checksum,
+        SOCSRAM_BLOCK_PROBE_NO_MISMATCH,
+        0,
+        0,
+        empty_core_snapshot(),
+        empty_core_snapshot(),
+        0,
+        0,
+        0,
+        0,
+        0,
+        last_response,
+        Some(error),
+    )
 }
 
 fn core_state_report(

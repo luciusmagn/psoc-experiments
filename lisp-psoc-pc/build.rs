@@ -37,11 +37,16 @@ fn main() {
     println!("cargo:rerun-if-changed=memory-raw.x");
     println!("cargo:rerun-if-changed=memory-bootloader.x");
     println!("cargo:rerun-if-changed=../.local/wifi/resources/4343WA1.bin");
+    println!("cargo:rerun-if-changed=../.local/wifi/resources/wifi_nvram.bin");
 
     if env::var("CARGO_FEATURE_WIFI_FIRMWARE_BLOB").is_ok() {
         let firmware = Path::new("../.local/wifi/resources/4343WA1.bin");
         if !firmware.exists() {
             panic!("missing CYW4343W firmware; run tools/prepare-wifi-resources.scm");
+        }
+        let nvram = Path::new("../.local/wifi/resources/wifi_nvram.bin");
+        if !nvram.exists() {
+            panic!("missing CYW4343W NVRAM; run tools/prepare-wifi-resources.scm");
         }
     }
 
