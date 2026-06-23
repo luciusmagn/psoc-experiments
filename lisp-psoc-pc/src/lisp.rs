@@ -95,6 +95,7 @@ pub trait Board {
     fn wifi_start_firmware(&mut self) -> WifiSdioFirmwareStartReport;
     fn wifi_f2_read_header(&mut self) -> WifiSdioF2HeaderReport;
     fn wifi_f2_read_frame(&mut self) -> WifiSdioF2FrameReport;
+    fn wifi_f2_read_frame_single(&mut self) -> WifiSdioF2FrameReport;
     fn wifi_f2_read_frame_abort(&mut self) -> WifiSdioF2AbortProbeReport;
     fn wifi_poll_read_frame(&mut self) -> WifiSdioPollReadFrameReport;
     fn wifi_ack_interrupts(&mut self) -> WifiSdioInterruptAckReport;
@@ -907,6 +908,7 @@ pub enum Primitive {
     WifiStartFirmware,
     WifiF2ReadHeader,
     WifiF2ReadFrame,
+    WifiF2ReadFrameSingle,
     WifiF2ReadFrameAbort,
     WifiPollReadFrame,
     WifiAckInterrupts,
@@ -988,6 +990,7 @@ impl Primitive {
             Self::WifiStartFirmware => "wifi-start-firmware",
             Self::WifiF2ReadHeader => "wifi-f2-read-header",
             Self::WifiF2ReadFrame => "wifi-f2-read-frame",
+            Self::WifiF2ReadFrameSingle => "wifi-f2-read-frame-single",
             Self::WifiF2ReadFrameAbort => "wifi-f2-read-frame-abort",
             Self::WifiPollReadFrame => "wifi-poll-read-frame",
             Self::WifiAckInterrupts => "wifi-ack-interrupts",
@@ -1224,6 +1227,10 @@ impl Machine {
         self.install_primitive(b"wifi-start-firmware", Primitive::WifiStartFirmware)?;
         self.install_primitive(b"wifi-f2-read-header", Primitive::WifiF2ReadHeader)?;
         self.install_primitive(b"wifi-f2-read-frame", Primitive::WifiF2ReadFrame)?;
+        self.install_primitive(
+            b"wifi-f2-read-frame-single",
+            Primitive::WifiF2ReadFrameSingle,
+        )?;
         self.install_primitive(b"wifi-f2-read-frame-abort", Primitive::WifiF2ReadFrameAbort)?;
         self.install_primitive(b"wifi-poll-read-frame", Primitive::WifiPollReadFrame)?;
         self.install_primitive(b"wifi-ack-interrupts", Primitive::WifiAckInterrupts)?;
@@ -2045,6 +2052,10 @@ impl Machine {
                 self.expect_count(args, 0)?;
                 self.wifi_sdio_f2_frame_report(board.wifi_f2_read_frame())
             }
+            Primitive::WifiF2ReadFrameSingle => {
+                self.expect_count(args, 0)?;
+                self.wifi_sdio_f2_frame_report(board.wifi_f2_read_frame_single())
+            }
             Primitive::WifiF2ReadFrameAbort => {
                 self.expect_count(args, 0)?;
                 self.wifi_sdio_f2_abort_probe_report(board.wifi_f2_read_frame_abort())
@@ -2457,6 +2468,7 @@ impl Machine {
             b"wifi-start-firmware",
             b"wifi-f2-read-header",
             b"wifi-f2-read-frame",
+            b"wifi-f2-read-frame-single",
             b"wifi-f2-read-frame-abort",
             b"wifi-poll-read-frame",
             b"wifi-ack-interrupts",

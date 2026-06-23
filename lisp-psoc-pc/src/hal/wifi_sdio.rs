@@ -3910,6 +3910,83 @@ pub fn f2_read_frame(p: &Peripherals) -> WifiSdioF2FrameReport {
     )
 }
 
+pub fn f2_read_frame_single(p: &Peripherals) -> WifiSdioF2FrameReport {
+    let transfer = f2_read_bytes(p, SDPCM_HEADER_BYTES);
+    let mut bytes = [0; SDIO_CMD53_PREVIEW_BYTES];
+    copy_bytes(&mut bytes, 0, &transfer.bytes, SDPCM_HEADER_BYTES);
+    let length = u16::from_le_bytes([bytes[0], bytes[1]]);
+    let checksum = u16::from_le_bytes([bytes[2], bytes[3]]);
+    let valid = length != 0 && (length ^ checksum) == 0xffff;
+
+    if !matches!(transfer.status, WifiSdioCmd53ReadStatus::Ready) {
+        return f2_frame_report(
+            p,
+            WifiSdioF2FrameStatus::HeaderReadFailed,
+            transfer.status,
+            WifiSdioCmd53ReadStatus::Ready,
+            transfer.response,
+            0,
+            bytes,
+            SDPCM_HEADER_BYTES,
+            transfer.last_error,
+        );
+    }
+
+    if !valid {
+        return f2_frame_report(
+            p,
+            WifiSdioF2FrameStatus::InvalidHeader,
+            transfer.status,
+            WifiSdioCmd53ReadStatus::Ready,
+            transfer.response,
+            0,
+            bytes,
+            SDPCM_HEADER_BYTES,
+            None,
+        );
+    }
+
+    if length < SDPCM_HEADER_BYTES as u16 {
+        return f2_frame_report(
+            p,
+            WifiSdioF2FrameStatus::FrameTooShort,
+            transfer.status,
+            WifiSdioCmd53ReadStatus::Ready,
+            transfer.response,
+            0,
+            bytes,
+            SDPCM_HEADER_BYTES,
+            None,
+        );
+    }
+
+    if length > SDPCM_HEADER_BYTES as u16 {
+        return f2_frame_report(
+            p,
+            WifiSdioF2FrameStatus::UnsupportedLength,
+            transfer.status,
+            WifiSdioCmd53ReadStatus::Ready,
+            transfer.response,
+            0,
+            bytes,
+            SDPCM_HEADER_BYTES,
+            None,
+        );
+    }
+
+    f2_frame_report(
+        p,
+        WifiSdioF2FrameStatus::Ready,
+        transfer.status,
+        WifiSdioCmd53ReadStatus::Ready,
+        transfer.response,
+        0,
+        bytes,
+        SDPCM_HEADER_BYTES,
+        None,
+    )
+}
+
 pub fn ack_interrupts(p: &Peripherals) -> WifiSdioInterruptAckReport {
     let core = &p.SDHC0.core;
     let host_normal_int_before = core.normal_int_stat_r.read().bits();

@@ -500,6 +500,10 @@ impl lisp::Board for PsocBoard<'_> {
         wifi_sdio_f2_frame_report(wifi_sdio::f2_read_frame(self.p))
     }
 
+    fn wifi_f2_read_frame_single(&mut self) -> lisp::WifiSdioF2FrameReport {
+        wifi_sdio_f2_frame_report(wifi_sdio::f2_read_frame_single(self.p))
+    }
+
     fn wifi_f2_read_frame_abort(&mut self) -> lisp::WifiSdioF2AbortProbeReport {
         let frame = wifi_sdio::f2_read_frame(self.p);
         let abort = wifi_sdio::abort_read(self.p);
