@@ -96,6 +96,7 @@ pub trait Board {
     fn wifi_f2_read_header(&mut self) -> WifiSdioF2HeaderReport;
     fn wifi_f2_read_frame(&mut self) -> WifiSdioF2FrameReport;
     fn wifi_f2_read_frame_single(&mut self) -> WifiSdioF2FrameReport;
+    fn wifi_send_wlc_up(&mut self) -> WifiSdioF2ControlReport;
     fn wifi_f2_read_frame_abort(&mut self) -> WifiSdioF2AbortProbeReport;
     fn wifi_poll_read_frame(&mut self) -> WifiSdioPollReadFrameReport;
     fn wifi_ack_interrupts(&mut self) -> WifiSdioInterruptAckReport;
@@ -469,7 +470,7 @@ pub struct WifiSdioCmd53ReadReport {
     pub address: u32,
     pub count: u8,
     pub response: u32,
-    pub bytes: [u8; 16],
+    pub bytes: [u8; 64],
     pub last_error: Option<WifiSdioCommandErrorReport>,
     pub host: WifiSdioHostReport,
 }
@@ -483,7 +484,7 @@ pub struct WifiSdioBackplaneReadReport {
     pub window_base: u32,
     pub window_address: u32,
     pub response: u32,
-    pub bytes: [u8; 16],
+    pub bytes: [u8; 64],
     pub last_error: Option<WifiSdioCommandErrorReport>,
     pub host: WifiSdioHostReport,
 }
@@ -617,7 +618,7 @@ pub struct WifiSdioF2FrameReport {
     pub body_status: &'static [u8],
     pub header_response: u32,
     pub body_response: u32,
-    pub bytes: [u8; 16],
+    pub bytes: [u8; 64],
     pub byte_count: u8,
     pub length: u16,
     pub checksum: u16,
@@ -633,6 +634,18 @@ pub struct WifiSdioF2FrameReport {
     pub reserved0: u8,
     pub reserved1: u8,
     pub last_error: Option<WifiSdioCommandErrorReport>,
+    pub host: WifiSdioHostReport,
+}
+
+#[derive(Clone, Copy)]
+pub struct WifiSdioF2ControlReport {
+    pub status: &'static [u8],
+    pub initial_tx_credit: u8,
+    pub packet_length: u8,
+    pub write_response: u32,
+    pub host_normal_int: u16,
+    pub host_error_int: u16,
+    pub write_last_error: Option<WifiSdioCommandErrorReport>,
     pub host: WifiSdioHostReport,
 }
 
@@ -909,6 +922,7 @@ pub enum Primitive {
     WifiF2ReadHeader,
     WifiF2ReadFrame,
     WifiF2ReadFrameSingle,
+    WifiSendWlcUp,
     WifiF2ReadFrameAbort,
     WifiPollReadFrame,
     WifiAckInterrupts,
@@ -991,6 +1005,7 @@ impl Primitive {
             Self::WifiF2ReadHeader => "wifi-f2-read-header",
             Self::WifiF2ReadFrame => "wifi-f2-read-frame",
             Self::WifiF2ReadFrameSingle => "wifi-f2-read-frame-single",
+            Self::WifiSendWlcUp => "wifi-send-wlc-up",
             Self::WifiF2ReadFrameAbort => "wifi-f2-read-frame-abort",
             Self::WifiPollReadFrame => "wifi-poll-read-frame",
             Self::WifiAckInterrupts => "wifi-ack-interrupts",
@@ -1231,6 +1246,7 @@ impl Machine {
             b"wifi-f2-read-frame-single",
             Primitive::WifiF2ReadFrameSingle,
         )?;
+        self.install_primitive(b"wifi-send-wlc-up", Primitive::WifiSendWlcUp)?;
         self.install_primitive(b"wifi-f2-read-frame-abort", Primitive::WifiF2ReadFrameAbort)?;
         self.install_primitive(b"wifi-poll-read-frame", Primitive::WifiPollReadFrame)?;
         self.install_primitive(b"wifi-ack-interrupts", Primitive::WifiAckInterrupts)?;
@@ -2056,6 +2072,10 @@ impl Machine {
                 self.expect_count(args, 0)?;
                 self.wifi_sdio_f2_frame_report(board.wifi_f2_read_frame_single())
             }
+            Primitive::WifiSendWlcUp => {
+                self.expect_count(args, 0)?;
+                self.wifi_sdio_f2_control_report(board.wifi_send_wlc_up())
+            }
             Primitive::WifiF2ReadFrameAbort => {
                 self.expect_count(args, 0)?;
                 self.wifi_sdio_f2_abort_probe_report(board.wifi_f2_read_frame_abort())
@@ -2469,6 +2489,7 @@ impl Machine {
             b"wifi-f2-read-header",
             b"wifi-f2-read-frame",
             b"wifi-f2-read-frame-single",
+            b"wifi-send-wlc-up",
             b"wifi-f2-read-frame-abort",
             b"wifi-poll-read-frame",
             b"wifi-ack-interrupts",
@@ -3378,6 +3399,34 @@ impl Machine {
         self.make_list_from_values(&entries)
     }
 
+    fn wifi_sdio_f2_control_report(
+        &mut self,
+        report: WifiSdioF2ControlReport,
+    ) -> LispResult<Value> {
+        let status = self.symbol_entry(b"status", report.status)?;
+        let initial_tx_credit =
+            self.word_entry(b"initial-tx-credit", report.initial_tx_credit as u32)?;
+        let packet_length = self.word_entry(b"packet.length", report.packet_length as u32)?;
+        let write_response = self.word_entry(b"write.response", report.write_response)?;
+        let host_normal_int = self.word_entry(b"HOST.NORM_INT", report.host_normal_int as u32)?;
+        let host_error_int = self.word_entry(b"HOST.ERR_INT", report.host_error_int as u32)?;
+        let write_last_error =
+            self.wifi_sdio_error_entry(b"write.last-error", report.write_last_error)?;
+        let host = self.wifi_sdio_host_report(report.host)?;
+        let host = self.entry(b"SDHC0", host)?;
+        let entries = [
+            status,
+            initial_tx_credit,
+            packet_length,
+            write_response,
+            host_normal_int,
+            host_error_int,
+            write_last_error,
+            host,
+        ];
+        self.make_list_from_values(&entries)
+    }
+
     fn wifi_sdio_f2_abort_probe_report(
         &mut self,
         report: WifiSdioF2AbortProbeReport,
@@ -3977,10 +4026,10 @@ impl Machine {
     fn wifi_byte_list_entry(
         &mut self,
         name: &[u8],
-        bytes: &[u8; 16],
+        bytes: &[u8; 64],
         count: u8,
     ) -> LispResult<Value> {
-        let mut values = [Value::Nil; 16];
+        let mut values = [Value::Nil; 64];
         let mut index = 0usize;
         while index < count as usize && index < values.len() {
             values[index] = Value::Word(bytes[index] as u32);

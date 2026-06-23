@@ -504,6 +504,10 @@ impl lisp::Board for PsocBoard<'_> {
         wifi_sdio_f2_frame_report(wifi_sdio::f2_read_frame_single(self.p))
     }
 
+    fn wifi_send_wlc_up(&mut self) -> lisp::WifiSdioF2ControlReport {
+        wifi_sdio_f2_control_report(wifi_sdio::send_wlc_up(self.p))
+    }
+
     fn wifi_f2_read_frame_abort(&mut self) -> lisp::WifiSdioF2AbortProbeReport {
         let frame = wifi_sdio::f2_read_frame(self.p);
         let abort = wifi_sdio::abort_read(self.p);
@@ -1033,6 +1037,16 @@ fn wifi_sdio_f2_frame_status(status: wifi_sdio::WifiSdioF2FrameStatus) -> &'stat
     }
 }
 
+fn wifi_sdio_f2_control_status(status: wifi_sdio::WifiSdioF2ControlStatus) -> &'static [u8] {
+    match status {
+        wifi_sdio::WifiSdioF2ControlStatus::Ready => b"ready",
+        wifi_sdio::WifiSdioF2ControlStatus::DataSetupBusy => b"data-setup-busy",
+        wifi_sdio::WifiSdioF2ControlStatus::Cmd53Failed => b"cmd53-failed",
+        wifi_sdio::WifiSdioF2ControlStatus::TransferTimeout => b"transfer-timeout",
+        wifi_sdio::WifiSdioF2ControlStatus::DataLineBusy => b"data-line-busy",
+    }
+}
+
 fn wifi_sdio_interrupt_ack_status(status: wifi_sdio::WifiSdioInterruptAckStatus) -> &'static [u8] {
     match status {
         wifi_sdio::WifiSdioInterruptAckStatus::Ready => b"ready",
@@ -1399,6 +1413,21 @@ fn wifi_sdio_f2_frame_report(
         reserved0: report.reserved0,
         reserved1: report.reserved1,
         last_error: report.last_error.map(wifi_sdio_command_error_report),
+        host: wifi_sdio_host_report(report.host),
+    }
+}
+
+fn wifi_sdio_f2_control_report(
+    report: wifi_sdio::WifiSdioF2ControlReport,
+) -> lisp::WifiSdioF2ControlReport {
+    lisp::WifiSdioF2ControlReport {
+        status: wifi_sdio_f2_control_status(report.status),
+        initial_tx_credit: report.initial_tx_credit,
+        packet_length: report.packet_length,
+        write_response: report.write_response,
+        host_normal_int: report.host_normal_int,
+        host_error_int: report.host_error_int,
+        write_last_error: report.write_last_error.map(wifi_sdio_command_error_report),
         host: wifi_sdio_host_report(report.host),
     }
 }

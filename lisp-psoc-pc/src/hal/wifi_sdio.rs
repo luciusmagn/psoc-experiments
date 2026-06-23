@@ -47,12 +47,17 @@ const SDIO_CMD53_FUNCTION_SHIFT: u8 = 28;
 const SDIO_CMD53_BLOCK_MODE: u32 = 1 << 27;
 const SDIO_CMD53_INCREMENTING_ADDRESS: u32 = 1 << 26;
 const SDIO_CMD53_ADDRESS_SHIFT: u8 = 9;
-const SDIO_CMD53_PREVIEW_BYTES: usize = 16;
+const SDIO_CMD53_PREVIEW_BYTES: usize = 64;
 const SDIO_CMD53_MAX_READ_BYTES: u16 = 64;
 const SDIO_CMD53_WORD_BYTES: u16 = 4;
 const SDIO_CMD53_BLOCK_BYTES: u16 = 64;
 const SDIO_CMD53_BLOCK_WORDS: usize = 16;
 const SDPCM_HEADER_BYTES: u8 = 12;
+const SDPCM_WLC_UP_PACKET_BYTES: u8 = 28;
+const SDPCM_CONTROL_CHANNEL: u8 = 0;
+const CDC_SET_FLAG: u32 = 0x02;
+const CDC_IOCTL_ID_SHIFT: u8 = 16;
+const WLC_UP_IOCTL: u32 = 2;
 const SOCSRAM_BLOCK_PROBE_NO_MISMATCH: u32 = 0xffff_ffff;
 const SDIO_CCCR_IO_ENABLE: u32 = 0x02;
 const SDIO_CCCR_IO_READY: u32 = 0x03;
@@ -67,6 +72,7 @@ const SDIO_CCCR_F1_BLOCK_SIZE_HIGH: u32 = 0x111;
 const SDIO_CCCR_F2_BLOCK_SIZE_LOW: u32 = 0x210;
 const SDIO_CCCR_F2_BLOCK_SIZE_HIGH: u32 = 0x211;
 const SDIO_BACKPLANE_FUNCTION: u8 = 1;
+const SDIO_WLAN_FUNCTION: u8 = 2;
 const SDIO_FUNCTION_ENABLE_1_2: u8 = 0x06;
 const SDIO_FUNCTION_READY_2: u8 = 0x04;
 const SDIO_BACKPLANE_ADDRESS_LOW: u32 = 0x1000a;
@@ -255,6 +261,15 @@ pub enum WifiSdioF2FrameStatus {
     FrameTooLarge,
     UnsupportedLength,
     BodyReadFailed,
+}
+
+#[derive(Clone, Copy)]
+pub enum WifiSdioF2ControlStatus {
+    Ready,
+    DataSetupBusy,
+    Cmd53Failed,
+    TransferTimeout,
+    DataLineBusy,
 }
 
 #[derive(Clone, Copy)]
@@ -952,6 +967,17 @@ pub struct WifiSdioF2FrameReport {
     pub reserved0: u8,
     pub reserved1: u8,
     pub last_error: Option<CommandError>,
+    pub host: WifiSdioHostSnapshot,
+}
+
+pub struct WifiSdioF2ControlReport {
+    pub status: WifiSdioF2ControlStatus,
+    pub initial_tx_credit: u8,
+    pub packet_length: u8,
+    pub write_response: u32,
+    pub host_normal_int: u16,
+    pub host_error_int: u16,
+    pub write_last_error: Option<CommandError>,
     pub host: WifiSdioHostSnapshot,
 }
 
@@ -3987,6 +4013,91 @@ pub fn f2_read_frame_single(p: &Peripherals) -> WifiSdioF2FrameReport {
     )
 }
 
+pub fn send_wlc_up(p: &Peripherals) -> WifiSdioF2ControlReport {
+    let initial_tx_credit = 1;
+    let packet = wlc_up_control_packet_words();
+    let core = &p.SDHC0.core;
+    let descriptor_address = prepare_cmd53_write_words(&packet, SDPCM_WLC_UP_PACKET_BYTES as u16);
+    if !configure_cmd53_write_adma(core, SDPCM_WLC_UP_PACKET_BYTES, false, descriptor_address) {
+        return f2_control_report(
+            p,
+            WifiSdioF2ControlStatus::DataSetupBusy,
+            initial_tx_credit,
+            SDPCM_WLC_UP_PACKET_BYTES,
+            0,
+            None,
+        );
+    }
+
+    let argument = cmd53_argument(
+        true,
+        SDIO_WLAN_FUNCTION,
+        false,
+        true,
+        0,
+        SDPCM_WLC_UP_PACKET_BYTES as u16,
+    );
+    let write_response = match send_command(
+        core,
+        Command {
+            index: 53,
+            argument,
+            response: ResponseType::Len48,
+            command_type: CommandType::Normal,
+            data_present: true,
+            crc_check: true,
+            index_check: true,
+        },
+    ) {
+        Ok(response) => response,
+        Err(error) => {
+            return f2_control_report(
+                p,
+                WifiSdioF2ControlStatus::Cmd53Failed,
+                initial_tx_credit,
+                SDPCM_WLC_UP_PACKET_BYTES,
+                0,
+                Some(error),
+            );
+        }
+    };
+
+    match wait_cmd53_adma_write_complete(core) {
+        Ok(()) => f2_control_report(
+            p,
+            WifiSdioF2ControlStatus::Ready,
+            initial_tx_credit,
+            SDPCM_WLC_UP_PACKET_BYTES,
+            write_response,
+            None,
+        ),
+        Err(WifiSdioBackplaneWrite32Status::TransferTimeout) => f2_control_report(
+            p,
+            WifiSdioF2ControlStatus::TransferTimeout,
+            initial_tx_credit,
+            SDPCM_WLC_UP_PACKET_BYTES,
+            write_response,
+            None,
+        ),
+        Err(WifiSdioBackplaneWrite32Status::DataLineBusy) => f2_control_report(
+            p,
+            WifiSdioF2ControlStatus::DataLineBusy,
+            initial_tx_credit,
+            SDPCM_WLC_UP_PACKET_BYTES,
+            write_response,
+            None,
+        ),
+        Err(_) => f2_control_report(
+            p,
+            WifiSdioF2ControlStatus::Cmd53Failed,
+            initial_tx_credit,
+            SDPCM_WLC_UP_PACKET_BYTES,
+            write_response,
+            None,
+        ),
+    }
+}
+
 pub fn ack_interrupts(p: &Peripherals) -> WifiSdioInterruptAckReport {
     let core = &p.SDHC0.core;
     let host_normal_int_before = core.normal_int_stat_r.read().bits();
@@ -6971,6 +7082,46 @@ fn copy_bytes(
     }
 }
 
+fn wlc_up_control_packet_words() -> [u32; SDIO_CMD53_BLOCK_WORDS] {
+    let mut bytes = [0u8; SDIO_CMD53_BLOCK_BYTES as usize];
+    write_le_u16(&mut bytes, 0, SDPCM_WLC_UP_PACKET_BYTES as u16);
+    write_le_u16(&mut bytes, 2, !(SDPCM_WLC_UP_PACKET_BYTES as u16));
+    bytes[4] = 0;
+    bytes[5] = SDPCM_CONTROL_CHANNEL;
+    bytes[7] = SDPCM_HEADER_BYTES;
+    write_le_u32(&mut bytes, 12, WLC_UP_IOCTL);
+    write_le_u32(&mut bytes, 16, 0);
+    write_le_u32(&mut bytes, 20, (1u32 << CDC_IOCTL_ID_SHIFT) | CDC_SET_FLAG);
+    write_le_u32(&mut bytes, 24, 0);
+    bytes_to_words(&bytes)
+}
+
+fn write_le_u16(bytes: &mut [u8; SDIO_CMD53_BLOCK_BYTES as usize], offset: usize, value: u16) {
+    bytes[offset] = value as u8;
+    bytes[offset + 1] = (value >> 8) as u8;
+}
+
+fn write_le_u32(bytes: &mut [u8; SDIO_CMD53_BLOCK_BYTES as usize], offset: usize, value: u32) {
+    bytes[offset] = value as u8;
+    bytes[offset + 1] = (value >> 8) as u8;
+    bytes[offset + 2] = (value >> 16) as u8;
+    bytes[offset + 3] = (value >> 24) as u8;
+}
+
+fn bytes_to_words(bytes: &[u8; SDIO_CMD53_BLOCK_BYTES as usize]) -> [u32; SDIO_CMD53_BLOCK_WORDS] {
+    let mut words = [0u32; SDIO_CMD53_BLOCK_WORDS];
+    let mut index = 0usize;
+    while index < SDIO_CMD53_BLOCK_WORDS {
+        let offset = index * 4;
+        words[index] = (bytes[offset] as u32)
+            | ((bytes[offset + 1] as u32) << 8)
+            | ((bytes[offset + 2] as u32) << 16)
+            | ((bytes[offset + 3] as u32) << 24);
+        index += 1;
+    }
+    words
+}
+
 fn f2_header_report(
     p: &Peripherals,
     status: WifiSdioCmd53ReadStatus,
@@ -7028,6 +7179,27 @@ fn f2_frame_report(
         reserved0: bytes[10],
         reserved1: bytes[11],
         last_error,
+        host: host_snapshot(p),
+    }
+}
+
+fn f2_control_report(
+    p: &Peripherals,
+    status: WifiSdioF2ControlStatus,
+    initial_tx_credit: u8,
+    packet_length: u8,
+    write_response: u32,
+    write_last_error: Option<CommandError>,
+) -> WifiSdioF2ControlReport {
+    let core = &p.SDHC0.core;
+    WifiSdioF2ControlReport {
+        status,
+        initial_tx_credit,
+        packet_length,
+        write_response,
+        host_normal_int: core.normal_int_stat_r.read().bits(),
+        host_error_int: core.error_int_stat_r.read().bits(),
+        write_last_error,
         host: host_snapshot(p),
     }
 }

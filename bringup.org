@@ -3014,15 +3014,115 @@ state. Continue by comparing the receive transaction side effects against a
 known-good WHD run or by implementing the first host-to-device SDPCM control
 message and observing whether that is the expected next state transition.
 
+* 2026-06-23 Write-first WLC_UP SDPCM control exchange
+
+WHD seeds the SDPCM transmit credit to one packet before the first firmware
+response is read. A local read-first WLC_UP probe consumed the startup credit
+frame and then failed the function-2 CMD53 write with a command-status error.
+The working ordering is to send the first SDPCM control packet before consuming
+the startup frame.
+
+Added =(wifi-send-wlc-up)=. It writes a 28-byte SDPCM/CDC =WLC_UP= IOCTL packet
+to SDIO function 2 using byte-mode CMD53 with address 0. The command only sends
+the packet; frame draining remains explicit through =(wifi-f2-read-frame)=.
+
+Validation:
+
+#+begin_example
+cargo fmt
+tools/build-lisp.scm --wifi-firmware
+tools/flash-lisp.scm
+tools/serial-console.scm
+tools/send-lisp.scm '(wifi-start-firmware)'
+tools/send-lisp.scm '(wifi-send-wlc-up)'
+tools/send-lisp.scm '(wifi-f2-read-frame)'
+tools/send-lisp.scm '(wifi-f2-read-frame)'
+tools/send-lisp.scm '(wifi-interrupt-state)'
+#+end_example
+
+The WLC_UP write completed without host or card command errors:
+
+#+begin_example
+(wifi-send-wlc-up)
+=> ((status . ready)
+    (initial-tx-credit . #x00000001)
+    (packet.length . #x0000001c)
+    (write.response . #x00001000)
+    (HOST.NORM_INT . #x00000100)
+    (HOST.ERR_INT . #x00000000)
+    (write.last-error))
+#+end_example
+
+The first full-frame read then drained the 12-byte startup credit frame:
+
+#+begin_example
+(wifi-f2-read-frame)
+=> ((status . ready)
+    (length . #x0000000c)
+    (channel . #x00000001)
+    (bus-data-credit . #x00000010)
+    (header-response . #x00001000)
+    (body-response . #x00001000)
+    (last-error))
+#+end_example
+
+The next full-frame read captured the 28-byte CDC response:
+
+#+begin_example
+(wifi-f2-read-frame)
+=> ((status . ready)
+    (length . #x0000001c)
+    (channel . #x00000000)
+    (bus-data-credit . #x00000011)
+    (bytes #x0000001c #x00000000 #x000000e3 #x000000ff
+           #x00000001 #x00000000 #x00000000 #x0000000c
+           #x00000000 #x00000011 #x00000000 #x00000000
+           #x00000002 #x00000000 #x00000000 #x00000000
+           #x00000000 #x00000000 #x00000000 #x00000000
+           #x00000000 #x00000000 #x00000001 #x00000000
+           #x00000000 #x00000000 #x00000000 #x00000000)
+    (last-error))
+#+end_example
+
+Decoded CDC payload:
+
+#+begin_example
+cmd    = #x00000002 ; WLC_UP
+len    = #x00000000
+flags  = #x00010000 ; ioctl id 1
+status = #x00000000
+#+end_example
+
+Selected-card access remained healthy after this transmit-then-receive
+sequence:
+
+#+begin_example
+(wifi-interrupt-state)
+=> ((status . ready)
+    (CCCR.IO_ENABLE . #x00000006)
+    (CCCR.IO_READY . #x00000006)
+    (CCCR.INTERRUPT_ENABLE . #x00000005)
+    (CCCR.INTERRUPT_PENDING . #x00000006)
+    (CCCR.BUS_CONTROL . #x00000042)
+    (HOST.NORM_INT . #x00000100)
+    (HOST.ERR_INT . #x00000000)
+    (last-error))
+#+end_example
+
+Interpretation: the first SDPCM control transmit path works. The earlier
+zero-response state is tied to reading the startup frame before the first host
+control packet, not to every F2 receive transaction. The next firmware slice
+should wrap send/read/CDC-response parsing into one Lisp form, then add the next
+high-level IOCTL needed by WHD before association.
+
 * Next actions
 
 1. Add REPL history and better editing across continuation lines.
 2. Add a FAT/exFAT-aware storage layer after raw block reads/writes work.
 3. Test the newer Infineon target =infineon/cy8cxxa.cfg= as a replacement
    for obsolete =target/psoc6_2m.cfg=.
-4. Compare WHD's post-frame SDPCM handling against the current diagnostics:
-   interrupt acknowledgement, read-abort semantics, and the first control
-   message.
-5. Keep investigating the host SDHC state after the first F2 startup frame.
+4. Wrap WLC_UP send, startup-frame drain, response read, and CDC response
+   parsing into one high-level Lisp form.
+5. Add the next WHD-style high-level IOCTL forms needed before association.
 6. Start Wi-Fi from a known-good Infineon or Zephyr sample before trying
    to hand-port the full CYW4343W network stack.
