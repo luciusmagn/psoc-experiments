@@ -3496,13 +3496,91 @@ WLAN backplane/SDIO bus clock request to drop. The next code change should make
 the high-level =(wifi-wlc-up)= transaction request HT before sending WLC_UP,
 rather than requiring a manual =(wifi-request-ht)= step.
 
+* 2026-06-23 WLC_UP requests HT internally
+
+Updated =(wifi-wlc-up)= so the high-level transaction requests
+=SBSDIO_HT_AVAIL_REQ= before sending the WLC_UP control packet. The low-level
+=(wifi-send-wlc-up)= primitive remains unchanged for experiments that need to
+control the preconditions manually.
+
+Validation:
+
+#+begin_example
+cargo fmt
+tools/build-lisp.scm --wifi-firmware
+tools/flash-lisp.scm
+tools/serial-console.scm
+tools/send-lisp.scm '(wifi-start-firmware)'
+tools/send-lisp.scm '(wifi-wlc-up)'
+tools/send-lisp.scm '(wifi-interrupt-state)'
+tools/send-lisp.scm '(wifi-ack-interrupts)'
+tools/send-lisp.scm '(wifi-interrupt-state)'
+#+end_example
+
+The high-level WLC_UP transaction now reports the HT request and completes:
+
+#+begin_example
+(wifi-wlc-up)
+=> ((status . ready)
+    (ht.status . ready)
+    (ht.attempts . #x00000001)
+    (ht.write-response . #x00001010)
+    (ht.read-value . #x000000d0)
+    (ht.read-response . #x000010d0)
+    (ht.available . #t)
+    (send.status . ready)
+    (startup.status . ready)
+    (response.status . ready)
+    (cdc.command . #x00000002)
+    (cdc.id . #x00000001)
+    (cdc.status . #x00000000)
+    (ht.last-error)
+    (send.last-error)
+    (startup.last-error)
+    (response.last-error))
+#+end_example
+
+The immediate post-WLC_UP state remains live:
+
+#+begin_example
+(wifi-interrupt-state)
+=> ((status . ready)
+    (CCCR.IO_ENABLE . #x00000006)
+    (CCCR.IO_READY . #x00000006)
+    (CCCR.INTERRUPT_ENABLE . #x00000005)
+    (CCCR.INTERRUPT_PENDING . #x00000006)
+    (CCCR.BUS_CONTROL . #x00000042)
+    (CCCR.IO_ENABLE.response . #x00001006)
+    (CCCR.IO_READY.response . #x00001006)
+    (CCCR.INTERRUPT_ENABLE.response . #x00001005)
+    (CCCR.INTERRUPT_PENDING.response . #x00001006)
+    (CCCR.BUS_CONTROL.response . #x00001042)
+    (last-error))
+#+end_example
+
+Mailbox ack also works in this state:
+
+#+begin_example
+(wifi-ack-interrupts)
+=> ((status . ready)
+    (INT_STATUS.before . #x000200c0)
+    (TO_HOST_MAILBOX_DATA . #x00040008)
+    (TO_SB_MAILBOX.ack . #x00000002)
+    (INT_STATUS.clear . #x000000c0)
+    (INT_STATUS.after . #x00020000)
+    (last-error))
+#+end_example
+
+After the ack, =CCCR.INTERRUPT_PENDING= reads =#x00= with normal nonzero
+responses.
+
 * Next actions
 
 1. Add REPL history and better editing across continuation lines.
 2. Add a FAT/exFAT-aware storage layer after raw block reads/writes work.
 3. Test the newer Infineon target =infineon/cy8cxxa.cfg= as a replacement
    for obsolete =target/psoc6_2m.cfg=.
-4. Fold =HT_AVAIL_REQ= into the high-level WLC_UP transaction.
-5. Add SDPCM tx sequence and credit state before sending IOCTLs after WLC_UP.
+4. Add SDPCM tx sequence and credit state before sending IOCTLs after WLC_UP.
+5. Add generic CDC ioctl/iovar helpers for firmware version and MAC address.
 6. Start Wi-Fi from a known-good Infineon or Zephyr sample before trying
    to hand-port the full CYW4343W network stack.

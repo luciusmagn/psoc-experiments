@@ -1068,6 +1068,7 @@ fn wifi_sdio_f2_control_status(status: wifi_sdio::WifiSdioF2ControlStatus) -> &'
 fn wifi_sdio_wlc_up_status(status: wifi_sdio::WifiSdioWlcUpStatus) -> &'static [u8] {
     match status {
         wifi_sdio::WifiSdioWlcUpStatus::Ready => b"ready",
+        wifi_sdio::WifiSdioWlcUpStatus::HtRequestFailed => b"ht-request-failed",
         wifi_sdio::WifiSdioWlcUpStatus::SendFailed => b"send-failed",
         wifi_sdio::WifiSdioWlcUpStatus::StartupFrameFailed => b"startup-frame-failed",
         wifi_sdio::WifiSdioWlcUpStatus::UnexpectedStartupFrame => b"unexpected-startup-frame",
@@ -1474,6 +1475,12 @@ fn wifi_sdio_f2_control_report(
 fn wifi_sdio_wlc_up_report(report: wifi_sdio::WifiSdioWlcUpReport) -> lisp::WifiSdioWlcUpReport {
     lisp::WifiSdioWlcUpReport {
         status: wifi_sdio_wlc_up_status(report.status),
+        ht_status: wifi_sdio_ht_request_status(report.ht_status),
+        ht_attempts: report.ht_attempts,
+        ht_write_response: report.ht_write_response,
+        ht_read_value: report.ht_read_value,
+        ht_read_response: report.ht_read_response,
+        ht_available: report.ht_available,
         send_status: wifi_sdio_f2_control_status(report.send_status),
         send_packet_length: report.send_packet_length,
         send_write_response: report.send_write_response,
@@ -1491,6 +1498,7 @@ fn wifi_sdio_wlc_up_report(report: wifi_sdio::WifiSdioWlcUpReport) -> lisp::Wifi
         cdc_flags: report.cdc_flags,
         cdc_id: report.cdc_id,
         cdc_status: report.cdc_status,
+        ht_last_error: report.ht_last_error.map(wifi_sdio_command_error_report),
         send_last_error: report.send_last_error.map(wifi_sdio_command_error_report),
         startup_last_error: report
             .startup_last_error

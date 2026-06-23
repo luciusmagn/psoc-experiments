@@ -656,6 +656,12 @@ pub struct WifiSdioF2ControlReport {
 #[derive(Clone, Copy)]
 pub struct WifiSdioWlcUpReport {
     pub status: &'static [u8],
+    pub ht_status: &'static [u8],
+    pub ht_attempts: u16,
+    pub ht_write_response: u32,
+    pub ht_read_value: u8,
+    pub ht_read_response: u32,
+    pub ht_available: bool,
     pub send_status: &'static [u8],
     pub send_packet_length: u8,
     pub send_write_response: u32,
@@ -673,6 +679,7 @@ pub struct WifiSdioWlcUpReport {
     pub cdc_flags: u32,
     pub cdc_id: u16,
     pub cdc_status: u32,
+    pub ht_last_error: Option<WifiSdioCommandErrorReport>,
     pub send_last_error: Option<WifiSdioCommandErrorReport>,
     pub startup_last_error: Option<WifiSdioCommandErrorReport>,
     pub response_last_error: Option<WifiSdioCommandErrorReport>,
@@ -3507,6 +3514,12 @@ impl Machine {
 
     fn wifi_sdio_wlc_up_report(&mut self, report: WifiSdioWlcUpReport) -> LispResult<Value> {
         let status = self.symbol_entry(b"status", report.status)?;
+        let ht_status = self.symbol_entry(b"ht.status", report.ht_status)?;
+        let ht_attempts = self.word_entry(b"ht.attempts", report.ht_attempts as u32)?;
+        let ht_write_response = self.word_entry(b"ht.write-response", report.ht_write_response)?;
+        let ht_read_value = self.word_entry(b"ht.read-value", report.ht_read_value as u32)?;
+        let ht_read_response = self.word_entry(b"ht.read-response", report.ht_read_response)?;
+        let ht_available = self.bool_entry(b"ht.available", report.ht_available)?;
         let send_status = self.symbol_entry(b"send.status", report.send_status)?;
         let send_packet_length =
             self.word_entry(b"send.packet-length", report.send_packet_length as u32)?;
@@ -3536,6 +3549,7 @@ impl Machine {
         let cdc_status = self.word_entry(b"cdc.status", report.cdc_status)?;
         let host_normal_int = self.word_entry(b"HOST.NORM_INT", report.host_normal_int as u32)?;
         let host_error_int = self.word_entry(b"HOST.ERR_INT", report.host_error_int as u32)?;
+        let ht_last_error = self.wifi_sdio_error_entry(b"ht.last-error", report.ht_last_error)?;
         let send_last_error =
             self.wifi_sdio_error_entry(b"send.last-error", report.send_last_error)?;
         let startup_last_error =
@@ -3546,6 +3560,12 @@ impl Machine {
         let host = self.entry(b"SDHC0", host)?;
         let entries = [
             status,
+            ht_status,
+            ht_attempts,
+            ht_write_response,
+            ht_read_value,
+            ht_read_response,
+            ht_available,
             send_status,
             send_packet_length,
             send_write_response,
@@ -3565,6 +3585,7 @@ impl Machine {
             cdc_status,
             host_normal_int,
             host_error_int,
+            ht_last_error,
             send_last_error,
             startup_last_error,
             response_last_error,

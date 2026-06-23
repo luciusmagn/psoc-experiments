@@ -278,6 +278,7 @@ pub enum WifiSdioF2ControlStatus {
 #[derive(Clone, Copy)]
 pub enum WifiSdioWlcUpStatus {
     Ready,
+    HtRequestFailed,
     SendFailed,
     StartupFrameFailed,
     UnexpectedStartupFrame,
@@ -1005,6 +1006,12 @@ pub struct WifiSdioF2ControlReport {
 
 pub struct WifiSdioWlcUpReport {
     pub status: WifiSdioWlcUpStatus,
+    pub ht_status: WifiSdioHtRequestStatus,
+    pub ht_attempts: u16,
+    pub ht_write_response: u32,
+    pub ht_read_value: u8,
+    pub ht_read_response: u32,
+    pub ht_available: bool,
     pub send_status: WifiSdioF2ControlStatus,
     pub send_packet_length: u8,
     pub send_write_response: u32,
@@ -1022,6 +1029,7 @@ pub struct WifiSdioWlcUpReport {
     pub cdc_flags: u32,
     pub cdc_id: u16,
     pub cdc_status: u32,
+    pub ht_last_error: Option<CommandError>,
     pub send_last_error: Option<CommandError>,
     pub startup_last_error: Option<CommandError>,
     pub response_last_error: Option<CommandError>,
@@ -4331,6 +4339,19 @@ pub fn send_wlc_up(p: &Peripherals) -> WifiSdioF2ControlReport {
 pub fn wlc_up(p: &Peripherals) -> WifiSdioWlcUpReport {
     let mut report = empty_wlc_up_report(p);
 
+    let ht = request_ht(p);
+    report.ht_status = ht.status;
+    report.ht_attempts = ht.attempts;
+    report.ht_write_response = ht.write_response;
+    report.ht_read_value = ht.read_value;
+    report.ht_read_response = ht.read_response;
+    report.ht_available = ht.ht_available;
+    report.ht_last_error = ht.last_error;
+    if !matches!(ht.status, WifiSdioHtRequestStatus::Ready) {
+        report.status = WifiSdioWlcUpStatus::HtRequestFailed;
+        return finish_wlc_up_report(p, report);
+    }
+
     let send = send_wlc_up(p);
     report.send_status = send.status;
     report.send_packet_length = send.packet_length;
@@ -7624,7 +7645,13 @@ fn f2_control_report(
 
 fn empty_wlc_up_report(p: &Peripherals) -> WifiSdioWlcUpReport {
     WifiSdioWlcUpReport {
-        status: WifiSdioWlcUpStatus::SendFailed,
+        status: WifiSdioWlcUpStatus::HtRequestFailed,
+        ht_status: WifiSdioHtRequestStatus::Timeout,
+        ht_attempts: 0,
+        ht_write_response: 0,
+        ht_read_value: 0,
+        ht_read_response: 0,
+        ht_available: false,
         send_status: WifiSdioF2ControlStatus::NotRun,
         send_packet_length: 0,
         send_write_response: 0,
@@ -7642,6 +7669,7 @@ fn empty_wlc_up_report(p: &Peripherals) -> WifiSdioWlcUpReport {
         cdc_flags: 0,
         cdc_id: 0,
         cdc_status: 0,
+        ht_last_error: None,
         send_last_error: None,
         startup_last_error: None,
         response_last_error: None,
