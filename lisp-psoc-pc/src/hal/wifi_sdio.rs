@@ -167,8 +167,10 @@ const SDHC_WRAP_CTL_ENABLE: u32 = 1 << 31;
 struct AdmaDescriptorTable([u32; 2]);
 
 static mut CMD53_WRITE_ADMA_DESCRIPTOR: AdmaDescriptorTable = AdmaDescriptorTable([0; 2]);
+static mut CMD53_READ_ADMA_DESCRIPTOR: AdmaDescriptorTable = AdmaDescriptorTable([0; 2]);
 static mut CMD53_WRITE_WORD: u32 = 0;
 static mut CMD53_WRITE_BLOCK_WORDS: [u32; SDIO_CMD53_BLOCK_WORDS] = [0; SDIO_CMD53_BLOCK_WORDS];
+static mut CMD53_READ_BLOCK_WORDS: [u32; SDIO_CMD53_BLOCK_WORDS] = [0; SDIO_CMD53_BLOCK_WORDS];
 
 #[derive(Clone, Copy)]
 pub enum WifiSdioStatus {
@@ -1989,7 +1991,8 @@ pub fn backplane_read(p: &Peripherals, address: u32, count: u8) -> WifiSdioBackp
         };
     }
 
-    if !configure_cmd53_read(core, count, false) {
+    let descriptor_address = prepare_cmd53_read_words(count as u16);
+    if !configure_cmd53_read(core, count, false, descriptor_address) {
         return backplane_read_report(
             p,
             WifiSdioBackplaneReadStatus::DataSetupBusy,
@@ -2349,7 +2352,8 @@ fn read_backplane_block_after_setup(
     set_backplane_window(core, address).map_err(BackplaneBlockReadError::Window)?;
     let window_address = backplane_window_address(address, SDIO_CMD53_BLOCK_BYTES as u8);
 
-    if !configure_cmd53_read(core, SDIO_CMD53_BLOCK_BYTES as u8, true) {
+    let descriptor_address = prepare_cmd53_read_words(SDIO_CMD53_BLOCK_BYTES);
+    if !configure_cmd53_read(core, SDIO_CMD53_BLOCK_BYTES as u8, true, descriptor_address) {
         return Err(BackplaneBlockReadError::DataSetupBusy);
     }
 
@@ -5290,7 +5294,13 @@ pub fn cmd53_read(
     }
 
     let block_mode = count as u16 == SDIO_CMD53_BLOCK_BYTES;
-    if !configure_cmd53_read(core, count, block_mode) {
+    let transfer_bytes = if block_mode {
+        SDIO_CMD53_BLOCK_BYTES as u8
+    } else {
+        count
+    };
+    let descriptor_address = prepare_cmd53_read_words(transfer_bytes as u16);
+    if !configure_cmd53_read(core, count, block_mode, descriptor_address) {
         return cmd53_read_report(
             p,
             WifiSdioCmd53ReadStatus::DataSetupBusy,
@@ -5305,11 +5315,6 @@ pub fn cmd53_read(
     }
 
     let command_count = if block_mode { 1 } else { count as u16 };
-    let transfer_bytes = if block_mode {
-        SDIO_CMD53_BLOCK_BYTES as u8
-    } else {
-        count
-    };
     let argument = cmd53_argument(false, function, block_mode, true, address, command_count);
     let response = match send_command(
         core,
@@ -6183,7 +6188,12 @@ fn is_valid_cmd53_read_count(count: u8) -> bool {
         || (count as u16 <= SDIO_CMD53_MAX_READ_BYTES && count as u16 % SDIO_CMD53_WORD_BYTES == 0)
 }
 
-fn configure_cmd53_read(core: &sdhc0::CORE, count: u8, block_mode: bool) -> bool {
+fn configure_cmd53_read(
+    core: &sdhc0::CORE,
+    count: u8,
+    block_mode: bool,
+    descriptor_address: u32,
+) -> bool {
     if !wait_command_and_data_lines_free(core) {
         return false;
     }
@@ -6193,15 +6203,21 @@ fn configure_cmd53_read(core: &sdhc0::CORE, count: u8, block_mode: bool) -> bool
     } else {
         count as u16
     };
+    select_adma2(core);
     core.blocksize_r.write(|w| unsafe { w.bits(0) });
     core.xfer_mode_r.write(|w| unsafe { w.bits(0) });
-    core.sdmasa_r.write(|w| unsafe { w.bits(1) });
+    core.adma_sa_low_r
+        .write(|w| unsafe { w.bits(descriptor_address) });
+    core.sdmasa_r.write(|w| unsafe { w.bits(0) });
     core.blocksize_r.write(|w| unsafe { w.bits(block_size) });
     core.blockcount_r.write(|w| unsafe { w.bits(1) });
     core.bgap_ctrl_r.write(|w| unsafe { w.bits(0) });
+    core.mbiu_ctrl_r
+        .write(|w| unsafe { w.bits(MBIU_CTRL_ALL_BURSTS) });
     core.tout_ctrl_r.write(|w| unsafe { w.bits(0x0e) });
-    core.xfer_mode_r
-        .write(|w| unsafe { w.bits(XFER_MODE_BLOCK_COUNT_ENABLE | XFER_MODE_READ) });
+    core.xfer_mode_r.write(|w| unsafe {
+        w.bits(XFER_MODE_DMA_ENABLE | XFER_MODE_BLOCK_COUNT_ENABLE | XFER_MODE_READ)
+    });
     clear_interrupts(core);
 
     true
@@ -6284,6 +6300,25 @@ fn prepare_cmd53_write_words(words: &[u32; SDIO_CMD53_BLOCK_WORDS], byte_count: 
     }
 }
 
+fn prepare_cmd53_read_words(byte_count: u16) -> u32 {
+    let descriptor =
+        ADMA_ATTR_VALID | ADMA_ATTR_END | ADMA_ACT_TRAN | ((byte_count as u32) << ADMA_LEN_SHIFT);
+
+    unsafe {
+        let buffer = core::ptr::addr_of_mut!(CMD53_READ_BLOCK_WORDS) as *mut u32;
+        for index in 0..SDIO_CMD53_BLOCK_WORDS {
+            core::ptr::write_volatile(buffer.add(index), 0);
+        }
+
+        let descriptor_table = core::ptr::addr_of_mut!(CMD53_READ_ADMA_DESCRIPTOR) as *mut u32;
+        core::ptr::write_volatile(descriptor_table, descriptor);
+        core::ptr::write_volatile(descriptor_table.add(1), buffer as u32);
+        cortex_m::asm::dsb();
+
+        descriptor_table as u32
+    }
+}
+
 fn wait_command_and_data_lines_free(core: &sdhc0::CORE) -> bool {
     const BUSY_MASK: u32 = PSTATE_CMD_INHIBIT | PSTATE_CMD_INHIBIT_DAT | PSTATE_DAT_LINE_ACTIVE;
 
@@ -6301,34 +6336,19 @@ fn read_cmd53_bytes(
     core: &sdhc0::CORE,
     count: u8,
 ) -> Result<[u8; SDIO_CMD53_PREVIEW_BYTES], WifiSdioCmd53ReadStatus> {
-    if !wait_buffer_read_ready(core) {
-        let _ = software_reset_data_line(core);
-        return Err(WifiSdioCmd53ReadStatus::BufferReadTimeout);
+    if !wait_transfer_complete(core) {
+        let _ = software_reset_command_and_data_lines(core);
+        return Err(WifiSdioCmd53ReadStatus::TransferTimeout);
+    }
+    cortex_m::asm::dsb();
+
+    if !wait_data_line_free(core) {
+        let _ = software_reset_command_and_data_lines(core);
+        return Err(WifiSdioCmd53ReadStatus::TransferTimeout);
     }
 
     let mut bytes = [0u8; SDIO_CMD53_PREVIEW_BYTES];
-    let word_count =
-        (count as usize + SDIO_CMD53_WORD_BYTES as usize - 1) / SDIO_CMD53_WORD_BYTES as usize;
-    for word_index in 0..word_count {
-        if !wait_buffer_read_enable(core) {
-            let _ = software_reset_data_line(core);
-            return Err(WifiSdioCmd53ReadStatus::BufferEnableTimeout);
-        }
-
-        let word = core.buf_data_r.read().bits();
-        let offset = word_index * 4;
-        if offset < SDIO_CMD53_PREVIEW_BYTES {
-            bytes[offset] = word as u8;
-            bytes[offset + 1] = (word >> 8) as u8;
-            bytes[offset + 2] = (word >> 16) as u8;
-            bytes[offset + 3] = (word >> 24) as u8;
-        }
-    }
-
-    if !wait_transfer_complete(core) {
-        let _ = software_reset_data_line(core);
-        return Err(WifiSdioCmd53ReadStatus::TransferTimeout);
-    }
+    copy_cmd53_adma_bytes(&mut bytes, count);
 
     Ok(bytes)
 }
@@ -6336,27 +6356,48 @@ fn read_cmd53_bytes(
 fn read_cmd53_words(
     core: &sdhc0::CORE,
 ) -> Result<[u32; SDIO_CMD53_BLOCK_WORDS], WifiSdioCmd53ReadStatus> {
-    if !wait_buffer_read_ready(core) {
-        let _ = software_reset_data_line(core);
-        return Err(WifiSdioCmd53ReadStatus::BufferReadTimeout);
-    }
-
-    let mut words = [0u32; SDIO_CMD53_BLOCK_WORDS];
-    for word in words.iter_mut() {
-        if !wait_buffer_read_enable(core) {
-            let _ = software_reset_data_line(core);
-            return Err(WifiSdioCmd53ReadStatus::BufferEnableTimeout);
-        }
-
-        *word = core.buf_data_r.read().bits();
-    }
-
     if !wait_transfer_complete(core) {
-        let _ = software_reset_data_line(core);
+        let _ = software_reset_command_and_data_lines(core);
+        return Err(WifiSdioCmd53ReadStatus::TransferTimeout);
+    }
+    cortex_m::asm::dsb();
+
+    if !wait_data_line_free(core) {
+        let _ = software_reset_command_and_data_lines(core);
         return Err(WifiSdioCmd53ReadStatus::TransferTimeout);
     }
 
+    let mut words = [0u32; SDIO_CMD53_BLOCK_WORDS];
+    copy_cmd53_adma_words(&mut words);
+
     Ok(words)
+}
+
+fn copy_cmd53_adma_bytes(bytes: &mut [u8; SDIO_CMD53_PREVIEW_BYTES], count: u8) {
+    let word_count =
+        (count as usize + SDIO_CMD53_WORD_BYTES as usize - 1) / SDIO_CMD53_WORD_BYTES as usize;
+    unsafe {
+        let buffer = core::ptr::addr_of!(CMD53_READ_BLOCK_WORDS) as *const u32;
+        for word_index in 0..word_count {
+            let word = core::ptr::read_volatile(buffer.add(word_index));
+            let offset = word_index * 4;
+            if offset < SDIO_CMD53_PREVIEW_BYTES {
+                bytes[offset] = word as u8;
+                bytes[offset + 1] = (word >> 8) as u8;
+                bytes[offset + 2] = (word >> 16) as u8;
+                bytes[offset + 3] = (word >> 24) as u8;
+            }
+        }
+    }
+}
+
+fn copy_cmd53_adma_words(words: &mut [u32; SDIO_CMD53_BLOCK_WORDS]) {
+    unsafe {
+        let buffer = core::ptr::addr_of!(CMD53_READ_BLOCK_WORDS) as *const u32;
+        for (index, word) in words.iter_mut().enumerate() {
+            *word = core::ptr::read_volatile(buffer.add(index));
+        }
+    }
 }
 
 fn wait_cmd53_adma_write_complete(
@@ -6791,7 +6832,8 @@ struct F2Transfer {
 
 fn f2_read_bytes(p: &Peripherals, count: u8) -> F2Transfer {
     let core = &p.SDHC0.core;
-    if !configure_cmd53_read(core, count, false) {
+    let descriptor_address = prepare_cmd53_read_words(count as u16);
+    if !configure_cmd53_read(core, count, false, descriptor_address) {
         return f2_transfer(WifiSdioCmd53ReadStatus::DataSetupBusy, 0, None);
     }
 

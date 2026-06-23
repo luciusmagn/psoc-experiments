@@ -2251,15 +2251,118 @@ interrupt-state reads, or the SDPCM startup frame format. The next code change
 should compare our =configure_cmd53_read= / =read_cmd53_bytes= completion path
 against Infineon's =cyhal_sdio_bulk_transfer= and WHD's byte-mode F2 read path.
 
+* 2026-06-23 Wi-Fi CMD53 ADMA read diagnostic
+
+Changed CMD53 read setup to use an ADMA2 descriptor and SRAM receive buffer,
+matching the style already used for CMD53 writes and Infineon's SDIO bulk
+transfer path more closely than the earlier PIO =BUF_DATA_R= drain.
+
+The firmware still starts cleanly with the embedded firmware/NVRAM blobs:
+
+#+begin_example
+(wifi-start-firmware)
+=> ((status . ready)
+    (firmware-status . ready)
+    (setup-status . ready)
+    (read-status . ready)
+    (write-status . ready)
+    (firmware-bytes . #x00066e2d)
+    (nvram-bytes . #x00000286)
+    (arm-after ... (core-up . #t))
+    (HT-CLOCK-CSR . #x000000c0)
+    (IOEN . #x00000006)
+    (IORDY . #x00000006)
+    (F2-attempts . #x0000001f)
+    (last-error) ...)
+#+end_example
+
+The first F2 SDPCM startup frame also reads correctly through ADMA:
+
+#+begin_example
+(wifi-f2-read-frame)
+=> ((status . ready)
+    (header-status . ready)
+    (body-status . ready)
+    (length . #x0000000c)
+    (checksum . #x0000fff3)
+    (valid . #t)
+    (bytes #x0000000c #x00000000 #x000000f3 #x000000ff
+           #x00000000 #x00000001 #x00000000 #x0000000c
+           #x00000000 #x00000010 #x00000000 #x00000000)
+    (header-response . #x00001000)
+    (body-response . #x00001000)
+    (SDHC0 ... (ADMA_ERR_STAT . #x00000000) ...))
+#+end_example
+
+Immediately after that frame, CMD52 still stops receiving real card
+responses:
+
+#+begin_example
+(wifi-keep-awake)
+=> ((status . timeout)
+    (attempts . #x00000040)
+    (first-write-response . #x00000000)
+    (second-write-response . #x00000000)
+    (read-value . #x00000000)
+    (read-response . #x00000000)
+    (keep-wl-kso . #f)
+    (wl-devon . #f)
+    (last-error) ...)
+
+(wifi-interrupt-state)
+=> ((status . ready)
+    (CCCR.IO_ENABLE . #x00000000)
+    (CCCR.IO_READY . #x00000000)
+    (CCCR.INTERRUPT_ENABLE . #x00000000)
+    (CCCR.INTERRUPT_PENDING . #x00000000)
+    (CCCR.BUS_CONTROL . #x00000000)
+    (CCCR.IO_ENABLE.response . #x00000000)
+    (CCCR.IO_READY.response . #x00000000)
+    (CCCR.INTERRUPT_ENABLE.response . #x00000000)
+    (CCCR.INTERRUPT_PENDING.response . #x00000000)
+    (CCCR.BUS_CONTROL.response . #x00000000)
+    (HOST.NORM_INT . #x00000100)
+    (HOST.ERR_INT . #x00000000)
+    (last-error) ...)
+#+end_example
+
+A follow-up F2 header read fails during the command phase, consistent with
+the pre-ADMA behavior:
+
+#+begin_example
+(wifi-f2-read-header)
+=> ((status . cmd53-failed)
+    (response . #x00000000)
+    (last-error
+     (code . command-status-error)
+     (NORM_INT . #x00008100)
+     (ERR_INT . #x00000001)
+     (PSTATE . #x03f30207)
+     (CMD_R . #x0000353a)
+     (ARGUMENT . #x24000004)
+     (PSTATE.after-write . #x03f30000)
+     (NORM_INT.after-write . #x00000100)
+     (ERR_INT.after-write . #x00000000))
+    (SDHC0 ... (ADMA_ERR_STAT . #x00000060) ...))
+#+end_example
+
+Interpretation: the original PIO receive-buffer drain was not the sole
+problem. A successful ADMA CMD53 F2 read can fetch the startup frame with no
+ADMA error, but the card or host still stops producing valid responses after
+that frame is consumed. The next investigation should compare the WHD
+post-frame path, especially interrupt acknowledgement, read-abort semantics,
+and the first host-to-device SDPCM control message, before more SDHC data-path
+rewrites.
+
 * Next actions
 
 1. Add REPL history and better editing across continuation lines.
 2. Add a FAT/exFAT-aware storage layer after raw block reads/writes work.
 3. Test the newer Infineon target =infineon/cy8cxxa.cfg= as a replacement
    for obsolete =target/psoc6_2m.cfg=.
-4. Fix the PSoC SDHC CMD53 byte-mode read completion path after the first F2
-   startup frame.
-5. Send the first host-to-device SDPCM control message after CMD53 reads remain
-   usable post-frame.
+4. Compare WHD's post-frame SDPCM handling against the current diagnostics:
+   interrupt acknowledgement, read-abort semantics, and the first control
+   message.
+5. Keep investigating the host SDHC state after the first F2 startup frame.
 6. Start Wi-Fi from a known-good Infineon or Zephyr sample before trying
    to hand-port the full CYW4343W network stack.
