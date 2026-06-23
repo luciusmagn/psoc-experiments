@@ -3411,13 +3411,98 @@ post-response zero-read state. The failure is now after consuming a valid WLC_UP
 response, not specifically caused by byte-mode F2 reads, split response reads,
 short response reads, or pre-WLC_UP KSO state.
 
+* 2026-06-23 HT request before WLC_UP keeps SDIO alive
+
+Added =(wifi-request-ht)= as an in-session diagnostic for the WHD
+=whd_ensure_wlan_bus_is_up= path that writes =SBSDIO_HT_AVAIL_REQ= to the
+function-1 =SDIO_CHIP_CLOCK_CSR= without rerunning the generic SDIO
+initialization path.
+
+Do not use the generic =(wifi-cmd52-write 1 #x1000e #x10)= form for this probe:
+that command calls the public CMD52 diagnostic path, which reruns SDIO
+initialization and disrupts a firmware session that is already running.
+
+Validation:
+
+#+begin_example
+cargo fmt
+tools/build-lisp.scm --wifi-firmware
+tools/flash-lisp.scm
+tools/serial-console.scm
+tools/send-lisp.scm '(wifi-start-firmware)'
+tools/send-lisp.scm '(wifi-request-ht)'
+tools/send-lisp.scm '(wifi-send-wlc-up)'
+tools/send-lisp.scm '(wifi-f2-read-frame)'
+tools/send-lisp.scm '(wifi-f2-read-frame-block)'
+tools/send-lisp.scm '(wifi-interrupt-state)'
+tools/send-lisp.scm '(wifi-ack-interrupts)'
+tools/send-lisp.scm '(wifi-interrupt-state)'
+#+end_example
+
+The HT request succeeds immediately after firmware start:
+
+#+begin_example
+(wifi-request-ht)
+=> ((status . ready)
+    (attempts . #x00000001)
+    (write-value . #x00000010)
+    (write-response . #x00001010)
+    (read-value . #x000000d0)
+    (read-response . #x000010d0)
+    (ht-available . #t)
+    (last-error))
+#+end_example
+
+With =HT_AVAIL_REQ= held, the WLC_UP write, startup frame read, and 64-byte
+block-mode response read still return the expected valid frames. The follow-up
+state no longer collapses to zero responses:
+
+#+begin_example
+(wifi-interrupt-state)
+=> ((status . ready)
+    (CCCR.IO_ENABLE . #x00000006)
+    (CCCR.IO_READY . #x00000006)
+    (CCCR.INTERRUPT_ENABLE . #x00000005)
+    (CCCR.INTERRUPT_PENDING . #x00000006)
+    (CCCR.BUS_CONTROL . #x00000042)
+    (CCCR.IO_ENABLE.response . #x00001006)
+    (CCCR.IO_READY.response . #x00001006)
+    (CCCR.INTERRUPT_ENABLE.response . #x00001005)
+    (CCCR.INTERRUPT_PENDING.response . #x00001006)
+    (CCCR.BUS_CONTROL.response . #x00001042)
+    (HOST.NORM_INT . #x00000100)
+    (HOST.ERR_INT . #x00000000)
+    (last-error))
+#+end_example
+
+The pending mailbox interrupt is also readable and acknowledgeable:
+
+#+begin_example
+(wifi-ack-interrupts)
+=> ((status . ready)
+    (INT_STATUS.before . #x000200c0)
+    (TO_HOST_MAILBOX_DATA . #x00040008)
+    (TO_SB_MAILBOX.ack . #x00000002)
+    (INT_STATUS.clear . #x000000c0)
+    (INT_STATUS.after . #x00020000)
+    (last-error))
+#+end_example
+
+After ack, =CCCR.INTERRUPT_PENDING= reads back =#x00= with normal nonzero CMD52
+responses.
+
+Interpretation: the post-WLC_UP zero-response state was caused by allowing the
+WLAN backplane/SDIO bus clock request to drop. The next code change should make
+the high-level =(wifi-wlc-up)= transaction request HT before sending WLC_UP,
+rather than requiring a manual =(wifi-request-ht)= step.
+
 * Next actions
 
 1. Add REPL history and better editing across continuation lines.
 2. Add a FAT/exFAT-aware storage layer after raw block reads/writes work.
 3. Test the newer Infineon target =infineon/cy8cxxa.cfg= as a replacement
    for obsolete =target/psoc6_2m.cfg=.
-4. Investigate the post-WLC_UP-response zero-response state after full F2 reads.
+4. Fold =HT_AVAIL_REQ= into the high-level WLC_UP transaction.
 5. Add SDPCM tx sequence and credit state before sending IOCTLs after WLC_UP.
 6. Start Wi-Fi from a known-good Infineon or Zephyr sample before trying
    to hand-port the full CYW4343W network stack.

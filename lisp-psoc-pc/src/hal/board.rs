@@ -592,6 +592,10 @@ impl lisp::Board for PsocBoard<'_> {
         wifi_sdio_keep_awake_report(wifi_sdio::keep_awake(self.p))
     }
 
+    fn wifi_request_ht(&mut self) -> lisp::WifiSdioHtRequestReport {
+        wifi_sdio_ht_request_report(wifi_sdio::request_ht(self.p))
+    }
+
     fn wifi_host_reset_lines(&mut self) -> lisp::WifiSdioHostResetReport {
         wifi_sdio_host_reset_report(wifi_sdio::host_reset_lines(self.p))
     }
@@ -1112,6 +1116,15 @@ fn wifi_sdio_keep_awake_status(status: wifi_sdio::WifiSdioKeepAwakeStatus) -> &'
     }
 }
 
+fn wifi_sdio_ht_request_status(status: wifi_sdio::WifiSdioHtRequestStatus) -> &'static [u8] {
+    match status {
+        wifi_sdio::WifiSdioHtRequestStatus::Ready => b"ready",
+        wifi_sdio::WifiSdioHtRequestStatus::WriteFailed => b"write-failed",
+        wifi_sdio::WifiSdioHtRequestStatus::ReadFailed => b"read-failed",
+        wifi_sdio::WifiSdioHtRequestStatus::Timeout => b"timeout",
+    }
+}
+
 fn wifi_sdio_core_state_status(status: wifi_sdio::WifiSdioCoreStateStatus) -> &'static [u8] {
     match status {
         wifi_sdio::WifiSdioCoreStateStatus::Ready => b"ready",
@@ -1561,6 +1574,22 @@ fn wifi_sdio_keep_awake_report(
         read_response: report.read_response,
         keep_wl_kso: report.keep_wl_kso,
         wl_devon: report.wl_devon,
+        last_error: report.last_error.map(wifi_sdio_command_error_report),
+        host: wifi_sdio_host_report(report.host),
+    }
+}
+
+fn wifi_sdio_ht_request_report(
+    report: wifi_sdio::WifiSdioHtRequestReport,
+) -> lisp::WifiSdioHtRequestReport {
+    lisp::WifiSdioHtRequestReport {
+        status: wifi_sdio_ht_request_status(report.status),
+        attempts: report.attempts,
+        write_value: report.write_value,
+        write_response: report.write_response,
+        read_value: report.read_value,
+        read_response: report.read_response,
+        ht_available: report.ht_available,
         last_error: report.last_error.map(wifi_sdio_command_error_report),
         host: wifi_sdio_host_report(report.host),
     }

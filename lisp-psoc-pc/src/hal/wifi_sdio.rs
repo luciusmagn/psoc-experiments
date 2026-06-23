@@ -98,6 +98,7 @@ const SDIO_HT_AVAIL_MAX_ATTEMPTS: u16 = 2500;
 const SDIO_F2_READY_MAX_ATTEMPTS: u16 = 1000;
 const SBSDIO_FORCE_ALP: u8 = 0x01;
 const SBSDIO_ALP_AVAIL_REQ: u8 = 0x08;
+const SBSDIO_HT_AVAIL_REQ: u8 = 0x10;
 const SBSDIO_FORCE_HW_CLKREQ_OFF: u8 = 0x20;
 const SBSDIO_ALP_AVAIL: u8 = 0x40;
 const SBSDIO_HT_AVAIL: u8 = 0x80;
@@ -308,6 +309,14 @@ pub enum WifiSdioInterruptStateStatus {
 #[derive(Clone, Copy)]
 pub enum WifiSdioKeepAwakeStatus {
     Ready,
+    Timeout,
+}
+
+#[derive(Clone, Copy)]
+pub enum WifiSdioHtRequestStatus {
+    Ready,
+    WriteFailed,
+    ReadFailed,
     Timeout,
 }
 
@@ -1080,6 +1089,18 @@ pub struct WifiSdioKeepAwakeReport {
     pub read_response: u32,
     pub keep_wl_kso: bool,
     pub wl_devon: bool,
+    pub last_error: Option<CommandError>,
+    pub host: WifiSdioHostSnapshot,
+}
+
+pub struct WifiSdioHtRequestReport {
+    pub status: WifiSdioHtRequestStatus,
+    pub attempts: u16,
+    pub write_value: u8,
+    pub write_response: u32,
+    pub read_value: u8,
+    pub read_response: u32,
+    pub ht_available: bool,
     pub last_error: Option<CommandError>,
     pub host: WifiSdioHostSnapshot,
 }
@@ -4793,6 +4814,82 @@ pub fn keep_awake(p: &Peripherals) -> WifiSdioKeepAwakeReport {
     )
 }
 
+pub fn request_ht(p: &Peripherals) -> WifiSdioHtRequestReport {
+    let core = &p.SDHC0.core;
+    let write_value = SBSDIO_HT_AVAIL_REQ;
+    let mut read_value = 0;
+    let mut read_response = 0;
+
+    let write_response = match cmd52_write_function_byte_selected(
+        core,
+        SDIO_BACKPLANE_FUNCTION,
+        SDIO_CHIP_CLOCK_CSR,
+        write_value,
+    ) {
+        Ok(response) => response,
+        Err(error) => {
+            return ht_request_report(
+                p,
+                WifiSdioHtRequestStatus::WriteFailed,
+                0,
+                write_value,
+                0,
+                0,
+                0,
+                Some(error),
+            )
+        }
+    };
+
+    let mut attempts = 0;
+    while attempts < SDIO_HT_AVAIL_MAX_ATTEMPTS {
+        attempts += 1;
+        match cmd52_read_function_byte_selected(core, SDIO_BACKPLANE_FUNCTION, SDIO_CHIP_CLOCK_CSR)
+        {
+            Ok(read) => {
+                read_value = read.0;
+                read_response = read.1;
+                if read_value & SBSDIO_HT_AVAIL != 0 {
+                    return ht_request_report(
+                        p,
+                        WifiSdioHtRequestStatus::Ready,
+                        attempts,
+                        write_value,
+                        write_response,
+                        read_value,
+                        read_response,
+                        None,
+                    );
+                }
+            }
+            Err(error) => {
+                return ht_request_report(
+                    p,
+                    WifiSdioHtRequestStatus::ReadFailed,
+                    attempts,
+                    write_value,
+                    write_response,
+                    read_value,
+                    read_response,
+                    Some(error),
+                )
+            }
+        }
+        delay_ms(1);
+    }
+
+    ht_request_report(
+        p,
+        WifiSdioHtRequestStatus::Timeout,
+        attempts,
+        write_value,
+        write_response,
+        read_value,
+        read_response,
+        None,
+    )
+}
+
 pub fn host_reset_lines(p: &Peripherals) -> WifiSdioHostResetReport {
     let before = host_snapshot(p);
     let core = &p.SDHC0.core;
@@ -7673,6 +7770,29 @@ fn keep_awake_report(
         read_response,
         keep_wl_kso: read_value & SBSDIO_SLPCSR_KEEP_WL_KSO != 0,
         wl_devon: read_value & SBSDIO_SLPCSR_WL_DEVON != 0,
+        last_error,
+        host: host_snapshot(p),
+    }
+}
+
+fn ht_request_report(
+    p: &Peripherals,
+    status: WifiSdioHtRequestStatus,
+    attempts: u16,
+    write_value: u8,
+    write_response: u32,
+    read_value: u8,
+    read_response: u32,
+    last_error: Option<CommandError>,
+) -> WifiSdioHtRequestReport {
+    WifiSdioHtRequestReport {
+        status,
+        attempts,
+        write_value,
+        write_response,
+        read_value,
+        read_response,
+        ht_available: read_value & SBSDIO_HT_AVAIL != 0,
         last_error,
         host: host_snapshot(p),
     }

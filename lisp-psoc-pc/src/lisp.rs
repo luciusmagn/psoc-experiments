@@ -105,6 +105,7 @@ pub trait Board {
     fn wifi_ack_interrupts(&mut self) -> WifiSdioInterruptAckReport;
     fn wifi_interrupt_state(&mut self) -> WifiSdioInterruptStateReport;
     fn wifi_keep_awake(&mut self) -> WifiSdioKeepAwakeReport;
+    fn wifi_request_ht(&mut self) -> WifiSdioHtRequestReport;
     fn wifi_host_reset_lines(&mut self) -> WifiSdioHostResetReport;
     fn wifi_abort_read(&mut self) -> WifiSdioAbortReadReport;
     fn wifi_core_state(&mut self, base: u32) -> WifiSdioCoreStateReport;
@@ -799,6 +800,19 @@ pub struct WifiSdioKeepAwakeReport {
 }
 
 #[derive(Clone, Copy)]
+pub struct WifiSdioHtRequestReport {
+    pub status: &'static [u8],
+    pub attempts: u16,
+    pub write_value: u8,
+    pub write_response: u32,
+    pub read_value: u8,
+    pub read_response: u32,
+    pub ht_available: bool,
+    pub last_error: Option<WifiSdioCommandErrorReport>,
+    pub host: WifiSdioHostReport,
+}
+
+#[derive(Clone, Copy)]
 pub struct WifiSdioHostResetReport {
     pub command_reset: bool,
     pub data_reset: bool,
@@ -962,6 +976,7 @@ pub enum Primitive {
     WifiAckInterrupts,
     WifiInterruptState,
     WifiKeepAwake,
+    WifiRequestHt,
     WifiHostResetLines,
     WifiAbortRead,
     WifiCoreState,
@@ -1048,6 +1063,7 @@ impl Primitive {
             Self::WifiAckInterrupts => "wifi-ack-interrupts",
             Self::WifiInterruptState => "wifi-interrupt-state",
             Self::WifiKeepAwake => "wifi-keep-awake",
+            Self::WifiRequestHt => "wifi-request-ht",
             Self::WifiHostResetLines => "wifi-host-reset-lines",
             Self::WifiAbortRead => "wifi-abort-read",
             Self::WifiCoreState => "wifi-core-state",
@@ -1292,6 +1308,7 @@ impl Machine {
         self.install_primitive(b"wifi-ack-interrupts", Primitive::WifiAckInterrupts)?;
         self.install_primitive(b"wifi-interrupt-state", Primitive::WifiInterruptState)?;
         self.install_primitive(b"wifi-keep-awake", Primitive::WifiKeepAwake)?;
+        self.install_primitive(b"wifi-request-ht", Primitive::WifiRequestHt)?;
         self.install_primitive(b"wifi-host-reset-lines", Primitive::WifiHostResetLines)?;
         self.install_primitive(b"wifi-abort-read", Primitive::WifiAbortRead)?;
         self.install_primitive(b"wifi-core-state", Primitive::WifiCoreState)?;
@@ -2149,6 +2166,10 @@ impl Machine {
                 self.expect_count(args, 0)?;
                 self.wifi_sdio_keep_awake_report(board.wifi_keep_awake())
             }
+            Primitive::WifiRequestHt => {
+                self.expect_count(args, 0)?;
+                self.wifi_sdio_ht_request_report(board.wifi_request_ht())
+            }
             Primitive::WifiHostResetLines => {
                 self.expect_count(args, 0)?;
                 self.wifi_sdio_host_reset_report(board.wifi_host_reset_lines())
@@ -2551,6 +2572,7 @@ impl Machine {
             b"wifi-ack-interrupts",
             b"wifi-interrupt-state",
             b"wifi-keep-awake",
+            b"wifi-request-ht",
             b"wifi-host-reset-lines",
             b"wifi-abort-read",
             b"wifi-core-state",
@@ -3866,6 +3888,34 @@ impl Machine {
             read_response,
             keep_wl_kso,
             wl_devon,
+            last_error,
+            host,
+        ];
+        self.make_list_from_values(&entries)
+    }
+
+    fn wifi_sdio_ht_request_report(
+        &mut self,
+        report: WifiSdioHtRequestReport,
+    ) -> LispResult<Value> {
+        let status = self.symbol_entry(b"status", report.status)?;
+        let attempts = self.word_entry(b"attempts", report.attempts as u32)?;
+        let write_value = self.word_entry(b"write-value", report.write_value as u32)?;
+        let write_response = self.word_entry(b"write-response", report.write_response)?;
+        let read_value = self.word_entry(b"read-value", report.read_value as u32)?;
+        let read_response = self.word_entry(b"read-response", report.read_response)?;
+        let ht_available = self.bool_entry(b"ht-available", report.ht_available)?;
+        let last_error = self.wifi_sdio_error_entry(b"last-error", report.last_error)?;
+        let host = self.wifi_sdio_host_report(report.host)?;
+        let host = self.entry(b"SDHC0", host)?;
+        let entries = [
+            status,
+            attempts,
+            write_value,
+            write_response,
+            read_value,
+            read_response,
+            ht_available,
             last_error,
             host,
         ];
