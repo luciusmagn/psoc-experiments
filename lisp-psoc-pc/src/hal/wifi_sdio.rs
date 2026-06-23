@@ -3163,13 +3163,13 @@ fn wait_cmd53_adma_write_complete(
     core: &sdhc0::CORE,
 ) -> Result<(), WifiSdioBackplaneWrite32Status> {
     if !wait_transfer_complete(core) {
-        let _ = software_reset_data_line(core);
+        let _ = software_reset_command_and_data_lines(core);
         return Err(WifiSdioBackplaneWrite32Status::TransferTimeout);
     }
     cortex_m::asm::dsb();
 
     if !wait_data_line_free(core) {
-        let _ = software_reset_data_line(core);
+        let _ = software_reset_command_and_data_lines(core);
         return Err(WifiSdioBackplaneWrite32Status::DataLineBusy);
     }
 
@@ -3773,6 +3773,12 @@ fn software_reset_data_line(core: &sdhc0::CORE) -> bool {
         delay_us(3);
     }
     false
+}
+
+fn software_reset_command_and_data_lines(core: &sdhc0::CORE) -> bool {
+    let command_reset = software_reset_command_line(core);
+    let data_reset = software_reset_data_line(core);
+    command_reset && data_reset
 }
 
 fn change_card_clock(core: &sdhc0::CORE, divider: u16) {

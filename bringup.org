@@ -1546,6 +1546,45 @@ The chip-id read still works after the change:
 => ... (bytes #x000000a6 #x000000a9 #x00000031 #x00000015) ...
 #+end_example
 
+* 2026-06-23 Wi-Fi CMD53 write recovery
+
+Changed the CMD53 ADMA write timeout recovery path to reset both the SDHC
+command and data circuits. This matches the Infineon HAL recovery path for
+failed SDIO bulk transfers; the earlier code reset only the data circuit.
+
+Live validation after flashing:
+
+#+begin_example
+(wifi-reset-core #x18104000)
+=> ((status . ready) ... (after ... (core-up . #t)) ...)
+
+(wifi-backplane-write32 #x00000000 #x00000000)
+=> ((status . ready)
+    (address . #x00000000)
+    (window-address . #x00008000)
+    (response . #x00001000)
+    (readback . #x20400100)
+    (SDHC0 ... (XFER_MODE . #x00000003)
+               (ADMA_SA_LOW . #x08001010)
+               (ADMA_ERR_STAT . #x00000000)
+               (PSTATE . #x03f30000)
+               (RESP01 . #x00001020) ...))
+
+(wifi-backplane-read #x18000000 4)
+=> ... (bytes #x000000a6 #x000000a9 #x00000031 #x00000015) ...
+#+end_example
+
+This shows that CMD53 ADMA writes can complete on at least one backplane
+target. The earlier =#x18004010= timeout is target/state-specific rather
+than proof that all CMD53 writes are broken.
+
+The separate =(wifi-reset-core ...)= call above does not persist into the
+following write test because every public diagnostic form currently runs
+=setup_backplane=, which power-cycles and reinitializes the Wi-Fi chip.
+Any meaningful SOCSRAM write/readback test must be implemented as one HAL
+operation that performs setup, core reset, RAM write, and RAM readback
+without reinitializing between steps.
+
 Next useful tests are a known-idempotent CMD52 write target, a block-mode
 RAM write/readback diagnostic, and a closer comparison with Infineon's HAL
 bulk-transfer path.
