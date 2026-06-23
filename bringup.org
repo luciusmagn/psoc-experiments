@@ -3230,6 +3230,82 @@ should compare our CMD53 read completion and SDHC reset behavior with WHD's
 SDIO host implementation, or test whether a different receive mode avoids the
 post-response zero-response state.
 
+* 2026-06-23 Exact-length F2 response read probe
+
+Added =(wifi-f2-read-frame-exact count)= to read a known-length function-2
+frame in one byte-mode CMD53 transfer through the same F2 helper path used by
+the frame readers. This avoids the generic =(wifi-cmd53-read)= path, which
+performs backplane setup and ALP clock requests before the read and is not a
+clean comparison.
+
+Validation:
+
+#+begin_example
+cargo fmt
+tools/build-lisp.scm --wifi-firmware
+tools/flash-lisp.scm
+tools/serial-console.scm
+tools/send-lisp.scm '(wifi-start-firmware)'
+tools/send-lisp.scm '(wifi-send-wlc-up)'
+tools/send-lisp.scm '(wifi-f2-read-frame-exact 12)'
+tools/send-lisp.scm '(wifi-f2-read-frame-exact 28)'
+tools/send-lisp.scm '(wifi-interrupt-state)'
+#+end_example
+
+The exact 12-byte startup frame read succeeds:
+
+#+begin_example
+(wifi-f2-read-frame-exact 12)
+=> ((status . ready)
+    (length . #x0000000c)
+    (channel . #x00000001)
+    (bus-data-credit . #x00000010)
+    (header-response . #x00001000)
+    (body-response . #x00000000)
+    (last-error))
+#+end_example
+
+The exact 28-byte response read also succeeds and returns the same WLC_UP CDC
+response bytes as the split read:
+
+#+begin_example
+(wifi-f2-read-frame-exact 28)
+=> ((status . ready)
+    (length . #x0000001c)
+    (channel . #x00000000)
+    (bus-data-credit . #x00000011)
+    (bytes #x0000001c #x00000000 #x000000e3 #x000000ff
+           #x00000001 #x00000000 #x00000000 #x0000000c
+           #x00000000 #x00000011 #x00000000 #x00000000
+           #x00000002 #x00000000 #x00000000 #x00000000
+           #x00000000 #x00000000 #x00000000 #x00000000
+           #x00000000 #x00000000 #x00000001 #x00000000
+           #x00000000 #x00000000 #x00000000 #x00000000)
+    (header-response . #x00001000)
+    (body-response . #x00000000)
+    (last-error))
+#+end_example
+
+The next selected-card read still returns zero responses:
+
+#+begin_example
+(wifi-interrupt-state)
+=> ((status . ready)
+    (CCCR.IO_ENABLE . #x00000000)
+    (CCCR.IO_READY . #x00000000)
+    (CCCR.INTERRUPT_ENABLE . #x00000000)
+    (CCCR.INTERRUPT_PENDING . #x00000000)
+    (CCCR.BUS_CONTROL . #x00000000)
+    (HOST.NORM_INT . #x00000100)
+    (HOST.ERR_INT . #x00000000)
+    (last-error))
+#+end_example
+
+Interpretation: the post-response failure is not caused by splitting the
+control response into a 4-byte header read followed by a 24-byte body read. A
+single 28-byte CMD53 read of the complete response is enough to reproduce the
+zero-response state.
+
 * Next actions
 
 1. Add REPL history and better editing across continuation lines.

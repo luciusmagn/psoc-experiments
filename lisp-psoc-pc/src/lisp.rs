@@ -96,6 +96,7 @@ pub trait Board {
     fn wifi_f2_read_header(&mut self) -> WifiSdioF2HeaderReport;
     fn wifi_f2_read_frame(&mut self) -> WifiSdioF2FrameReport;
     fn wifi_f2_read_frame_single(&mut self) -> WifiSdioF2FrameReport;
+    fn wifi_f2_read_frame_exact(&mut self, count: u8) -> WifiSdioF2FrameReport;
     fn wifi_send_wlc_up(&mut self) -> WifiSdioF2ControlReport;
     fn wifi_wlc_up(&mut self) -> WifiSdioWlcUpReport;
     fn wifi_f2_read_frame_abort(&mut self) -> WifiSdioF2AbortProbeReport;
@@ -951,6 +952,7 @@ pub enum Primitive {
     WifiF2ReadHeader,
     WifiF2ReadFrame,
     WifiF2ReadFrameSingle,
+    WifiF2ReadFrameExact,
     WifiSendWlcUp,
     WifiWlcUp,
     WifiF2ReadFrameAbort,
@@ -1035,6 +1037,7 @@ impl Primitive {
             Self::WifiF2ReadHeader => "wifi-f2-read-header",
             Self::WifiF2ReadFrame => "wifi-f2-read-frame",
             Self::WifiF2ReadFrameSingle => "wifi-f2-read-frame-single",
+            Self::WifiF2ReadFrameExact => "wifi-f2-read-frame-exact",
             Self::WifiSendWlcUp => "wifi-send-wlc-up",
             Self::WifiWlcUp => "wifi-wlc-up",
             Self::WifiF2ReadFrameAbort => "wifi-f2-read-frame-abort",
@@ -1277,6 +1280,7 @@ impl Machine {
             b"wifi-f2-read-frame-single",
             Primitive::WifiF2ReadFrameSingle,
         )?;
+        self.install_primitive(b"wifi-f2-read-frame-exact", Primitive::WifiF2ReadFrameExact)?;
         self.install_primitive(b"wifi-send-wlc-up", Primitive::WifiSendWlcUp)?;
         self.install_primitive(b"wifi-wlc-up", Primitive::WifiWlcUp)?;
         self.install_primitive(b"wifi-f2-read-frame-abort", Primitive::WifiF2ReadFrameAbort)?;
@@ -2104,6 +2108,11 @@ impl Machine {
                 self.expect_count(args, 0)?;
                 self.wifi_sdio_f2_frame_report(board.wifi_f2_read_frame_single())
             }
+            Primitive::WifiF2ReadFrameExact => {
+                self.expect_count(args, 1)?;
+                let count = self.expect_u8(args[0])?;
+                self.wifi_sdio_f2_frame_report(board.wifi_f2_read_frame_exact(count))
+            }
             Primitive::WifiSendWlcUp => {
                 self.expect_count(args, 0)?;
                 self.wifi_sdio_f2_control_report(board.wifi_send_wlc_up())
@@ -2525,6 +2534,7 @@ impl Machine {
             b"wifi-f2-read-header",
             b"wifi-f2-read-frame",
             b"wifi-f2-read-frame-single",
+            b"wifi-f2-read-frame-exact",
             b"wifi-send-wlc-up",
             b"wifi-wlc-up",
             b"wifi-f2-read-frame-abort",

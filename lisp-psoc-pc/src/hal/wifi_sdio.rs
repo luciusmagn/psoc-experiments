@@ -4053,6 +4053,111 @@ pub fn f2_read_frame_single(p: &Peripherals) -> WifiSdioF2FrameReport {
     )
 }
 
+pub fn f2_read_frame_exact(p: &Peripherals, count: u8) -> WifiSdioF2FrameReport {
+    if count < SDPCM_HEADER_BYTES {
+        return f2_frame_report(
+            p,
+            WifiSdioF2FrameStatus::FrameTooShort,
+            WifiSdioCmd53ReadStatus::Ready,
+            WifiSdioCmd53ReadStatus::Ready,
+            0,
+            0,
+            [0; SDIO_CMD53_PREVIEW_BYTES],
+            0,
+            None,
+        );
+    }
+
+    if count as usize > SDIO_CMD53_PREVIEW_BYTES {
+        return f2_frame_report(
+            p,
+            WifiSdioF2FrameStatus::FrameTooLarge,
+            WifiSdioCmd53ReadStatus::Ready,
+            WifiSdioCmd53ReadStatus::Ready,
+            0,
+            0,
+            [0; SDIO_CMD53_PREVIEW_BYTES],
+            0,
+            None,
+        );
+    }
+
+    if count % SDIO_CMD53_WORD_BYTES as u8 != 0 {
+        return f2_frame_report(
+            p,
+            WifiSdioF2FrameStatus::UnsupportedLength,
+            WifiSdioCmd53ReadStatus::Ready,
+            WifiSdioCmd53ReadStatus::Ready,
+            0,
+            0,
+            [0; SDIO_CMD53_PREVIEW_BYTES],
+            0,
+            None,
+        );
+    }
+
+    let transfer = f2_read_bytes(p, count);
+    let mut bytes = [0; SDIO_CMD53_PREVIEW_BYTES];
+    copy_bytes(&mut bytes, 0, &transfer.bytes, count);
+    let length = u16::from_le_bytes([bytes[0], bytes[1]]);
+    let checksum = u16::from_le_bytes([bytes[2], bytes[3]]);
+    let valid = length != 0 && (length ^ checksum) == 0xffff;
+
+    if !matches!(transfer.status, WifiSdioCmd53ReadStatus::Ready) {
+        return f2_frame_report(
+            p,
+            WifiSdioF2FrameStatus::HeaderReadFailed,
+            transfer.status,
+            WifiSdioCmd53ReadStatus::Ready,
+            transfer.response,
+            0,
+            bytes,
+            0,
+            transfer.last_error,
+        );
+    }
+
+    if !valid {
+        return f2_frame_report(
+            p,
+            WifiSdioF2FrameStatus::InvalidHeader,
+            transfer.status,
+            WifiSdioCmd53ReadStatus::Ready,
+            transfer.response,
+            0,
+            bytes,
+            count,
+            None,
+        );
+    }
+
+    if length != count as u16 {
+        return f2_frame_report(
+            p,
+            WifiSdioF2FrameStatus::UnsupportedLength,
+            transfer.status,
+            WifiSdioCmd53ReadStatus::Ready,
+            transfer.response,
+            0,
+            bytes,
+            count,
+            None,
+        );
+    }
+
+    f2_frame_report(
+        p,
+        WifiSdioF2FrameStatus::Ready,
+        transfer.status,
+        WifiSdioCmd53ReadStatus::Ready,
+        transfer.response,
+        0,
+        bytes,
+        count,
+        None,
+    )
+}
+
 pub fn send_wlc_up(p: &Peripherals) -> WifiSdioF2ControlReport {
     let initial_tx_credit = 1;
     let packet = wlc_up_control_packet_words();

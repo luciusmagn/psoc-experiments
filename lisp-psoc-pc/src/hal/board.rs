@@ -504,6 +504,10 @@ impl lisp::Board for PsocBoard<'_> {
         wifi_sdio_f2_frame_report(wifi_sdio::f2_read_frame_single(self.p))
     }
 
+    fn wifi_f2_read_frame_exact(&mut self, count: u8) -> lisp::WifiSdioF2FrameReport {
+        wifi_sdio_f2_frame_report(wifi_sdio::f2_read_frame_exact(self.p, count))
+    }
+
     fn wifi_send_wlc_up(&mut self) -> lisp::WifiSdioF2ControlReport {
         wifi_sdio_f2_control_report(wifi_sdio::send_wlc_up(self.p))
     }
