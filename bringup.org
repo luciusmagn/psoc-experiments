@@ -1682,15 +1682,54 @@ round-trip SOCSRAM and restore the original block when the CYW43430 RAM
 download setup is kept inside one HAL operation. The chip-id read still
 works afterward.
 
+* 2026-06-23 Wi-Fi resource preparation
+
+Added =tools/prepare-wifi-resources.scm= to materialize local CYW4343W
+binary resources under ignored repo state:
+
+#+begin_src sh
+tools/prepare-wifi-resources.scm
+tools/prepare-wifi-resources.scm --check
+#+end_src
+
+The script uses Infineon's =wifi-host-driver= repository at
+=release-v3.2.0= by default because that tag carries the resource layout
+for =COMPONENT_4343W= and =COMPONENT_MURATA-1DX=, matching the kit BSP's
+CYW4343W/Murata 1DX module. It extracts:
+
+1. =4343WA1.bin=
+2. =4343WA1.clm_blob=
+3. =wifi_nvram_image.h=
+4. =LICENSE-permissive-binary-license-1.0.txt=
+
+It converts the NVRAM C string into =wifi_nvram.bin= and
+=wifi_nvram.txt=, substituting a generated locally administered MAC
+address. The generated address is stored in
+=.local/wifi/resources/generated_mac_address.txt= with mode =600= and is
+not printed by the script.
+
+Validation:
+
+#+begin_example
+firmware bytes=421421 sha256=672f94b68bc19236c75c395f5d1be7524635c9d812f6f74585996921290bbcd1
+clm bytes=7222 sha256=4a2b14f19bfee84b403ef04e8ca3483e298cb4aaab1013ecc5fb80379901b8d3
+nvram bytes=646 sha256=1b8da9a7ae30bb3b3eae173a6c37a00376af57fd60a9b8bb6c2d4bbab435b78c
+resources=./.local/wifi/resources
+#+end_example
+
+The =release-v3.2.0= and =release-v4.3.1= 4343WA1 firmware payloads have
+the same SHA-256 hash. =release-v1.94.0= carries an older 419799-byte
+firmware payload, so the newer matching payload is the current local
+resource source.
+
 * Next actions
 
 1. Add REPL history and better editing across continuation lines.
 2. Add a FAT/exFAT-aware storage layer after raw block reads/writes work.
 3. Test the newer Infineon target =infineon/cy8cxxa.cfg= as a replacement
    for obsolete =target/psoc6_2m.cfg=.
-4. Find or import a CYW43430 firmware blob and board NVRAM source that can
-   be kept out of git when licensing or secrets require it.
-5. Add a firmware-sized SOCSRAM loader using the now-working 64-byte block
+4. Add a firmware-sized SOCSRAM loader using the local Wi-Fi resources and
+   the now-working 64-byte block
    transfer path.
-6. Start Wi-Fi from a known-good Infineon or Zephyr sample before trying
+5. Start Wi-Fi from a known-good Infineon or Zephyr sample before trying
    to hand-port CYW4343W support.

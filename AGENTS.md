@@ -92,6 +92,10 @@ Treat hardware writes as externally visible side effects.
 - Use `tools/prepare-wifi-credentials.scm` for local IWD PSK extraction.
   It writes `.local/wifi/selected.env`, and its output must stay limited to
   counts/paths rather than SSIDs or secret values.
+- Use `tools/prepare-wifi-resources.scm` for local CYW4343W firmware, CLM,
+  and NVRAM extraction. It writes `.local/wifi/resources/`, including a
+  generated local MAC address, and its output must stay limited to
+  counts/paths/sizes/hashes rather than generated address values.
 - Treat other local checkouts, such as `/root/zmk` or `/root/project/hiisi`,
   as read-only references unless the user explicitly asks to edit them.
 
@@ -120,6 +124,7 @@ default:
 
 ```sh
 tools/setup-modustoolbox.scm --check
+tools/prepare-wifi-resources.scm --check
 tools/build-lisp.scm
 tools/flash-lisp.scm
 ```

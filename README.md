@@ -57,6 +57,18 @@ The script writes `.local/wifi/selected.env` with mode `600` and reports only
 field lengths, never credential values. Use `--ssid` or `--profile` to choose a
 specific non-enterprise profile.
 
+Prepare local CYW4343W firmware, CLM, and NVRAM resources before building Wi-Fi
+firmware-loader work:
+
+```sh
+tools/prepare-wifi-resources.scm
+tools/prepare-wifi-resources.scm --check
+```
+
+The resource script writes `.local/wifi/resources/`, including a generated local
+MAC address used in the NVRAM image. The files are ignored by git. The script
+prints sizes, hashes, and paths, but not the generated MAC address.
+
 ### Prerequisites
 
 1. Install correct Rust targets for both cores.
