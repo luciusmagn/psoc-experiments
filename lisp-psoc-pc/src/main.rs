@@ -119,7 +119,7 @@ fn load_boot_file<B: lisp::Board, W: Write>(
     output: &mut W,
 ) -> fmt::Result {
     let path = string_bytes(b"boot.lisp");
-    match machine.load_file(path, board) {
+    match machine.load_file(path, board, output) {
         Ok(lisp::LoadFileOutcome::Loaded(value)) => {
             write!(output, "boot.lisp => ")?;
             machine.write_value_to(value, output)?;

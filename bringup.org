@@ -2528,6 +2528,87 @@ next investigation should compare the remaining WHD post-frame path, especially
 read-abort semantics, retry delays, and the first host-to-device SDPCM control
 message, before more SDHC data-path rewrites.
 
+* 2026-06-23 FAT32 formatter with console progress
+
+Added =(fat-format)= as a destructive Lisp primitive for the inserted 32GB
+microSD card. The formatter keeps the existing partition LBA/count from the
+MBR, rewrites partition 0 as FAT32 LBA type =#x0c=, clears both FAT copies and
+the root cluster, writes primary and backup boot/FSInfo sectors, and reports
+progress on the same console writer used by normal Lisp evaluation.
+
+The first progress implementation wrote through a second =Console= wrapper over
+=SCB5= and produced garbled serial output after a long format. The fixed path
+threads the active =core::fmt::Write= through the Lisp evaluator and adapts it
+to the FAT formatter only while the primitive runs. There is no second UART
+owner.
+
+Validation commands:
+
+#+begin_example
+tools/build-lisp.scm
+tools/flash-lisp.scm
+tools/serial-console.scm
+tools/send-lisp.scm '(+ 1 2)'
+tools/send-lisp.scm '(fat-info)'
+tools/send-lisp.scm '(fat-format)'
+tools/send-lisp.scm '(fat-info)'
+tools/send-lisp.scm '(+ 40 2)'
+#+end_example
+
+Live formatter progress was readable throughout the long zero-fill phase:
+
+#+begin_example
+(fat-format)
+fat-format hide-mbr 1/14826
+fat-format clear-fat 257/14826
+fat-format clear-fat 513/14826
+...
+fat-format clear-fat 14753/14826
+fat-format fat-header 14754/14826
+fat-format fat-header 14755/14826
+fat-format clear-root 14819/14826
+fat-format boot 14820/14826
+fat-format fsinfo 14821/14826
+fat-format reserved 14822/14826
+fat-format backup-boot 14823/14826
+fat-format backup-fsinfo 14824/14826
+fat-format backup-reserved 14825/14826
+fat-format final-mbr 14826/14826
+=> ((status . ready) (ready . #t) (MBR.sig . #x0000aa55)
+    (partition0.status . #x00000000)
+    (partition0.type.before . #x0000000c)
+    (partition0.type.after . #x0000000c)
+    (partition0.lba . #x00000800)
+    (partition0.sectors . #x039a3800)
+    (sectors-per-cluster . 64)
+    (reserved-sectors . 32)
+    (fat-count . 2)
+    (fat-size-sectors . #x00001cd0)
+    (data-cluster-count . #x000e67f9)
+    (root-cluster . #x00000002)
+    (written-sector-count . #x000039ea)
+    (failed-sector . #x00000000))
+#+end_example
+
+Post-format checks:
+
+#+begin_example
+(fat-info)
+=> ((status . ready) (ready . #t) (MBR.sig . #x0000aa55)
+    (partition0.status . #x00000000)
+    (partition0.type . #x0000000c)
+    (partition0.lba . #x00000800)
+    (partition0.sectors . #x039a3800)
+    (root-entry-count . 0)
+    (entries))
+
+(+ 40 2)
+=> 42
+#+end_example
+
+The red LED remained quiet during this validation. The remaining storage work
+is to move file primitives from the raw sector store onto FAT.
+
 * Next actions
 
 1. Add REPL history and better editing across continuation lines.

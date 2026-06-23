@@ -18,6 +18,27 @@ const FAT16_PARTITION: u8 = 0x06;
 const FAT32_CHS_LBA_PARTITION: u8 = 0x0b;
 const FAT32_LBA_PARTITION: u8 = 0x0c;
 const FAT16_LBA_PARTITION: u8 = 0x0e;
+const FAT32_SECTORS_PER_CLUSTER: u8 = 64;
+const FAT32_RESERVED_SECTORS: u16 = 32;
+const FAT32_FAT_COUNT: u8 = 2;
+const FAT32_ROOT_CLUSTER: u32 = 2;
+const FAT32_FSINFO_SECTOR: u16 = 1;
+const FAT32_BACKUP_BOOT_SECTOR: u16 = 6;
+const FAT32_MIN_CLUSTERS: u32 = 65_525;
+const FAT32_MAX_CLUSTERS: u32 = 0x0fff_ffef;
+const VOLUME_ID: u32 = 0x2026_0623;
+const VOLUME_LABEL: &[u8; 11] = b"LISPPSOC6  ";
+const FORMAT_PROGRESS_CHUNK_SECTORS: u32 = 256;
+
+pub trait FormatProgress {
+    fn report(&mut self, phase: &'static [u8], written_sector_count: u32, total_sectors: u32);
+}
+
+struct SilentProgress;
+
+impl FormatProgress for SilentProgress {
+    fn report(&mut self, _phase: &'static [u8], _written_sector_count: u32, _total_sectors: u32) {}
+}
 
 pub struct InfoReport {
     pub status: FatStatus,
@@ -31,6 +52,24 @@ pub struct InfoReport {
     pub entries: [lisp::StringBytes; lisp::MAX_STORE_FILES],
 }
 
+pub struct FormatReport {
+    pub status: FatStatus,
+    pub mbr_signature: u16,
+    pub partition_status: u8,
+    pub partition_type_before: u8,
+    pub partition_type_after: u8,
+    pub partition_lba_start: u32,
+    pub partition_sector_count: u32,
+    pub sectors_per_cluster: u8,
+    pub reserved_sectors: u16,
+    pub fat_count: u8,
+    pub fat_size_sectors: u32,
+    pub data_cluster_count: u32,
+    pub root_cluster: u32,
+    pub written_sector_count: u32,
+    pub failed_sector: u32,
+}
+
 #[derive(Clone, Copy)]
 pub enum FatStatus {
     Ready,
@@ -38,6 +77,13 @@ pub enum FatStatus {
     MissingMbrSignature,
     UnsupportedPartition,
     BlockDeviceFailed,
+    FormatGeometryInvalid,
+    FormatMbrWriteFailed,
+    FormatBootWriteFailed,
+    FormatFsInfoWriteFailed,
+    FormatFatClearFailed,
+    FormatFatHeaderWriteFailed,
+    FormatRootClearFailed,
     VolumeOpenFailed,
     RootOpenFailed,
     RootIterateFailed,
@@ -59,6 +105,16 @@ struct PsocBlockDevice<'a> {
 
 #[derive(Clone, Copy)]
 struct FixedTime;
+
+#[derive(Clone, Copy)]
+struct Fat32Layout {
+    partition_status: u8,
+    partition_type_before: u8,
+    partition_lba_start: u32,
+    partition_sector_count: u32,
+    fat_size_sectors: u32,
+    data_cluster_count: u32,
+}
 
 pub fn info(p: &Peripherals) -> InfoReport {
     let sector_zero = micro_sd::read_sector_words(p, 0);
@@ -206,6 +262,224 @@ pub fn info(p: &Peripherals) -> InfoReport {
     report
 }
 
+pub fn format_fat32(p: &Peripherals) -> FormatReport {
+    let mut progress = SilentProgress;
+    format_fat32_with_progress(p, &mut progress)
+}
+
+pub fn format_fat32_with_progress(
+    p: &Peripherals,
+    progress: &mut dyn FormatProgress,
+) -> FormatReport {
+    let sector_zero = micro_sd::read_sector_words(p, 0);
+    if !matches!(sector_zero.status, micro_sd::ReadStatus::Ready) {
+        return format_report(FatStatus::MbrReadFailed, empty_layout(), 0, 0);
+    }
+
+    let mut mbr = [0u8; Block::LEN];
+    words_to_bytes(&sector_zero.words, &mut mbr);
+    let mbr_signature = read_u16(&mbr, MBR_SIGNATURE_OFFSET);
+    if mbr_signature != MBR_SIGNATURE {
+        let layout = layout_from_mbr(0, 0, 0, 0, 0);
+        return format_report(FatStatus::MissingMbrSignature, layout, 0, 0);
+    }
+
+    let partition = &mbr[PARTITION0_OFFSET..PARTITION0_OFFSET + 16];
+    let partition_status = partition[PARTITION_STATUS_OFFSET];
+    let partition_type_before = partition[PARTITION_TYPE_OFFSET];
+    let partition_lba_start = read_u32(partition, PARTITION_LBA_OFFSET);
+    let partition_sector_count = read_u32(partition, PARTITION_SECTORS_OFFSET);
+    let layout = match compute_fat32_layout(
+        partition_status,
+        partition_type_before,
+        partition_lba_start,
+        partition_sector_count,
+    ) {
+        Some(layout) => layout,
+        None => {
+            return format_report(
+                FatStatus::FormatGeometryInvalid,
+                layout_from_mbr(
+                    partition_status,
+                    partition_type_before,
+                    partition_lba_start,
+                    partition_sector_count,
+                    0,
+                ),
+                0,
+                0,
+            )
+        }
+    };
+
+    let total_format_sectors = format_total_sectors(&layout);
+    let mut written_sector_count = 0u32;
+    let hidden_mbr = mbr_block(&layout, 0);
+    if write_block(p, 0, &hidden_mbr).is_err() {
+        return format_report(
+            FatStatus::FormatMbrWriteFailed,
+            layout,
+            written_sector_count,
+            0,
+        );
+    }
+    written_sector_count += 1;
+    progress.report(b"hide-mbr", written_sector_count, total_format_sectors);
+
+    let first_fat_sector = layout.partition_lba_start + u32::from(FAT32_RESERVED_SECTORS);
+    let fat_clear_count = layout.fat_size_sectors * u32::from(FAT32_FAT_COUNT);
+    if let Err(failed_sector) = clear_range_with_progress(
+        p,
+        first_fat_sector,
+        fat_clear_count,
+        b"clear-fat",
+        &mut written_sector_count,
+        total_format_sectors,
+        progress,
+    ) {
+        return format_report(
+            FatStatus::FormatFatClearFailed,
+            layout,
+            written_sector_count,
+            failed_sector,
+        );
+    }
+
+    let fat_header = fat_header_block();
+    if write_block(p, first_fat_sector, &fat_header).is_err() {
+        return format_report(
+            FatStatus::FormatFatHeaderWriteFailed,
+            layout,
+            written_sector_count,
+            first_fat_sector,
+        );
+    }
+    written_sector_count += 1;
+    progress.report(b"fat-header", written_sector_count, total_format_sectors);
+
+    let second_fat_sector = first_fat_sector + layout.fat_size_sectors;
+    if write_block(p, second_fat_sector, &fat_header).is_err() {
+        return format_report(
+            FatStatus::FormatFatHeaderWriteFailed,
+            layout,
+            written_sector_count,
+            second_fat_sector,
+        );
+    }
+    written_sector_count += 1;
+    progress.report(b"fat-header", written_sector_count, total_format_sectors);
+
+    let first_data_sector = first_fat_sector + fat_clear_count;
+    if let Err(failed_sector) = clear_range_with_progress(
+        p,
+        first_data_sector,
+        u32::from(FAT32_SECTORS_PER_CLUSTER),
+        b"clear-root",
+        &mut written_sector_count,
+        total_format_sectors,
+        progress,
+    ) {
+        return format_report(
+            FatStatus::FormatRootClearFailed,
+            layout,
+            written_sector_count,
+            failed_sector,
+        );
+    }
+
+    let boot = boot_sector_block(&layout);
+    if write_block(p, layout.partition_lba_start, &boot).is_err() {
+        return format_report(
+            FatStatus::FormatBootWriteFailed,
+            layout,
+            written_sector_count,
+            layout.partition_lba_start,
+        );
+    }
+    written_sector_count += 1;
+    progress.report(b"boot", written_sector_count, total_format_sectors);
+
+    let fs_info = fs_info_block(&layout);
+    let fs_info_sector = layout.partition_lba_start + u32::from(FAT32_FSINFO_SECTOR);
+    if write_block(p, fs_info_sector, &fs_info).is_err() {
+        return format_report(
+            FatStatus::FormatFsInfoWriteFailed,
+            layout,
+            written_sector_count,
+            fs_info_sector,
+        );
+    }
+    written_sector_count += 1;
+    progress.report(b"fsinfo", written_sector_count, total_format_sectors);
+
+    let reserved_blank = Block::new();
+    let reserved_sector = layout.partition_lba_start + 2;
+    if write_block(p, reserved_sector, &reserved_blank).is_err() {
+        return format_report(
+            FatStatus::FormatBootWriteFailed,
+            layout,
+            written_sector_count,
+            reserved_sector,
+        );
+    }
+    written_sector_count += 1;
+    progress.report(b"reserved", written_sector_count, total_format_sectors);
+
+    let backup_boot_sector = layout.partition_lba_start + u32::from(FAT32_BACKUP_BOOT_SECTOR);
+    if write_block(p, backup_boot_sector, &boot).is_err() {
+        return format_report(
+            FatStatus::FormatBootWriteFailed,
+            layout,
+            written_sector_count,
+            backup_boot_sector,
+        );
+    }
+    written_sector_count += 1;
+    progress.report(b"backup-boot", written_sector_count, total_format_sectors);
+
+    let backup_fs_info_sector = backup_boot_sector + 1;
+    if write_block(p, backup_fs_info_sector, &fs_info).is_err() {
+        return format_report(
+            FatStatus::FormatFsInfoWriteFailed,
+            layout,
+            written_sector_count,
+            backup_fs_info_sector,
+        );
+    }
+    written_sector_count += 1;
+    progress.report(b"backup-fsinfo", written_sector_count, total_format_sectors);
+
+    let backup_reserved_sector = backup_boot_sector + 2;
+    if write_block(p, backup_reserved_sector, &reserved_blank).is_err() {
+        return format_report(
+            FatStatus::FormatBootWriteFailed,
+            layout,
+            written_sector_count,
+            backup_reserved_sector,
+        );
+    }
+    written_sector_count += 1;
+    progress.report(
+        b"backup-reserved",
+        written_sector_count,
+        total_format_sectors,
+    );
+
+    let final_mbr = mbr_block(&layout, FAT32_LBA_PARTITION);
+    if write_block(p, 0, &final_mbr).is_err() {
+        return format_report(
+            FatStatus::FormatMbrWriteFailed,
+            layout,
+            written_sector_count,
+            0,
+        );
+    }
+    written_sector_count += 1;
+    progress.report(b"final-mbr", written_sector_count, total_format_sectors);
+
+    format_report(FatStatus::Ready, layout, written_sector_count, 0)
+}
+
 impl BlockDevice for PsocBlockDevice<'_> {
     type Error = FatBlockError;
 
@@ -298,6 +572,216 @@ fn info_report(
         root_entry_count,
         sample_count: 0,
         entries,
+    }
+}
+
+fn format_report(
+    status: FatStatus,
+    layout: Fat32Layout,
+    written_sector_count: u32,
+    failed_sector: u32,
+) -> FormatReport {
+    FormatReport {
+        status,
+        mbr_signature: MBR_SIGNATURE,
+        partition_status: layout.partition_status,
+        partition_type_before: layout.partition_type_before,
+        partition_type_after: if matches!(status, FatStatus::Ready) {
+            FAT32_LBA_PARTITION
+        } else {
+            0
+        },
+        partition_lba_start: layout.partition_lba_start,
+        partition_sector_count: layout.partition_sector_count,
+        sectors_per_cluster: FAT32_SECTORS_PER_CLUSTER,
+        reserved_sectors: FAT32_RESERVED_SECTORS,
+        fat_count: FAT32_FAT_COUNT,
+        fat_size_sectors: layout.fat_size_sectors,
+        data_cluster_count: layout.data_cluster_count,
+        root_cluster: FAT32_ROOT_CLUSTER,
+        written_sector_count,
+        failed_sector,
+    }
+}
+
+fn clear_range_with_progress(
+    p: &Peripherals,
+    start_sector: u32,
+    sector_count: u32,
+    phase: &'static [u8],
+    written_sector_count: &mut u32,
+    total_format_sectors: u32,
+    progress: &mut dyn FormatProgress,
+) -> Result<(), u32> {
+    let mut cleared = 0u32;
+    while cleared < sector_count {
+        let chunk = core::cmp::min(FORMAT_PROGRESS_CHUNK_SECTORS, sector_count - cleared);
+        let sector = start_sector + cleared;
+        let report = micro_sd::write_sector_range_fill(p, sector, chunk, 0);
+        *written_sector_count += report.sectors_written;
+        progress.report(phase, *written_sector_count, total_format_sectors);
+        if !matches!(report.status, micro_sd::WriteStatus::Ready) {
+            return Err(report.failed_sector);
+        }
+        cleared += chunk;
+    }
+    Ok(())
+}
+
+fn format_total_sectors(layout: &Fat32Layout) -> u32 {
+    let fat_clear_count = layout.fat_size_sectors * u32::from(FAT32_FAT_COUNT);
+    2 + fat_clear_count + 2 + u32::from(FAT32_SECTORS_PER_CLUSTER) + 6
+}
+
+fn compute_fat32_layout(
+    partition_status: u8,
+    partition_type_before: u8,
+    partition_lba_start: u32,
+    partition_sector_count: u32,
+) -> Option<Fat32Layout> {
+    if partition_lba_start == 0 || partition_sector_count < 1024 {
+        return None;
+    }
+
+    let mut fat_size_sectors = 1u32;
+    loop {
+        let non_data_sectors = u32::from(FAT32_RESERVED_SECTORS)
+            .checked_add(u32::from(FAT32_FAT_COUNT).checked_mul(fat_size_sectors)?)?;
+        if non_data_sectors >= partition_sector_count {
+            return None;
+        }
+
+        let data_sectors = partition_sector_count - non_data_sectors;
+        let data_cluster_count = data_sectors / u32::from(FAT32_SECTORS_PER_CLUSTER);
+        let needed_fat_sectors = div_ceil(
+            data_cluster_count.checked_add(2)?.checked_mul(4)?,
+            Block::LEN_U32,
+        );
+        if needed_fat_sectors == fat_size_sectors {
+            if !(FAT32_MIN_CLUSTERS..=FAT32_MAX_CLUSTERS).contains(&data_cluster_count) {
+                return None;
+            }
+            return Some(Fat32Layout {
+                partition_status,
+                partition_type_before,
+                partition_lba_start,
+                partition_sector_count,
+                fat_size_sectors,
+                data_cluster_count,
+            });
+        }
+        fat_size_sectors = needed_fat_sectors;
+    }
+}
+
+fn layout_from_mbr(
+    partition_status: u8,
+    partition_type_before: u8,
+    partition_lba_start: u32,
+    partition_sector_count: u32,
+    fat_size_sectors: u32,
+) -> Fat32Layout {
+    Fat32Layout {
+        partition_status,
+        partition_type_before,
+        partition_lba_start,
+        partition_sector_count,
+        fat_size_sectors,
+        data_cluster_count: 0,
+    }
+}
+
+fn empty_layout() -> Fat32Layout {
+    layout_from_mbr(0, 0, 0, 0, 0)
+}
+
+fn mbr_block(layout: &Fat32Layout, partition_type: u8) -> Block {
+    let mut block = Block::new();
+    let entry = PARTITION0_OFFSET;
+    block.contents[entry + PARTITION_STATUS_OFFSET] = 0;
+    block.contents[entry + 1] = 0;
+    block.contents[entry + 2] = 2;
+    block.contents[entry + 3] = 0;
+    block.contents[entry + PARTITION_TYPE_OFFSET] = partition_type;
+    block.contents[entry + 5] = 0xff;
+    block.contents[entry + 6] = 0xff;
+    block.contents[entry + 7] = 0xff;
+    write_u32(
+        &mut block.contents,
+        entry + PARTITION_LBA_OFFSET,
+        layout.partition_lba_start,
+    );
+    write_u32(
+        &mut block.contents,
+        entry + PARTITION_SECTORS_OFFSET,
+        layout.partition_sector_count,
+    );
+    write_u16(&mut block.contents, MBR_SIGNATURE_OFFSET, MBR_SIGNATURE);
+    block
+}
+
+fn boot_sector_block(layout: &Fat32Layout) -> Block {
+    let mut block = Block::new();
+    block.contents[0] = 0xeb;
+    block.contents[1] = 0x58;
+    block.contents[2] = 0x90;
+    block.contents[3..11].copy_from_slice(b"MSDOS5.0");
+    write_u16(&mut block.contents, 11, Block::LEN as u16);
+    block.contents[13] = FAT32_SECTORS_PER_CLUSTER;
+    write_u16(&mut block.contents, 14, FAT32_RESERVED_SECTORS);
+    block.contents[16] = FAT32_FAT_COUNT;
+    write_u16(&mut block.contents, 17, 0);
+    write_u16(&mut block.contents, 19, 0);
+    block.contents[21] = 0xf8;
+    write_u16(&mut block.contents, 22, 0);
+    write_u16(&mut block.contents, 24, 63);
+    write_u16(&mut block.contents, 26, 255);
+    write_u32(&mut block.contents, 28, layout.partition_lba_start);
+    write_u32(&mut block.contents, 32, layout.partition_sector_count);
+    write_u32(&mut block.contents, 36, layout.fat_size_sectors);
+    write_u16(&mut block.contents, 40, 0);
+    write_u16(&mut block.contents, 42, 0);
+    write_u32(&mut block.contents, 44, FAT32_ROOT_CLUSTER);
+    write_u16(&mut block.contents, 48, FAT32_FSINFO_SECTOR);
+    write_u16(&mut block.contents, 50, FAT32_BACKUP_BOOT_SECTOR);
+    block.contents[64] = 0x80;
+    block.contents[66] = 0x29;
+    write_u32(&mut block.contents, 67, VOLUME_ID);
+    block.contents[71..82].copy_from_slice(VOLUME_LABEL);
+    block.contents[82..90].copy_from_slice(b"FAT32   ");
+    write_u16(&mut block.contents, MBR_SIGNATURE_OFFSET, MBR_SIGNATURE);
+    block
+}
+
+fn fs_info_block(layout: &Fat32Layout) -> Block {
+    let mut block = Block::new();
+    write_u32(&mut block.contents, 0, 0x4161_5252);
+    write_u32(&mut block.contents, 484, 0x6141_7272);
+    write_u32(
+        &mut block.contents,
+        488,
+        layout.data_cluster_count.saturating_sub(1),
+    );
+    write_u32(&mut block.contents, 492, 3);
+    write_u32(&mut block.contents, 508, 0xaa55_0000);
+    block
+}
+
+fn fat_header_block() -> Block {
+    let mut block = Block::new();
+    write_u32(&mut block.contents, 0, 0x0fff_fff8);
+    write_u32(&mut block.contents, 4, 0xffff_ffff);
+    write_u32(&mut block.contents, 8, 0x0fff_ffff);
+    block
+}
+
+fn write_block(p: &Peripherals, sector: u32, block: &Block) -> Result<(), ()> {
+    let words = bytes_to_words(&block.contents);
+    let report = micro_sd::write_sector_words(p, sector, &words);
+    if matches!(report.status, micro_sd::WriteStatus::Ready) {
+        Ok(())
+    } else {
+        Err(())
     }
 }
 
@@ -407,9 +891,25 @@ fn read_u16(bytes: &[u8], offset: usize) -> u16 {
     (bytes[offset] as u16) | ((bytes[offset + 1] as u16) << 8)
 }
 
+fn write_u16(bytes: &mut [u8], offset: usize, value: u16) {
+    bytes[offset] = value as u8;
+    bytes[offset + 1] = (value >> 8) as u8;
+}
+
 fn read_u32(bytes: &[u8], offset: usize) -> u32 {
     (bytes[offset] as u32)
         | ((bytes[offset + 1] as u32) << 8)
         | ((bytes[offset + 2] as u32) << 16)
         | ((bytes[offset + 3] as u32) << 24)
+}
+
+fn write_u32(bytes: &mut [u8], offset: usize, value: u32) {
+    bytes[offset] = value as u8;
+    bytes[offset + 1] = (value >> 8) as u8;
+    bytes[offset + 2] = (value >> 16) as u8;
+    bytes[offset + 3] = (value >> 24) as u8;
+}
+
+fn div_ceil(value: u32, divisor: u32) -> u32 {
+    (value + divisor - 1) / divisor
 }

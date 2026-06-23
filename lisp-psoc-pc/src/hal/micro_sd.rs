@@ -276,6 +276,21 @@ pub struct WriteReport {
     pub argument: u32,
 }
 
+pub struct RangeWriteReport {
+    pub status: WriteStatus,
+    pub init_status: InitStatus,
+    pub start_sector: u32,
+    pub sectors_requested: u32,
+    pub sectors_written: u32,
+    pub failed_sector: u32,
+    pub fill_word: u32,
+    pub rca: u16,
+    pub ocr: u32,
+    pub acmd41_attempts: u16,
+    pub command_response: u32,
+    pub last_error: Option<CommandError>,
+}
+
 #[derive(Clone, Copy)]
 struct IdentifiedCard {
     status: InitStatus,
@@ -412,6 +427,108 @@ pub fn write_sector_words(
     write_sector_words_with_report_word(p, sector, words[0], words)
 }
 
+pub fn write_sector_range_fill(
+    p: &Peripherals,
+    start_sector: u32,
+    sectors_requested: u32,
+    fill_word: u32,
+) -> RangeWriteReport {
+    let words = [fill_word; SD_BLOCK_WORDS];
+    let card = match identify_card(p) {
+        Ok(card) => card,
+        Err(report) => {
+            return range_write_report(
+                WriteStatus::InitFailed,
+                report.status,
+                start_sector,
+                sectors_requested,
+                0,
+                start_sector,
+                fill_word,
+                0,
+                report.acmd41_ocr,
+                report.acmd41_attempts,
+                0,
+                report.last_error,
+            )
+        }
+    };
+
+    let core = &p.SDHC1.core;
+    let rca = match select_card_for_write(core, card) {
+        Ok(rca) => rca,
+        Err((status, rca, command_response, last_error)) => {
+            return range_write_report_for_card(
+                status,
+                card,
+                start_sector,
+                sectors_requested,
+                0,
+                start_sector,
+                fill_word,
+                rca,
+                command_response,
+                last_error,
+            )
+        }
+    };
+
+    let mut sectors_written = 0u32;
+    while sectors_written < sectors_requested {
+        let sector = match start_sector.checked_add(sectors_written) {
+            Some(sector) => sector,
+            None => {
+                return range_write_report_for_card(
+                    WriteStatus::AddressOverflow,
+                    card,
+                    start_sector,
+                    sectors_requested,
+                    sectors_written,
+                    start_sector.wrapping_add(sectors_written),
+                    fill_word,
+                    rca,
+                    0,
+                    None,
+                )
+            }
+        };
+
+        match write_selected_sector_words(core, card, sector, &words) {
+            Ok(response) => {
+                sectors_written += 1;
+                let _ = response;
+            }
+            Err((status, response, last_error)) => {
+                return range_write_report_for_card(
+                    status,
+                    card,
+                    start_sector,
+                    sectors_requested,
+                    sectors_written,
+                    sector,
+                    fill_word,
+                    rca,
+                    response,
+                    last_error,
+                );
+            }
+        }
+    }
+
+    range_write_report_for_card(
+        WriteStatus::Ready,
+        card,
+        start_sector,
+        sectors_requested,
+        sectors_written,
+        0,
+        fill_word,
+        rca,
+        0,
+        None,
+    )
+}
+
 fn write_sector_words_with_report_word(
     p: &Peripherals,
     sector: u32,
@@ -437,7 +554,48 @@ fn write_sector_words_with_report_word(
     };
 
     let core = &p.SDHC1.core;
+    let rca = match select_card_for_write(core, card) {
+        Ok(rca) => rca,
+        Err((status, rca, command_response, last_error)) => {
+            return write_report_for_card(
+                p,
+                status,
+                card,
+                sector,
+                fill_word,
+                rca,
+                command_response,
+                last_error,
+            )
+        }
+    };
+    let command_response = match write_selected_sector_words(core, card, sector, words) {
+        Ok(response) => response,
+        Err((status, response, last_error)) => {
+            return write_report_for_card(
+                p, status, card, sector, fill_word, rca, response, last_error,
+            );
+        }
+    };
 
+    write_report(
+        p,
+        WriteStatus::Ready,
+        card.status,
+        sector,
+        fill_word,
+        rca,
+        card.acmd41_ocr,
+        card.acmd41_attempts,
+        command_response,
+        None,
+    )
+}
+
+fn select_card_for_write(
+    core: &sdhc0::CORE,
+    card: IdentifiedCard,
+) -> Result<u16, (WriteStatus, u16, u32, Option<CommandError>)> {
     if let Err(error) = send_command(
         core,
         Command {
@@ -450,16 +608,7 @@ fn write_sector_words_with_report_word(
             index_check: false,
         },
     ) {
-        return write_report_for_card(
-            p,
-            WriteStatus::Cmd2Failed,
-            card,
-            sector,
-            fill_word,
-            0,
-            0,
-            Some(error),
-        );
+        return Err((WriteStatus::Cmd2Failed, 0, 0, Some(error)));
     }
 
     let rca_response = match send_command(
@@ -475,18 +624,7 @@ fn write_sector_words_with_report_word(
         },
     ) {
         Ok(response) => response,
-        Err(error) => {
-            return write_report_for_card(
-                p,
-                WriteStatus::Cmd3Failed,
-                card,
-                sector,
-                fill_word,
-                0,
-                0,
-                Some(error),
-            )
-        }
+        Err(error) => return Err((WriteStatus::Cmd3Failed, 0, 0, Some(error))),
     };
     let rca = (rca_response >> SD_RCA_SHIFT) as u16;
 
@@ -502,29 +640,11 @@ fn write_sector_words_with_report_word(
             index_check: false,
         },
     ) {
-        return write_report_for_card(
-            p,
-            WriteStatus::Cmd7Failed,
-            card,
-            sector,
-            fill_word,
-            rca,
-            0,
-            Some(error),
-        );
+        return Err((WriteStatus::Cmd7Failed, rca, 0, Some(error)));
     }
 
     if !wait_transfer_complete(core) {
-        return write_report_for_card(
-            p,
-            WriteStatus::TransferTimeout,
-            card,
-            sector,
-            fill_word,
-            rca,
-            0,
-            None,
-        );
+        return Err((WriteStatus::TransferTimeout, rca, 0, None));
     }
 
     if matches!(card.status, InitStatus::ReadySdsc) {
@@ -540,47 +660,27 @@ fn write_sector_words_with_report_word(
                 index_check: true,
             },
         ) {
-            return write_report_for_card(
-                p,
-                WriteStatus::Cmd16Failed,
-                card,
-                sector,
-                fill_word,
-                rca,
-                0,
-                Some(error),
-            );
+            return Err((WriteStatus::Cmd16Failed, rca, 0, Some(error)));
         }
     }
 
+    Ok(rca)
+}
+
+fn write_selected_sector_words(
+    core: &sdhc0::CORE,
+    card: IdentifiedCard,
+    sector: u32,
+    words: &[u32; SD_BLOCK_WORDS],
+) -> Result<u32, (WriteStatus, u32, Option<CommandError>)> {
     if !configure_single_block_write(core) {
-        return write_report_for_card(
-            p,
-            WriteStatus::DataSetupBusy,
-            card,
-            sector,
-            fill_word,
-            rca,
-            0,
-            None,
-        );
+        return Err((WriteStatus::DataSetupBusy, 0, None));
     }
 
     let command_argument = if matches!(card.status, InitStatus::ReadySdsc) {
         match sector.checked_mul(SD_BLOCK_SIZE_BYTES as u32) {
             Some(address) => address,
-            None => {
-                return write_report_for_card(
-                    p,
-                    WriteStatus::AddressOverflow,
-                    card,
-                    sector,
-                    fill_word,
-                    rca,
-                    0,
-                    None,
-                )
-            }
+            None => return Err((WriteStatus::AddressOverflow, 0, None)),
         }
     } else {
         sector
@@ -599,48 +699,13 @@ fn write_sector_words_with_report_word(
         },
     ) {
         Ok(response) => response,
-        Err(error) => {
-            return write_report_for_card(
-                p,
-                WriteStatus::Cmd24Failed,
-                card,
-                sector,
-                fill_word,
-                rca,
-                0,
-                Some(error),
-            )
-        }
+        Err(error) => return Err((WriteStatus::Cmd24Failed, 0, Some(error))),
     };
 
     match write_single_block_words(core, words) {
-        Ok(()) => {}
-        Err(status) => {
-            return write_report_for_card(
-                p,
-                status,
-                card,
-                sector,
-                fill_word,
-                rca,
-                command_response,
-                None,
-            );
-        }
+        Ok(()) => Ok(command_response),
+        Err(status) => Err((status, command_response, None)),
     }
-
-    write_report(
-        p,
-        WriteStatus::Ready,
-        card.status,
-        sector,
-        fill_word,
-        rca,
-        card.acmd41_ocr,
-        card.acmd41_attempts,
-        command_response,
-        None,
-    )
 }
 
 pub fn read_sector(p: &Peripherals, sector: u32) -> SectorReport {
@@ -1487,6 +1552,64 @@ fn write_report_for_card(
         command_response,
         last_error,
     )
+}
+
+fn range_write_report_for_card(
+    status: WriteStatus,
+    card: IdentifiedCard,
+    start_sector: u32,
+    sectors_requested: u32,
+    sectors_written: u32,
+    failed_sector: u32,
+    fill_word: u32,
+    rca: u16,
+    command_response: u32,
+    last_error: Option<CommandError>,
+) -> RangeWriteReport {
+    range_write_report(
+        status,
+        card.status,
+        start_sector,
+        sectors_requested,
+        sectors_written,
+        failed_sector,
+        fill_word,
+        rca,
+        card.acmd41_ocr,
+        card.acmd41_attempts,
+        command_response,
+        last_error,
+    )
+}
+
+fn range_write_report(
+    status: WriteStatus,
+    init_status: InitStatus,
+    start_sector: u32,
+    sectors_requested: u32,
+    sectors_written: u32,
+    failed_sector: u32,
+    fill_word: u32,
+    rca: u16,
+    ocr: u32,
+    acmd41_attempts: u16,
+    command_response: u32,
+    last_error: Option<CommandError>,
+) -> RangeWriteReport {
+    RangeWriteReport {
+        status,
+        init_status,
+        start_sector,
+        sectors_requested,
+        sectors_written,
+        failed_sector,
+        fill_word,
+        rca,
+        ocr,
+        acmd41_attempts,
+        command_response,
+        last_error,
+    }
 }
 
 fn write_report(

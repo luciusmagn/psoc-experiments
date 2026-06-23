@@ -41,6 +41,10 @@ impl Error {
     }
 }
 
+pub trait FatFormatProgress {
+    fn report(&mut self, phase: &'static [u8], written_sector_count: u32, total_sectors: u32);
+}
+
 pub trait Board {
     fn led(&mut self, action: LedAction) -> bool;
     fn heartbeat(&mut self, enabled: bool) -> bool;
@@ -61,6 +65,7 @@ pub trait Board {
     fn read_file(&mut self, path: StringBytes) -> StoreReadReport;
     fn list_files(&mut self) -> StoreListReport;
     fn fat_info(&mut self) -> FatInfoReport;
+    fn fat_format(&mut self, progress: &mut dyn FatFormatProgress) -> FatFormatReport;
     fn wifi_sdio_init(&mut self) -> WifiSdioReport;
     fn wifi_cmd52_read(&mut self, function: u8, address: u32) -> WifiSdioDirectReport;
     fn wifi_cmd52_write(&mut self, function: u8, address: u32, data: u8) -> WifiSdioDirectReport;
@@ -301,6 +306,26 @@ pub struct FatInfoReport {
     pub root_entry_count: u8,
     pub sample_count: u8,
     pub entries: [StringBytes; MAX_STORE_FILES],
+}
+
+#[derive(Clone, Copy)]
+pub struct FatFormatReport {
+    pub ready: bool,
+    pub status: &'static [u8],
+    pub mbr_signature: u16,
+    pub partition_status: u8,
+    pub partition_type_before: u8,
+    pub partition_type_after: u8,
+    pub partition_lba_start: u32,
+    pub partition_sector_count: u32,
+    pub sectors_per_cluster: u8,
+    pub reserved_sectors: u16,
+    pub fat_count: u8,
+    pub fat_size_sectors: u32,
+    pub data_cluster_count: u32,
+    pub root_cluster: u32,
+    pub written_sector_count: u32,
+    pub failed_sector: u32,
 }
 
 #[derive(Clone, Copy)]
@@ -740,6 +765,18 @@ pub enum LoadFileOutcome {
     NotReady(StoreReadReport),
 }
 
+struct OutputFatFormatProgress<'a, W: Write> {
+    output: &'a mut W,
+}
+
+impl<W: Write> FatFormatProgress for OutputFatFormatProgress<'_, W> {
+    fn report(&mut self, phase: &'static [u8], written_sector_count: u32, total_sectors: u32) {
+        write!(self.output, "fat-format ").ok();
+        write_ascii_bytes(self.output, phase).ok();
+        writeln!(self.output, " {}/{}", written_sector_count, total_sectors).ok();
+    }
+}
+
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub enum Value {
     Nil,
@@ -799,6 +836,7 @@ pub enum Primitive {
     Ls,
     Cat,
     FatInfo,
+    FatFormat,
     WifiSdioInit,
     WifiCmd52Read,
     WifiCmd52Write,
@@ -877,6 +915,7 @@ impl Primitive {
             Self::Ls => "ls",
             Self::Cat => "cat",
             Self::FatInfo => "fat-info",
+            Self::FatFormat => "fat-format",
             Self::WifiSdioInit => "wifi-sdio-init",
             Self::WifiCmd52Read => "wifi-cmd52-read",
             Self::WifiCmd52Write => "wifi-cmd52-write",
@@ -1107,6 +1146,7 @@ impl Machine {
         self.install_primitive(b"ls", Primitive::Ls)?;
         self.install_primitive(b"cat", Primitive::Cat)?;
         self.install_primitive(b"fat-info", Primitive::FatInfo)?;
+        self.install_primitive(b"fat-format", Primitive::FatFormat)?;
         self.install_primitive(b"wifi-sdio-init", Primitive::WifiSdioInit)?;
         self.install_primitive(b"wifi-cmd52-read", Primitive::WifiCmd52Read)?;
         self.install_primitive(b"wifi-cmd52-write", Primitive::WifiCmd52Write)?;
@@ -1159,7 +1199,7 @@ impl Machine {
         };
 
         self.active_expression = expression;
-        let result = self.eval(expression, Value::Nil, board, 0);
+        let result = self.eval(expression, Value::Nil, board, output, 0);
         self.active_expression = Value::Nil;
 
         match result {
@@ -1177,13 +1217,14 @@ impl Machine {
         Ok(())
     }
 
-    pub fn load_file<B: Board>(
+    pub fn load_file<B: Board, W: Write>(
         &mut self,
         path: StringBytes,
         board: &mut B,
+        output: &mut W,
     ) -> LispResult<LoadFileOutcome> {
         self.collect_garbage();
-        let result = self.load_file_in_env(path, Value::Nil, board, 0);
+        let result = self.load_file_in_env(path, Value::Nil, board, output, 0);
         self.collect_garbage();
         result
     }
@@ -1339,11 +1380,12 @@ impl Machine {
         None
     }
 
-    fn eval<B: Board>(
+    fn eval<B: Board, W: Write>(
         &mut self,
         expression: Value,
         env: Value,
         board: &mut B,
+        output: &mut W,
         depth: u8,
     ) -> LispResult<Value> {
         if depth > MAX_EVAL_DEPTH {
@@ -1356,7 +1398,9 @@ impl Machine {
             }
             Value::Symbol(symbol) => self.lookup(symbol, env).ok_or(Error::new("unbound symbol")),
             Value::Object(id) => match self.object_kind_by_id(id)? {
-                ObjectKind::Pair { .. } => self.eval_call(expression, env, board, depth + 1),
+                ObjectKind::Pair { .. } => {
+                    self.eval_call(expression, env, board, output, depth + 1)
+                }
                 ObjectKind::Closure { .. } => Ok(expression),
                 ObjectKind::String { .. } => Ok(expression),
                 ObjectKind::Env { .. } => Err(Error::new("environment object is not a value")),
@@ -1365,11 +1409,12 @@ impl Machine {
         }
     }
 
-    fn eval_call<B: Board>(
+    fn eval_call<B: Board, W: Write>(
         &mut self,
         expression: Value,
         env: Value,
         board: &mut B,
+        output: &mut W,
         depth: u8,
     ) -> LispResult<Value> {
         let operator = self.car(expression)?;
@@ -1380,24 +1425,24 @@ impl Machine {
                 return self.form_quote(args);
             }
             if symbol == self.specials.if_ {
-                return self.form_if(args, env, board, depth + 1);
+                return self.form_if(args, env, board, output, depth + 1);
             }
             if symbol == self.specials.define {
-                return self.form_define(args, env, board, depth + 1);
+                return self.form_define(args, env, board, output, depth + 1);
             }
             if symbol == self.specials.lambda {
                 return self.form_lambda(args, env);
             }
             if symbol == self.specials.begin {
-                return self.eval_sequence(args, env, board, depth + 1);
+                return self.eval_sequence(args, env, board, output, depth + 1);
             }
             if symbol == self.specials.let_ {
-                return self.form_let(args, env, board, depth + 1);
+                return self.form_let(args, env, board, output, depth + 1);
             }
         }
 
-        let function = self.eval(operator, env, board, depth + 1)?;
-        self.apply(function, args, env, board, depth + 1)
+        let function = self.eval(operator, env, board, output, depth + 1)?;
+        self.apply(function, args, env, board, output, depth + 1)
     }
 
     fn form_quote(&self, args: Value) -> LispResult<Value> {
@@ -1408,11 +1453,12 @@ impl Machine {
         Ok(value)
     }
 
-    fn form_if<B: Board>(
+    fn form_if<B: Board, W: Write>(
         &mut self,
         args: Value,
         env: Value,
         board: &mut B,
+        output: &mut W,
         depth: u8,
     ) -> LispResult<Value> {
         let (test, rest) = self.require_pair(args)?;
@@ -1427,19 +1473,20 @@ impl Machine {
             alternate
         };
 
-        let test_value = self.eval(test, env, board, depth + 1)?;
+        let test_value = self.eval(test, env, board, output, depth + 1)?;
         if self.truthy(test_value) {
-            self.eval(consequent, env, board, depth + 1)
+            self.eval(consequent, env, board, output, depth + 1)
         } else {
-            self.eval(alternate, env, board, depth + 1)
+            self.eval(alternate, env, board, output, depth + 1)
         }
     }
 
-    fn form_define<B: Board>(
+    fn form_define<B: Board, W: Write>(
         &mut self,
         args: Value,
         env: Value,
         board: &mut B,
+        output: &mut W,
         depth: u8,
     ) -> LispResult<Value> {
         let (target, rest) = self.require_pair(args)?;
@@ -1450,7 +1497,7 @@ impl Machine {
                 return Err(Error::new("define expects a name and one expression"));
             }
 
-            let value = self.eval(expression, env, board, depth + 1)?;
+            let value = self.eval(expression, env, board, output, depth + 1)?;
             self.bind_global(symbol, value)?;
             return Ok(Value::Symbol(symbol));
         }
@@ -1490,11 +1537,12 @@ impl Machine {
         self.alloc_object(ObjectKind::Closure { params, body, env })
     }
 
-    fn form_let<B: Board>(
+    fn form_let<B: Board, W: Write>(
         &mut self,
         args: Value,
         env: Value,
         board: &mut B,
+        output: &mut W,
         depth: u8,
     ) -> LispResult<Value> {
         let (bindings, body) = self.require_pair(args)?;
@@ -1514,61 +1562,81 @@ impl Machine {
                 Value::Symbol(symbol) => symbol,
                 _ => return Err(Error::new("let binding name must be a symbol")),
             };
-            let value = self.eval(value_expr, env, board, depth + 1)?;
+            let value = self.eval(value_expr, env, board, output, depth + 1)?;
             new_env = self.push_env(symbol, value, new_env)?;
             cursor = rest;
         }
 
-        self.eval_sequence(body, new_env, board, depth + 1)
+        self.eval_sequence(body, new_env, board, output, depth + 1)
     }
 
-    fn eval_sequence<B: Board>(
+    fn eval_sequence<B: Board, W: Write>(
         &mut self,
         body: Value,
         env: Value,
         board: &mut B,
+        output: &mut W,
         depth: u8,
     ) -> LispResult<Value> {
         let mut result = Value::Nil;
         let mut cursor = body;
         while let Some((expression, rest)) = self.list_next(cursor)? {
-            result = self.eval(expression, env, board, depth + 1)?;
+            result = self.eval(expression, env, board, output, depth + 1)?;
             cursor = rest;
         }
         Ok(result)
     }
 
-    fn apply<B: Board>(
+    fn apply<B: Board, W: Write>(
         &mut self,
         function: Value,
         arg_expressions: Value,
         caller_env: Value,
         board: &mut B,
+        output: &mut W,
         depth: u8,
     ) -> LispResult<Value> {
         let mut args = [Value::Nil; MAX_CALL_ARGS];
-        let arg_count =
-            self.eval_arguments(arg_expressions, caller_env, board, depth + 1, &mut args)?;
+        let arg_count = self.eval_arguments(
+            arg_expressions,
+            caller_env,
+            board,
+            output,
+            depth + 1,
+            &mut args,
+        )?;
 
         match function {
-            Value::Primitive(primitive) => {
-                self.apply_primitive(primitive, &args[..arg_count], caller_env, board, depth + 1)
-            }
+            Value::Primitive(primitive) => self.apply_primitive(
+                primitive,
+                &args[..arg_count],
+                caller_env,
+                board,
+                output,
+                depth + 1,
+            ),
             Value::Object(id) => match self.object_kind_by_id(id)? {
-                ObjectKind::Closure { params, body, env } => {
-                    self.apply_closure(params, body, env, &args[..arg_count], board, depth + 1)
-                }
+                ObjectKind::Closure { params, body, env } => self.apply_closure(
+                    params,
+                    body,
+                    env,
+                    &args[..arg_count],
+                    board,
+                    output,
+                    depth + 1,
+                ),
                 _ => Err(Error::new("value is not callable")),
             },
             _ => Err(Error::new("value is not callable")),
         }
     }
 
-    fn eval_arguments<B: Board>(
+    fn eval_arguments<B: Board, W: Write>(
         &mut self,
         expressions: Value,
         env: Value,
         board: &mut B,
+        output: &mut W,
         depth: u8,
         args: &mut [Value; MAX_CALL_ARGS],
     ) -> LispResult<usize> {
@@ -1579,7 +1647,7 @@ impl Machine {
             if count >= MAX_CALL_ARGS {
                 return Err(Error::new("too many call arguments"));
             }
-            args[count] = self.eval(expression, env, board, depth + 1)?;
+            args[count] = self.eval(expression, env, board, output, depth + 1)?;
             count += 1;
             cursor = rest;
         }
@@ -1587,13 +1655,14 @@ impl Machine {
         Ok(count)
     }
 
-    fn apply_closure<B: Board>(
+    fn apply_closure<B: Board, W: Write>(
         &mut self,
         params: Value,
         body: Value,
         closure_env: Value,
         args: &[Value],
         board: &mut B,
+        output: &mut W,
         depth: u8,
     ) -> LispResult<Value> {
         let mut param_cursor = params;
@@ -1617,15 +1686,16 @@ impl Machine {
             return Err(Error::new("too many arguments"));
         }
 
-        self.eval_sequence(body, call_env, board, depth + 1)
+        self.eval_sequence(body, call_env, board, output, depth + 1)
     }
 
-    fn apply_primitive<B: Board>(
+    fn apply_primitive<B: Board, W: Write>(
         &mut self,
         primitive: Primitive,
         args: &[Value],
         env: Value,
         board: &mut B,
+        output: &mut W,
         depth: u8,
     ) -> LispResult<Value> {
         match primitive {
@@ -1796,7 +1866,7 @@ impl Machine {
             Primitive::Load => {
                 self.expect_count(args, 1)?;
                 let path = self.expect_string(args[0])?;
-                match self.load_file_in_env(path, env, board, depth + 1)? {
+                match self.load_file_in_env(path, env, board, output, depth + 1)? {
                     LoadFileOutcome::Loaded(value) => Ok(value),
                     LoadFileOutcome::NotReady(report) => self.store_read_report(report),
                 }
@@ -1818,6 +1888,11 @@ impl Machine {
             Primitive::FatInfo => {
                 self.expect_count(args, 0)?;
                 self.fat_info_report(board.fat_info())
+            }
+            Primitive::FatFormat => {
+                self.expect_count(args, 0)?;
+                let mut progress = OutputFatFormatProgress { output };
+                self.fat_format_report(board.fat_format(&mut progress))
             }
             Primitive::WifiSdioInit => {
                 self.expect_count(args, 0)?;
@@ -1979,11 +2054,12 @@ impl Machine {
         Ok(Value::Int(result))
     }
 
-    fn load_file_in_env<B: Board>(
+    fn load_file_in_env<B: Board, W: Write>(
         &mut self,
         path: StringBytes,
         env: Value,
         board: &mut B,
+        output: &mut W,
         depth: u8,
     ) -> LispResult<LoadFileOutcome> {
         let report = board.read_file(path);
@@ -1995,7 +2071,7 @@ impl Machine {
         let expression = self.read(input)?;
         let previous_expression = self.active_expression;
         self.active_expression = expression;
-        let result = self.eval(expression, env, board, depth);
+        let result = self.eval(expression, env, board, output, depth);
         self.active_expression = previous_expression;
         result.map(LoadFileOutcome::Loaded)
     }
@@ -2296,6 +2372,7 @@ impl Machine {
             b"ls",
             b"cat",
             b"fat-info",
+            b"fat-format",
             b"wifi-sdio-init",
             b"wifi-cmd52-read",
             b"wifi-cmd52-write",
@@ -2661,6 +2738,54 @@ impl Machine {
             partition_sectors,
             root_entry_count,
             entries,
+        ];
+        self.make_list_from_values(&values)
+    }
+
+    fn fat_format_report(&mut self, report: FatFormatReport) -> LispResult<Value> {
+        let status = self.symbol_entry(b"status", report.status)?;
+        let ready = self.bool_entry(b"ready", report.ready)?;
+        let mbr_signature = self.word_entry(b"MBR.sig", report.mbr_signature as u32)?;
+        let partition_status =
+            self.word_entry(b"partition0.status", report.partition_status as u32)?;
+        let partition_type_before = self.word_entry(
+            b"partition0.type.before",
+            report.partition_type_before as u32,
+        )?;
+        let partition_type_after =
+            self.word_entry(b"partition0.type.after", report.partition_type_after as u32)?;
+        let partition_lba = self.word_entry(b"partition0.lba", report.partition_lba_start)?;
+        let partition_sectors =
+            self.word_entry(b"partition0.sectors", report.partition_sector_count)?;
+        let sectors_per_cluster =
+            self.int_entry(b"sectors-per-cluster", report.sectors_per_cluster as i32)?;
+        let reserved_sectors =
+            self.int_entry(b"reserved-sectors", report.reserved_sectors as i32)?;
+        let fat_count = self.int_entry(b"fat-count", report.fat_count as i32)?;
+        let fat_size_sectors = self.word_entry(b"fat-size-sectors", report.fat_size_sectors)?;
+        let data_cluster_count =
+            self.word_entry(b"data-cluster-count", report.data_cluster_count)?;
+        let root_cluster = self.word_entry(b"root-cluster", report.root_cluster)?;
+        let written_sector_count =
+            self.word_entry(b"written-sector-count", report.written_sector_count)?;
+        let failed_sector = self.word_entry(b"failed-sector", report.failed_sector)?;
+        let values = [
+            status,
+            ready,
+            mbr_signature,
+            partition_status,
+            partition_type_before,
+            partition_type_after,
+            partition_lba,
+            partition_sectors,
+            sectors_per_cluster,
+            reserved_sectors,
+            fat_count,
+            fat_size_sectors,
+            data_cluster_count,
+            root_cluster,
+            written_sector_count,
+            failed_sector,
         ];
         self.make_list_from_values(&values)
     }
@@ -3906,6 +4031,15 @@ impl Machine {
         }
         output.write_char('"')
     }
+}
+
+fn write_ascii_bytes<W: Write>(output: &mut W, bytes: &[u8]) -> fmt::Result {
+    let mut index = 0usize;
+    while index < bytes.len() {
+        output.write_char(bytes[index] as char)?;
+        index += 1;
+    }
+    Ok(())
 }
 
 struct Reader<'a> {

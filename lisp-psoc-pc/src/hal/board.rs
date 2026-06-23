@@ -64,6 +64,17 @@ pub struct PsocBoard<'a> {
     state: &'a mut State,
 }
 
+struct FatFormatProgressAdapter<'a> {
+    progress: &'a mut dyn lisp::FatFormatProgress,
+}
+
+impl lisp_fat::FormatProgress for FatFormatProgressAdapter<'_> {
+    fn report(&mut self, phase: &'static [u8], written_sector_count: u32, total_sectors: u32) {
+        self.progress
+            .report(phase, written_sector_count, total_sectors);
+    }
+}
+
 impl lisp::Board for PsocBoard<'_> {
     fn led(&mut self, action: lisp::LedAction) -> bool {
         match action {
@@ -325,6 +336,29 @@ impl lisp::Board for PsocBoard<'_> {
             root_entry_count: report.root_entry_count,
             sample_count: report.sample_count,
             entries: report.entries,
+        }
+    }
+
+    fn fat_format(&mut self, progress: &mut dyn lisp::FatFormatProgress) -> lisp::FatFormatReport {
+        let mut progress = FatFormatProgressAdapter { progress };
+        let report = lisp_fat::format_fat32_with_progress(self.p, &mut progress);
+        lisp::FatFormatReport {
+            ready: matches!(report.status, lisp_fat::FatStatus::Ready),
+            status: fat_status(report.status),
+            mbr_signature: report.mbr_signature,
+            partition_status: report.partition_status,
+            partition_type_before: report.partition_type_before,
+            partition_type_after: report.partition_type_after,
+            partition_lba_start: report.partition_lba_start,
+            partition_sector_count: report.partition_sector_count,
+            sectors_per_cluster: report.sectors_per_cluster,
+            reserved_sectors: report.reserved_sectors,
+            fat_count: report.fat_count,
+            fat_size_sectors: report.fat_size_sectors,
+            data_cluster_count: report.data_cluster_count,
+            root_cluster: report.root_cluster,
+            written_sector_count: report.written_sector_count,
+            failed_sector: report.failed_sector,
         }
     }
 
@@ -611,6 +645,13 @@ fn fat_status(status: lisp_fat::FatStatus) -> &'static [u8] {
         lisp_fat::FatStatus::MissingMbrSignature => b"missing-mbr-signature",
         lisp_fat::FatStatus::UnsupportedPartition => b"unsupported-partition",
         lisp_fat::FatStatus::BlockDeviceFailed => b"block-device-failed",
+        lisp_fat::FatStatus::FormatGeometryInvalid => b"format-geometry-invalid",
+        lisp_fat::FatStatus::FormatMbrWriteFailed => b"format-mbr-write-failed",
+        lisp_fat::FatStatus::FormatBootWriteFailed => b"format-boot-write-failed",
+        lisp_fat::FatStatus::FormatFsInfoWriteFailed => b"format-fsinfo-write-failed",
+        lisp_fat::FatStatus::FormatFatClearFailed => b"format-fat-clear-failed",
+        lisp_fat::FatStatus::FormatFatHeaderWriteFailed => b"format-fat-header-write-failed",
+        lisp_fat::FatStatus::FormatRootClearFailed => b"format-root-clear-failed",
         lisp_fat::FatStatus::VolumeOpenFailed => b"volume-open-failed",
         lisp_fat::FatStatus::RootOpenFailed => b"root-open-failed",
         lisp_fat::FatStatus::RootIterateFailed => b"root-iterate-failed",
