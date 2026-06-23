@@ -10,6 +10,7 @@ use psoc6_pac::Peripherals;
 
 mod hal;
 mod lisp;
+mod lisp_fat;
 mod lisp_store;
 mod wifi_resources;
 

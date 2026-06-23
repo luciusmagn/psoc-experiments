@@ -60,6 +60,7 @@ pub trait Board {
     fn save_file(&mut self, path: StringBytes, content: StringBytes) -> StoreWriteReport;
     fn read_file(&mut self, path: StringBytes) -> StoreReadReport;
     fn list_files(&mut self) -> StoreListReport;
+    fn fat_info(&mut self) -> FatInfoReport;
     fn wifi_sdio_init(&mut self) -> WifiSdioReport;
     fn wifi_cmd52_read(&mut self, function: u8, address: u32) -> WifiSdioDirectReport;
     fn wifi_cmd52_write(&mut self, function: u8, address: u32, data: u8) -> WifiSdioDirectReport;
@@ -286,6 +287,20 @@ pub struct StoreListReport {
     pub file_count: u8,
     pub directory_sector: u32,
     pub files: [StringBytes; MAX_STORE_FILES],
+}
+
+#[derive(Clone, Copy)]
+pub struct FatInfoReport {
+    pub ready: bool,
+    pub status: &'static [u8],
+    pub mbr_signature: u16,
+    pub partition_status: u8,
+    pub partition_type: u8,
+    pub partition_lba_start: u32,
+    pub partition_sector_count: u32,
+    pub root_entry_count: u8,
+    pub sample_count: u8,
+    pub entries: [StringBytes; MAX_STORE_FILES],
 }
 
 #[derive(Clone, Copy)]
@@ -783,6 +798,7 @@ pub enum Primitive {
     Load,
     Ls,
     Cat,
+    FatInfo,
     WifiSdioInit,
     WifiCmd52Read,
     WifiCmd52Write,
@@ -860,6 +876,7 @@ impl Primitive {
             Self::Load => "load",
             Self::Ls => "ls",
             Self::Cat => "cat",
+            Self::FatInfo => "fat-info",
             Self::WifiSdioInit => "wifi-sdio-init",
             Self::WifiCmd52Read => "wifi-cmd52-read",
             Self::WifiCmd52Write => "wifi-cmd52-write",
@@ -1089,6 +1106,7 @@ impl Machine {
         self.install_primitive(b"load", Primitive::Load)?;
         self.install_primitive(b"ls", Primitive::Ls)?;
         self.install_primitive(b"cat", Primitive::Cat)?;
+        self.install_primitive(b"fat-info", Primitive::FatInfo)?;
         self.install_primitive(b"wifi-sdio-init", Primitive::WifiSdioInit)?;
         self.install_primitive(b"wifi-cmd52-read", Primitive::WifiCmd52Read)?;
         self.install_primitive(b"wifi-cmd52-write", Primitive::WifiCmd52Write)?;
@@ -1797,6 +1815,10 @@ impl Machine {
                     self.store_read_report(report)
                 }
             }
+            Primitive::FatInfo => {
+                self.expect_count(args, 0)?;
+                self.fat_info_report(board.fat_info())
+            }
             Primitive::WifiSdioInit => {
                 self.expect_count(args, 0)?;
                 self.wifi_sdio_report(board.wifi_sdio_init())
@@ -2273,6 +2295,7 @@ impl Machine {
             b"load",
             b"ls",
             b"cat",
+            b"fat-info",
             b"wifi-sdio-init",
             b"wifi-cmd52-read",
             b"wifi-cmd52-write",
@@ -2608,6 +2631,38 @@ impl Machine {
         let files = self.entry(b"files", files)?;
         let entries = [status, ready, count, directory_sector, files];
         self.make_list_from_values(&entries)
+    }
+
+    fn fat_info_report(&mut self, report: FatInfoReport) -> LispResult<Value> {
+        let status = self.symbol_entry(b"status", report.status)?;
+        let ready = self.bool_entry(b"ready", report.ready)?;
+        let mbr_signature = self.word_entry(b"MBR.sig", report.mbr_signature as u32)?;
+        let partition_status =
+            self.word_entry(b"partition0.status", report.partition_status as u32)?;
+        let partition_type = self.word_entry(b"partition0.type", report.partition_type as u32)?;
+        let partition_lba = self.word_entry(b"partition0.lba", report.partition_lba_start)?;
+        let partition_sectors =
+            self.word_entry(b"partition0.sectors", report.partition_sector_count)?;
+        let root_entry_count =
+            self.int_entry(b"root-entry-count", report.root_entry_count as i32)?;
+        let entries = if report.ready {
+            self.string_list(&report.entries, report.sample_count)?
+        } else {
+            Value::Nil
+        };
+        let entries = self.entry(b"entries", entries)?;
+        let values = [
+            status,
+            ready,
+            mbr_signature,
+            partition_status,
+            partition_type,
+            partition_lba,
+            partition_sectors,
+            root_entry_count,
+            entries,
+        ];
+        self.make_list_from_values(&values)
     }
 
     fn string_value(&mut self, value: StringBytes) -> LispResult<Value> {

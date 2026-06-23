@@ -29,7 +29,7 @@ Working serial capture:
 
 #+begin_example
 lisp> (help)
-=> (help quote if define lambda begin let + - * / mod = < <= > >= not eq? nil? atom? pair? number? symbol? bool? string? cons car cdr list led heartbeat button millis reg32 poke32 regs sd-status sd-pins sd-pinmux sd-clock sd-init sd-read sd-read0 sd-write-fill format-store save-file read-file load ls cat wifi-sdio-init wifi-cmd52-read wifi-cmd52-write wifi-enable-functions wifi-setup-backplane wifi-cmd53-read wifi-backplane-read wifi-backplane-write8 wifi-backplane-write32 wifi-backplane-write32-bytes wifi-socram-probe wifi-socram-block-probe wifi-load-firmware wifi-start-firmware wifi-f2-read-header wifi-f2-read-frame wifi-ack-interrupts wifi-interrupt-state wifi-keep-awake wifi-host-reset-lines wifi-abort-read wifi-core-state wifi-reset-core sdhc-regs heap gc reboot)
+=> (help quote if define lambda begin let + - * / mod = < <= > >= not eq? nil? atom? pair? number? symbol? bool? string? cons car cdr list led heartbeat button millis reg32 poke32 regs sd-status sd-pins sd-pinmux sd-clock sd-init sd-read sd-read0 sd-write-fill format-store save-file read-file load ls cat fat-info wifi-sdio-init wifi-cmd52-read wifi-cmd52-write wifi-enable-functions wifi-setup-backplane wifi-cmd53-read wifi-backplane-read wifi-backplane-write8 wifi-backplane-write32 wifi-backplane-write32-bytes wifi-socram-probe wifi-socram-block-probe wifi-load-firmware wifi-start-firmware wifi-f2-read-header wifi-f2-read-frame wifi-ack-interrupts wifi-interrupt-state wifi-keep-awake wifi-host-reset-lines wifi-abort-read wifi-core-state wifi-reset-core sdhc-regs heap gc reboot)
 
 lisp> (+ 1 2 3)
 => 6
@@ -2216,6 +2216,40 @@ can read or write files through a volume manager. Constraints to account for:
    current 96-byte string path.
 6. Avoid simultaneous host and firmware writes; unmount the card before using
    it from the board.
+
+* 2026-06-23 FAT32 diagnostic adapter
+
+Added =embedded-sdmmc= 0.9.0 with default features disabled and a first
+read-only =(fat-info)= primitive. The new =lisp_fat= module owns:
+
+1. MBR sector parsing for partition 0.
+2. An =embedded-sdmmc= block-device adapter over =hal::micro_sd= sector
+   reads and writes.
+3. A fixed timestamp source for future FAT writes.
+4. A small root-directory sample report when a FAT16/FAT32 volume mounts.
+
+The current inserted card is not FAT-formatted. Live validation after flashing:
+
+#+begin_example
+(help)
+=> (... save-file read-file load ls cat fat-info wifi-sdio-init ...)
+
+(fat-info)
+=> ((status . unsupported-partition)
+    (ready . #f)
+    (MBR.sig . #x0000aa55)
+    (partition0.status . #x00000000)
+    (partition0.type . #x00000083)
+    (partition0.lba . #x00000800)
+    (partition0.sectors . #x039a3800)
+    (root-entry-count . 0)
+    (entries))
+#+end_example
+
+This proves the board can read the MBR through the new FAT adapter and that the
+current failure is the expected partition format mismatch. A successful FAT
+mount now needs either a PC-side FAT32 format of the microSD card or an
+on-board FAT32 formatter.
 
 * 2026-06-23 Wi-Fi post-frame SDIO diagnostics
 

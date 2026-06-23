@@ -3,7 +3,7 @@ use core::ptr::{read_volatile, write_volatile};
 use psoc6_pac::Peripherals;
 
 use crate::hal::{micro_sd, wifi_sdio};
-use crate::{lisp, lisp_store, wifi_resources};
+use crate::{lisp, lisp_fat, lisp_store, wifi_resources};
 
 const BUTTON0_MASK: u32 = 1 << 4;
 const PERIPHERAL_REGISTER_START: u32 = 0x4000_0000;
@@ -312,6 +312,22 @@ impl lisp::Board for PsocBoard<'_> {
         }
     }
 
+    fn fat_info(&mut self) -> lisp::FatInfoReport {
+        let report = lisp_fat::info(self.p);
+        lisp::FatInfoReport {
+            ready: matches!(report.status, lisp_fat::FatStatus::Ready),
+            status: fat_status(report.status),
+            mbr_signature: report.mbr_signature,
+            partition_status: report.partition_status,
+            partition_type: report.partition_type,
+            partition_lba_start: report.partition_lba_start,
+            partition_sector_count: report.partition_sector_count,
+            root_entry_count: report.root_entry_count,
+            sample_count: report.sample_count,
+            entries: report.entries,
+        }
+    }
+
     fn wifi_sdio_init(&mut self) -> lisp::WifiSdioReport {
         let report = wifi_sdio::initialize(self.p);
         lisp::WifiSdioReport {
@@ -585,6 +601,21 @@ fn store_status(status: lisp_store::StoreStatus) -> &'static [u8] {
         lisp_store::StoreStatus::DataWriteFailed => b"data-write-failed",
         lisp_store::StoreStatus::CorruptData => b"corrupt-data",
         lisp_store::StoreStatus::ChecksumMismatch => b"checksum-mismatch",
+    }
+}
+
+fn fat_status(status: lisp_fat::FatStatus) -> &'static [u8] {
+    match status {
+        lisp_fat::FatStatus::Ready => b"ready",
+        lisp_fat::FatStatus::MbrReadFailed => b"mbr-read-failed",
+        lisp_fat::FatStatus::MissingMbrSignature => b"missing-mbr-signature",
+        lisp_fat::FatStatus::UnsupportedPartition => b"unsupported-partition",
+        lisp_fat::FatStatus::BlockDeviceFailed => b"block-device-failed",
+        lisp_fat::FatStatus::VolumeOpenFailed => b"volume-open-failed",
+        lisp_fat::FatStatus::RootOpenFailed => b"root-open-failed",
+        lisp_fat::FatStatus::RootIterateFailed => b"root-iterate-failed",
+        lisp_fat::FatStatus::RootCloseFailed => b"root-close-failed",
+        lisp_fat::FatStatus::VolumeCloseFailed => b"volume-close-failed",
     }
 }
 
