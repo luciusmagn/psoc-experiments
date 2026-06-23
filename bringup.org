@@ -3322,6 +3322,24 @@ reproduced the same zero-response state on =(wifi-interrupt-state)=. Therefore
 the failure is not fixed by draining 32 bytes or a 64-byte F2 block-sized amount
 from the response FIFO.
 
+Another clean run called =(wifi-keep-awake)= after =(wifi-start-firmware)= and
+before WLC_UP. KSO was set successfully:
+
+#+begin_example
+(wifi-keep-awake)
+=> ((status . ready)
+    (attempts . #x00000001)
+    (read-value . #x00000003)
+    (keep-wl-kso . #t)
+    (wl-devon . #t)
+    (last-error))
+#+end_example
+
+The subsequent WLC_UP write and exact 12-byte and 28-byte F2 reads still
+succeeded, but the post-response =(wifi-interrupt-state)= again returned zero
+CCCR values and zero responses. Holding KSO before the first control exchange is
+therefore not sufficient to avoid the post-response failure.
+
 * Next actions
 
 1. Add REPL history and better editing across continuation lines.
