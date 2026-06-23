@@ -3644,15 +3644,85 @@ exchange. The next Wi-Fi implementation step should replace the hard-coded
 sequence/id with tracked SDPCM tx sequence, CDC ioctl id, and bus credits, then
 reuse that helper for WLC_GET_VAR/WLC_SET_VAR iovars.
 
+* 2026-06-24 Stateful SDPCM/CDC control transactions
+
+Replaced the high-level fixed Wi-Fi control transactions with a small
+=WifiSdioControlState= owned by =board::State=. The state is reset by
+=(wifi-start-firmware)=, starts with =tx_seq=0= and =tx_max=1= like WHD, allocates
+one SDPCM sequence number per transmit, allocates one CDC ioctl id per control
+message, and updates =tx_max= from the bus-credit byte in received SDPCM
+headers.
+
+The low-level =(wifi-send-wlc-up)= diagnostic remains a fixed packet for manual
+experiments. The high-level =(wifi-wlc-up)= and =(wifi-get-version)= path now uses
+the stateful sender.
+
+Validation:
+
+#+begin_example
+cargo fmt
+tools/build-lisp.scm --wifi-firmware
+tools/flash-lisp.scm
+tools/serial-console.scm
+tools/send-lisp.scm '(+ 3 4)'
+tools/send-lisp.scm '(wifi-start-firmware)'
+tools/send-lisp.scm '(wifi-wlc-up)'
+tools/send-lisp.scm '(wifi-ack-interrupts)'
+tools/send-lisp.scm '(wifi-get-version)'
+tools/send-lisp.scm '(wifi-get-version)'
+tools/send-lisp.scm '(wifi-interrupt-state)'
+#+end_example
+
+WLC_UP still uses the first CDC id and receives the expected credit:
+
+#+begin_example
+(wifi-wlc-up)
+=> ((status . ready)
+    (send.status . ready)
+    (send.packet-length . #x0000001c)
+    (response.sequence . #x00000001)
+    (response.bus-data-credit . #x00000011)
+    (cdc.command . #x00000002)
+    (cdc.id . #x00000001)
+    (cdc.status . #x00000000)
+    (send.last-error)
+    (response.last-error))
+#+end_example
+
+Two consecutive version ioctls in the same firmware session now advance CDC ids
+and bus credits:
+
+#+begin_example
+(wifi-get-version)
+=> ((status . ready)
+    (response.sequence . #x00000002)
+    (response.bus-data-credit . #x00000012)
+    (cdc.command . #x00000001)
+    (cdc.id . #x00000002)
+    (cdc.status . #x00000000)
+    (version . #x00000002))
+
+(wifi-get-version)
+=> ((status . ready)
+    (response.sequence . #x00000003)
+    (response.bus-data-credit . #x00000013)
+    (cdc.command . #x00000001)
+    (cdc.id . #x00000003)
+    (cdc.status . #x00000000)
+    (version . #x00000002))
+#+end_example
+
+The post-test SDIO state still reports =IO_ENABLE=#x06, =IO_READY=#x06,
+=INTERRUPT_ENABLE=#x05, and =BUS_CONTROL=#x42= with nonzero CMD52 responses.
+
 * Next actions
 
 1. Add REPL history and better editing across continuation lines.
 2. Add a FAT/exFAT-aware storage layer after raw block reads/writes work.
 3. Test the newer Infineon target =infineon/cy8cxxa.cfg= as a replacement
    for obsolete =target/psoc6_2m.cfg=.
-4. Replace fixed Wi-Fi control transactions with SDPCM tx sequence, CDC ioctl
-   id, and bus-credit state.
-5. Add generic CDC ioctl/iovar helpers for firmware version, MAC address, scan,
+4. Add generic CDC ioctl/iovar helpers for firmware version, MAC address, scan,
    and join.
+5. Add CLM download and country/channel setup before scan and join.
 6. Start Wi-Fi from a known-good Infineon or Zephyr sample before trying
    to hand-port the full CYW4343W network stack.

@@ -53,8 +53,8 @@ const SDIO_CMD53_WORD_BYTES: u16 = 4;
 const SDIO_CMD53_BLOCK_BYTES: u16 = 64;
 const SDIO_CMD53_BLOCK_WORDS: usize = 16;
 const SDPCM_HEADER_BYTES: u8 = 12;
+const CDC_HEADER_BYTES: u8 = 16;
 const SDPCM_WLC_UP_PACKET_BYTES: u8 = 28;
-const SDPCM_GET_VERSION_PACKET_BYTES: u8 = 32;
 const SDPCM_CONTROL_CHANNEL: u8 = 0;
 const CDC_SET_FLAG: u32 = 0x02;
 const CDC_IOCTL_ID_SHIFT: u8 = 16;
@@ -271,6 +271,8 @@ pub enum WifiSdioF2FrameStatus {
 pub enum WifiSdioF2ControlStatus {
     NotRun,
     Ready,
+    NoTxCredit,
+    PacketTooLarge,
     DataSetupBusy,
     Cmd53Failed,
     TransferTimeout,
@@ -764,6 +766,64 @@ pub struct WifiSdioHostSnapshot {
     pub response23: u32,
     pub response45: u32,
     pub response67: u32,
+}
+
+pub struct WifiSdioControlState {
+    tx_sequence: u8,
+    tx_max: u8,
+    requested_ioctl_id: u16,
+}
+
+impl WifiSdioControlState {
+    pub const fn new() -> Self {
+        Self {
+            tx_sequence: 0,
+            tx_max: 1,
+            requested_ioctl_id: 0,
+        }
+    }
+
+    pub fn reset(&mut self) {
+        self.tx_sequence = 0;
+        self.tx_max = 1;
+        self.requested_ioctl_id = 0;
+    }
+
+    fn available_tx_credits(&self) -> u8 {
+        let credits = self.tx_max.wrapping_sub(self.tx_sequence);
+        if credits & 0x80 != 0 {
+            0
+        } else {
+            credits
+        }
+    }
+
+    fn allocate_tx_sequence(&mut self) -> Option<(u8, u8)> {
+        let credits = self.available_tx_credits();
+        if credits == 0 {
+            return None;
+        }
+
+        let sequence = self.tx_sequence;
+        self.tx_sequence = self.tx_sequence.wrapping_add(1);
+        Some((sequence, credits))
+    }
+
+    fn allocate_ioctl_id(&mut self) -> u16 {
+        self.requested_ioctl_id = self.requested_ioctl_id.wrapping_add(1);
+        if self.requested_ioctl_id == 0 {
+            self.requested_ioctl_id = 1;
+        }
+        self.requested_ioctl_id
+    }
+
+    fn update_credit(&mut self, bus_data_credit: u8) {
+        if bus_data_credit.wrapping_sub(self.tx_sequence) > 0x40 {
+            self.tx_max = self.tx_sequence.wrapping_add(2);
+        } else {
+            self.tx_max = bus_data_credit;
+        }
+    }
 }
 
 pub struct WifiSdioPinSnapshot {
@@ -4378,35 +4438,74 @@ pub fn send_wlc_up(p: &Peripherals) -> WifiSdioF2ControlReport {
     }
 }
 
-fn send_get_version(p: &Peripherals) -> WifiSdioF2ControlReport {
-    let initial_tx_credit = 0x11;
-    let packet = get_version_control_packet_words();
+struct CdcControlSend {
+    report: WifiSdioF2ControlReport,
+    ioctl_id: u16,
+}
+
+fn send_control_ioctl(
+    p: &Peripherals,
+    state: &mut WifiSdioControlState,
+    command: u32,
+    flags: u32,
+    payload: &[u8],
+) -> CdcControlSend {
+    let packet_length = SDPCM_HEADER_BYTES as usize + CDC_HEADER_BYTES as usize + payload.len();
+    if packet_length > SDIO_CMD53_BLOCK_BYTES as usize {
+        return CdcControlSend {
+            report: f2_control_report(
+                p,
+                WifiSdioF2ControlStatus::PacketTooLarge,
+                state.available_tx_credits(),
+                SDIO_CMD53_BLOCK_BYTES as u8,
+                0,
+                None,
+            ),
+            ioctl_id: 0,
+        };
+    }
+
+    let (sequence, initial_tx_credit) = match state.allocate_tx_sequence() {
+        Some(allocation) => allocation,
+        None => {
+            return CdcControlSend {
+                report: f2_control_report(
+                    p,
+                    WifiSdioF2ControlStatus::NoTxCredit,
+                    0,
+                    packet_length as u8,
+                    0,
+                    None,
+                ),
+                ioctl_id: 0,
+            }
+        }
+    };
+    let ioctl_id = state.allocate_ioctl_id();
+    let packet = control_ioctl_packet_words(sequence, command, flags, ioctl_id, payload);
     let core = &p.SDHC0.core;
-    let descriptor_address =
-        prepare_cmd53_write_words(&packet, SDPCM_GET_VERSION_PACKET_BYTES as u16);
-    if !configure_cmd53_write_adma(
-        core,
-        SDPCM_GET_VERSION_PACKET_BYTES,
-        false,
-        descriptor_address,
-    ) {
-        return f2_control_report(
-            p,
-            WifiSdioF2ControlStatus::DataSetupBusy,
-            initial_tx_credit,
-            SDPCM_GET_VERSION_PACKET_BYTES,
-            0,
-            None,
-        );
+    let descriptor_address = prepare_cmd53_write_words(&packet, packet_length as u16);
+    if !configure_cmd53_write_adma(core, packet_length as u8, false, descriptor_address) {
+        return CdcControlSend {
+            report: f2_control_report(
+                p,
+                WifiSdioF2ControlStatus::DataSetupBusy,
+                initial_tx_credit,
+                packet_length as u8,
+                0,
+                None,
+            ),
+            ioctl_id,
+        };
     }
 
     let argument = cmd53_argument(
         true,
-        2,
+        SDIO_WLAN_FUNCTION,
         false,
         true,
         0,
-        SDPCM_GET_VERSION_PACKET_BYTES as u16,
+        packet_length as u16,
     );
     let write_response = match send_command(
         core,
@@ -4422,54 +4521,43 @@ fn send_get_version(p: &Peripherals) -> WifiSdioF2ControlReport {
     ) {
         Ok(response) => response,
         Err(error) => {
-            return f2_control_report(
-                p,
-                WifiSdioF2ControlStatus::Cmd53Failed,
-                initial_tx_credit,
-                SDPCM_GET_VERSION_PACKET_BYTES,
-                0,
-                Some(error),
-            )
+            return CdcControlSend {
+                report: f2_control_report(
+                    p,
+                    WifiSdioF2ControlStatus::Cmd53Failed,
+                    initial_tx_credit,
+                    packet_length as u8,
+                    0,
+                    Some(error),
+                ),
+                ioctl_id,
+            }
         }
     };
 
-    match wait_cmd53_adma_write_complete(core) {
-        Ok(()) => f2_control_report(
+    let status = match wait_cmd53_adma_write_complete(core) {
+        Ok(()) => WifiSdioF2ControlStatus::Ready,
+        Err(WifiSdioBackplaneWrite32Status::TransferTimeout) => {
+            WifiSdioF2ControlStatus::TransferTimeout
+        }
+        Err(WifiSdioBackplaneWrite32Status::DataLineBusy) => WifiSdioF2ControlStatus::DataLineBusy,
+        Err(_) => WifiSdioF2ControlStatus::Cmd53Failed,
+    };
+
+    CdcControlSend {
+        report: f2_control_report(
             p,
-            WifiSdioF2ControlStatus::Ready,
+            status,
             initial_tx_credit,
-            SDPCM_GET_VERSION_PACKET_BYTES,
+            packet_length as u8,
             write_response,
             None,
         ),
-        Err(WifiSdioBackplaneWrite32Status::TransferTimeout) => f2_control_report(
-            p,
-            WifiSdioF2ControlStatus::TransferTimeout,
-            initial_tx_credit,
-            SDPCM_GET_VERSION_PACKET_BYTES,
-            write_response,
-            None,
-        ),
-        Err(WifiSdioBackplaneWrite32Status::DataLineBusy) => f2_control_report(
-            p,
-            WifiSdioF2ControlStatus::DataLineBusy,
-            initial_tx_credit,
-            SDPCM_GET_VERSION_PACKET_BYTES,
-            write_response,
-            None,
-        ),
-        Err(_) => f2_control_report(
-            p,
-            WifiSdioF2ControlStatus::Cmd53Failed,
-            initial_tx_credit,
-            SDPCM_GET_VERSION_PACKET_BYTES,
-            write_response,
-            None,
-        ),
+        ioctl_id,
     }
 }
 
-pub fn wlc_up(p: &Peripherals) -> WifiSdioWlcUpReport {
+pub fn wlc_up(p: &Peripherals, state: &mut WifiSdioControlState) -> WifiSdioWlcUpReport {
     let mut report = empty_wlc_up_report(p);
 
     let ht = request_ht(p);
@@ -4485,12 +4573,13 @@ pub fn wlc_up(p: &Peripherals) -> WifiSdioWlcUpReport {
         return finish_wlc_up_report(p, report);
     }
 
-    let send = send_wlc_up(p);
-    report.send_status = send.status;
-    report.send_packet_length = send.packet_length;
-    report.send_write_response = send.write_response;
-    report.send_last_error = send.write_last_error;
-    if !matches!(send.status, WifiSdioF2ControlStatus::Ready) {
+    let send = send_control_ioctl(p, state, WLC_UP_IOCTL, CDC_SET_FLAG, &[]);
+    let expected_ioctl_id = send.ioctl_id;
+    report.send_status = send.report.status;
+    report.send_packet_length = send.report.packet_length;
+    report.send_write_response = send.report.write_response;
+    report.send_last_error = send.report.write_last_error;
+    if !matches!(send.report.status, WifiSdioF2ControlStatus::Ready) {
         report.status = WifiSdioWlcUpStatus::SendFailed;
         return finish_wlc_up_report(p, report);
     }
@@ -4505,6 +4594,7 @@ pub fn wlc_up(p: &Peripherals) -> WifiSdioWlcUpReport {
         report.status = WifiSdioWlcUpStatus::StartupFrameFailed;
         return finish_wlc_up_report(p, report);
     }
+    state.update_credit(startup.bus_data_credit);
     if !startup.valid
         || startup.length != SDPCM_HEADER_BYTES as u16
         || startup.header_length != SDPCM_HEADER_BYTES
@@ -4524,6 +4614,7 @@ pub fn wlc_up(p: &Peripherals) -> WifiSdioWlcUpReport {
         report.status = WifiSdioWlcUpStatus::ResponseFrameFailed;
         return finish_wlc_up_report(p, report);
     }
+    state.update_credit(response.bus_data_credit);
     if !response.valid
         || response.length != SDPCM_WLC_UP_PACKET_BYTES as u16
         || response.header_length != SDPCM_HEADER_BYTES
@@ -4538,7 +4629,7 @@ pub fn wlc_up(p: &Peripherals) -> WifiSdioWlcUpReport {
     report.cdc_flags = read_le_u32(&response.bytes, 20);
     report.cdc_id = (report.cdc_flags >> CDC_IOCTL_ID_SHIFT) as u16;
     report.cdc_status = read_le_u32(&response.bytes, 24);
-    if report.cdc_command != WLC_UP_IOCTL || report.cdc_id != 1 {
+    if report.cdc_command != WLC_UP_IOCTL || report.cdc_id != expected_ioctl_id {
         report.status = WifiSdioWlcUpStatus::UnexpectedResponseFrame;
     } else if report.cdc_status != 0 {
         report.status = WifiSdioWlcUpStatus::CdcStatusError;
@@ -4549,7 +4640,7 @@ pub fn wlc_up(p: &Peripherals) -> WifiSdioWlcUpReport {
     finish_wlc_up_report(p, report)
 }
 
-pub fn get_version(p: &Peripherals) -> WifiSdioGetVersionReport {
+pub fn get_version(p: &Peripherals, state: &mut WifiSdioControlState) -> WifiSdioGetVersionReport {
     let mut report = empty_get_version_report(p);
 
     let ht = request_ht(p);
@@ -4565,12 +4656,14 @@ pub fn get_version(p: &Peripherals) -> WifiSdioGetVersionReport {
         return finish_get_version_report(p, report);
     }
 
-    let send = send_get_version(p);
-    report.send_status = send.status;
-    report.send_packet_length = send.packet_length;
-    report.send_write_response = send.write_response;
-    report.send_last_error = send.write_last_error;
-    if !matches!(send.status, WifiSdioF2ControlStatus::Ready) {
+    let payload = [0u8; 4];
+    let send = send_control_ioctl(p, state, WLC_GET_VERSION_IOCTL, 0, &payload);
+    let expected_ioctl_id = send.ioctl_id;
+    report.send_status = send.report.status;
+    report.send_packet_length = send.report.packet_length;
+    report.send_write_response = send.report.write_response;
+    report.send_last_error = send.report.write_last_error;
+    if !matches!(send.report.status, WifiSdioF2ControlStatus::Ready) {
         report.status = WifiSdioGetVersionStatus::SendFailed;
         return finish_get_version_report(p, report);
     }
@@ -4586,6 +4679,7 @@ pub fn get_version(p: &Peripherals) -> WifiSdioGetVersionReport {
         report.status = WifiSdioGetVersionStatus::ResponseFrameFailed;
         return finish_get_version_report(p, report);
     }
+    state.update_credit(response.bus_data_credit);
     if !response.valid
         || response.length < (SDPCM_HEADER_BYTES as u16 + 16 + 4)
         || response.header_length != SDPCM_HEADER_BYTES
@@ -4601,7 +4695,7 @@ pub fn get_version(p: &Peripherals) -> WifiSdioGetVersionReport {
     report.cdc_id = (report.cdc_flags >> CDC_IOCTL_ID_SHIFT) as u16;
     report.cdc_status = read_le_u32(&response.bytes, 24);
     report.version = read_le_u32(&response.bytes, 28);
-    if report.cdc_command != WLC_GET_VERSION_IOCTL || report.cdc_id != 2 {
+    if report.cdc_command != WLC_GET_VERSION_IOCTL || report.cdc_id != expected_ioctl_id {
         report.status = WifiSdioGetVersionStatus::UnexpectedResponseFrame;
     } else if report.cdc_status != 0 {
         report.status = WifiSdioGetVersionStatus::CdcStatusError;
@@ -7724,18 +7818,35 @@ fn wlc_up_control_packet_words() -> [u32; SDIO_CMD53_BLOCK_WORDS] {
     bytes_to_words(&bytes)
 }
 
-fn get_version_control_packet_words() -> [u32; SDIO_CMD53_BLOCK_WORDS] {
+fn control_ioctl_packet_words(
+    sequence: u8,
+    command: u32,
+    flags: u32,
+    ioctl_id: u16,
+    payload: &[u8],
+) -> [u32; SDIO_CMD53_BLOCK_WORDS] {
     let mut bytes = [0u8; SDIO_CMD53_BLOCK_BYTES as usize];
-    write_le_u16(&mut bytes, 0, SDPCM_GET_VERSION_PACKET_BYTES as u16);
-    write_le_u16(&mut bytes, 2, !(SDPCM_GET_VERSION_PACKET_BYTES as u16));
-    bytes[4] = 1;
+    let packet_length = SDPCM_HEADER_BYTES as usize + CDC_HEADER_BYTES as usize + payload.len();
+    write_le_u16(&mut bytes, 0, packet_length as u16);
+    write_le_u16(&mut bytes, 2, !(packet_length as u16));
+    bytes[4] = sequence;
     bytes[5] = SDPCM_CONTROL_CHANNEL;
     bytes[7] = SDPCM_HEADER_BYTES;
-    write_le_u32(&mut bytes, 12, WLC_GET_VERSION_IOCTL);
-    write_le_u32(&mut bytes, 16, 4);
-    write_le_u32(&mut bytes, 20, 2u32 << CDC_IOCTL_ID_SHIFT);
+    write_le_u32(&mut bytes, 12, command);
+    write_le_u32(&mut bytes, 16, payload.len() as u32);
+    write_le_u32(
+        &mut bytes,
+        20,
+        ((ioctl_id as u32) << CDC_IOCTL_ID_SHIFT) | flags,
+    );
     write_le_u32(&mut bytes, 24, 0);
-    write_le_u32(&mut bytes, 28, 0);
+
+    let mut index = 0usize;
+    while index < payload.len() {
+        bytes[SDPCM_HEADER_BYTES as usize + CDC_HEADER_BYTES as usize + index] = payload[index];
+        index += 1;
+    }
+
     bytes_to_words(&bytes)
 }
 

@@ -14,6 +14,7 @@ pub struct State {
     heartbeat_enabled: bool,
     heartbeat_ms: u16,
     uptime_ms: u32,
+    wifi_control_state: wifi_sdio::WifiSdioControlState,
 }
 
 impl State {
@@ -23,6 +24,7 @@ impl State {
             heartbeat_enabled: false,
             heartbeat_ms: 0,
             uptime_ms: 0,
+            wifi_control_state: wifi_sdio::WifiSdioControlState::new(),
         }
     }
 
@@ -485,6 +487,7 @@ impl lisp::Board for PsocBoard<'_> {
     }
 
     fn wifi_start_firmware(&mut self) -> lisp::WifiSdioFirmwareStartReport {
+        self.state.wifi_control_state.reset();
         wifi_sdio_firmware_start_report(wifi_sdio::start_firmware(
             self.p,
             wifi_resources::cyw4343w_firmware(),
@@ -517,11 +520,17 @@ impl lisp::Board for PsocBoard<'_> {
     }
 
     fn wifi_wlc_up(&mut self) -> lisp::WifiSdioWlcUpReport {
-        wifi_sdio_wlc_up_report(wifi_sdio::wlc_up(self.p))
+        wifi_sdio_wlc_up_report(wifi_sdio::wlc_up(
+            self.p,
+            &mut self.state.wifi_control_state,
+        ))
     }
 
     fn wifi_get_version(&mut self) -> lisp::WifiSdioGetVersionReport {
-        wifi_sdio_get_version_report(wifi_sdio::get_version(self.p))
+        wifi_sdio_get_version_report(wifi_sdio::get_version(
+            self.p,
+            &mut self.state.wifi_control_state,
+        ))
     }
 
     fn wifi_f2_read_frame_abort(&mut self) -> lisp::WifiSdioF2AbortProbeReport {
@@ -1062,6 +1071,8 @@ fn wifi_sdio_f2_control_status(status: wifi_sdio::WifiSdioF2ControlStatus) -> &'
     match status {
         wifi_sdio::WifiSdioF2ControlStatus::NotRun => b"not-run",
         wifi_sdio::WifiSdioF2ControlStatus::Ready => b"ready",
+        wifi_sdio::WifiSdioF2ControlStatus::NoTxCredit => b"no-tx-credit",
+        wifi_sdio::WifiSdioF2ControlStatus::PacketTooLarge => b"packet-too-large",
         wifi_sdio::WifiSdioF2ControlStatus::DataSetupBusy => b"data-setup-busy",
         wifi_sdio::WifiSdioF2ControlStatus::Cmd53Failed => b"cmd53-failed",
         wifi_sdio::WifiSdioF2ControlStatus::TransferTimeout => b"transfer-timeout",
