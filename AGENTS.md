@@ -90,8 +90,10 @@ Treat hardware writes as externally visible side effects.
 - Skip enterprise profiles such as eduroam unless the user explicitly asks
   to support them.
 - Use `tools/prepare-wifi-credentials.scm` for local IWD PSK extraction.
-  It writes `.local/wifi/selected.env`, and its output must stay limited to
-  counts/paths rather than SSIDs or secret values.
+  It writes `.local/wifi/selected.env`. With `--all`, it also writes
+  numbered env files under `.local/wifi/profiles/` for every non-enterprise
+  PSK profile with a stored secret. Its output must stay limited to
+  counts/paths/field lengths rather than SSIDs or secret values.
 - Use `tools/prepare-wifi-resources.scm` for local CYW4343W firmware, CLM,
   and NVRAM extraction. It writes `.local/wifi/resources/`, including a
   generated local MAC address, and its output must stay limited to

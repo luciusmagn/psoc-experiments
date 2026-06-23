@@ -1243,6 +1243,43 @@ git check-ignore -v .local/wifi/selected.env
 => .gitignore:7:.local/ .local/wifi/selected.env
 #+end_example
 
+* 2026-06-23 All local Wi-Fi credential prep
+
+Extended =tools/prepare-wifi-credentials.scm= with =--all= so the ignored local
+Wi-Fi state can hold every non-enterprise IWD PSK profile with a stored secret.
+The existing selected credential remains at =.local/wifi/selected.env=. The
+all-profile store uses numbered filenames under =.local/wifi/profiles/= so
+terminal output, paths, docs, and commits do not expose SSIDs or credential
+values.
+
+Validation:
+
+#+begin_example
+tools/prepare-wifi-credentials.scm --all
+=> selected-profile-count=31
+=> output-dir=.local/wifi/profiles
+=> profile-env-count=31
+=> output=.local/wifi/selected.env
+=> ssid-field-bytes=6
+=> secret-kind-field-bytes=12
+=> secret-field-bytes=12
+
+tools/prepare-wifi-credentials.scm --check --all
+=> output=.local/wifi/selected.env
+=> ssid-field-bytes=6
+=> secret-kind-field-bytes=12
+=> secret-field-bytes=12
+=> output-dir=.local/wifi/profiles
+=> profile-env-count=31
+
+find .local/wifi/profiles -maxdepth 1 -type f -name 'profile-*.env' \
+  -printf '%m\n' | sort | uniq -c
+=> 31 600
+#+end_example
+
+The generated files remain under ignored =.local/= state. Do not print or
+commit their contents.
+
 * 2026-06-22 Wi-Fi CMD53 block read diagnostic
 
 Extended =(wifi-cmd53-read function address count)= so =count= may be 64.

@@ -12,37 +12,46 @@
 
 (define default-iwd-dir "/var/lib/iwd")
 (define default-output ".local/wifi/selected.env")
+(define default-output-dir ".local/wifi/profiles")
 
 (define (usage)
-  (say "usage: tools/prepare-wifi-credentials.scm [--check] [--ssid SSID] [--profile FILE] [--iwd-dir DIR] [--output FILE]")
+  (say "usage: tools/prepare-wifi-credentials.scm [--check] [--all] [--ssid SSID] [--profile FILE] [--iwd-dir DIR] [--output FILE] [--output-dir DIR]")
   (say "")
-  (say "Writes a selected non-enterprise IWD PSK profile to ignored local state.")
-  (say "Output defaults to .local/wifi/selected.env. Credential values are never printed."))
+  (say "Writes non-enterprise IWD PSK profiles to ignored local state.")
+  (say "Selected output defaults to .local/wifi/selected.env.")
+  (say "All-profile output defaults to .local/wifi/profiles/.")
+  (say "Credential values and SSIDs are never printed."))
 
-(define (parse args ssid profile iwd-dir output check-only)
+(define (parse args ssid profile iwd-dir output output-dir check-only all-profiles)
   (cond
-    ((null? args) (values ssid profile iwd-dir output check-only))
+    ((null? args) (values ssid profile iwd-dir output output-dir check-only all-profiles))
     ((string=? (car args) "--help")
      (usage)
      (exit 0))
     ((string=? (car args) "--check")
-     (parse (cdr args) ssid profile iwd-dir output #t))
+     (parse (cdr args) ssid profile iwd-dir output output-dir #t all-profiles))
+    ((string=? (car args) "--all")
+     (parse (cdr args) ssid profile iwd-dir output output-dir check-only #t))
     ((string=? (car args) "--ssid")
      (if (null? (cdr args))
          (die "--ssid needs a value")
-         (parse (cddr args) (cadr args) profile iwd-dir output check-only)))
+         (parse (cddr args) (cadr args) profile iwd-dir output output-dir check-only all-profiles)))
     ((string=? (car args) "--profile")
      (if (null? (cdr args))
          (die "--profile needs a file name")
-         (parse (cddr args) ssid (cadr args) iwd-dir output check-only)))
+         (parse (cddr args) ssid (cadr args) iwd-dir output output-dir check-only all-profiles)))
     ((string=? (car args) "--iwd-dir")
      (if (null? (cdr args))
          (die "--iwd-dir needs a directory")
-         (parse (cddr args) ssid profile (cadr args) output check-only)))
+         (parse (cddr args) ssid profile (cadr args) output output-dir check-only all-profiles)))
     ((string=? (car args) "--output")
      (if (null? (cdr args))
          (die "--output needs a path")
-         (parse (cddr args) ssid profile iwd-dir (cadr args) check-only)))
+         (parse (cddr args) ssid profile iwd-dir (cadr args) output-dir check-only all-profiles)))
+    ((string=? (car args) "--output-dir")
+     (if (null? (cdr args))
+         (die "--output-dir needs a directory")
+         (parse (cddr args) ssid profile iwd-dir output (cadr args) check-only all-profiles)))
     (else
      (die (string-append "unknown argument " (car args))))))
 
@@ -221,6 +230,24 @@
     (run (string-append "chmod 600 " (shell-quote full-path)))
     full-path))
 
+(define (candidate-output-path output-dir index)
+  (string-append output-dir
+                 "/profile-"
+                 (number->string index)
+                 ".env"))
+
+(define (write-all-env output-dir candidates)
+  (let ((full-dir (repo-path output-dir)))
+    (run (string-append "mkdir -p " (shell-quote full-dir)))
+    (run (string-append "chmod 700 " (shell-quote full-dir)))
+    (run (string-append "find " (shell-quote full-dir)
+                        " -maxdepth 1 -type f -name 'profile-*.env' -delete"))
+    (let loop ((items candidates) (index 1))
+      (unless (null? items)
+        (write-env (candidate-output-path output-dir index) (car items))
+        (loop (cdr items) (+ index 1)))))
+  (length candidates))
+
 (define (env-value-length path name)
   (let ((prefix (string-append name "=")))
     (let loop ((lines (if (file-exists? path) (read-lines path) '())))
@@ -248,21 +275,45 @@
                               (number->string (or pass-len psk-len 0)))))
         (die (string-append "missing output " output-path)))))
 
-(define-values (wanted-ssid wanted-profile iwd-dir output-path check-only)
+(define (count-profile-env-files output-dir)
+  (let* ((full-dir (repo-path output-dir))
+         (capture-path (repo-path ".local/wifi/profile-env-files.txt"))
+         (command (string-append
+                   "mkdir -p " (shell-quote (dirname capture-path))
+                   " && find " (shell-quote full-dir)
+                   " -maxdepth 1 -type f -name 'profile-*.env' -printf '%f\\n' 2>/dev/null | LC_ALL=C sort"))
+         (names (capture-lines command capture-path)))
+    (length names)))
+
+(define (report-all-output output-dir)
+  (say (string-append "output-dir=" output-dir))
+  (say (string-append "profile-env-count="
+                      (number->string (count-profile-env-files output-dir)))))
+
+(define-values (wanted-ssid wanted-profile iwd-dir output-path output-dir check-only all-profiles)
   (parse (command-line-tail)
          (env "WIFI_SSID")
          (env "WIFI_PROFILE")
          (or (env "IWD_DIR") default-iwd-dir)
          default-output
+         default-output-dir
+         #f
          #f))
 
 (if check-only
-    (report-output output-path)
+    (begin
+      (report-output output-path)
+      (when all-profiles
+        (report-all-output output-dir)))
     (let* ((candidates (find-profiles iwd-dir))
            (selected (select-candidate candidates wanted-ssid wanted-profile)))
       (unless selected
         (die "no matching non-enterprise IWD PSK profile with a stored secret"))
       (write-env output-path selected)
+      (when all-profiles
+        (write-all-env output-dir candidates))
       (say (string-append "selected-profile-count="
                           (number->string (length candidates))))
+      (when all-profiles
+        (report-all-output output-dir))
       (report-output output-path)))

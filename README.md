@@ -65,16 +65,19 @@ tools/send-lisp.scm '(wifi-setup-backplane)'
 ```
 
 For local Wi-Fi credentials, generate the ignored env file from a local IWD
-PSK profile:
+PSK profile, or all usable non-enterprise PSK profiles:
 
 ```sh
 tools/prepare-wifi-credentials.scm
+tools/prepare-wifi-credentials.scm --all
 tools/prepare-wifi-credentials.scm --check
+tools/prepare-wifi-credentials.scm --check --all
 ```
 
-The script writes `.local/wifi/selected.env` with mode `600` and reports only
-field lengths, never credential values. Use `--ssid` or `--profile` to choose a
-specific non-enterprise profile.
+The script writes `.local/wifi/selected.env` with mode `600`. With `--all`, it
+also writes numbered env files under `.local/wifi/profiles/`. It reports only
+paths, counts, and field lengths, never credential values or SSIDs. Use `--ssid`
+or `--profile` to choose a specific non-enterprise profile.
 
 Prepare local CYW4343W firmware, CLM, and NVRAM resources before building Wi-Fi
 firmware-loader work:
