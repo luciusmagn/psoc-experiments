@@ -2036,6 +2036,110 @@ condition, not an uncleared =SDIO_INT_STATUS= bit. The next diagnostic should
 read CCCR =INTPEND= in the same live session and determine why writing the
 PSoC host card-interrupt status bit does not clear =NORM_INT #x100=.
 
+* 2026-06-23 Inserted 32GB microSD validation
+
+The user inserted a 32GB microSD card and confirmed its existing contents could
+be overwritten. The live board detects the card and initializes it as SDHC:
+
+#+begin_example
+(sd-status)
+=> ((CD_L . low) (inserted . #t)
+    (GPIO.PRT13.IN . #x0000010f)
+    (GPIO.PRT13.CFG . #x6080eeee))
+
+(sd-init)
+=> ((status . ready-sdhc)
+    (CMD8 . #x000001aa)
+    (CMD8.error)
+    (ACMD41.OCR . #xc0ff8000)
+    (attempts . 2)
+    (CLK_CTRL . #x00003e0f)
+    (NORM_INT . #x00000000)
+    (ERR_INT . #x00000000)
+    (PSTATE . #x03f30000)
+    (CMD_R . #x00002902)
+    (ARGUMENT . #x40ff8000)
+    (last-error)
+    (PSTATE.error)
+    (PSTATE.after-write)
+    (NORM_INT.after-write)
+    (ERR_INT.after-write))
+#+end_example
+
+Sector 0 reads cleanly. The card currently has an MBR signature and a Linux
+partition entry:
+
+#+begin_example
+(sd-read0)
+=> ((status . ready)
+    (init-status . ready-sdhc)
+    (sector . #x00000000)
+    (RCA . #x00005048)
+    (OCR . #xc0ff8000)
+    (attempts . 2)
+    (CMD17.response . #x00000900)
+    (last-error)
+    (first-words #x00000000 #x00000000 #x00000000 #x00000000
+                 #x00000000 #x00000000 #x00000000 #x00000000)
+    (MBR.sig . #x0000aa55)
+    (partition0.status . #x00000000)
+    (partition0.type . #x00000083)
+    (partition0.lba . #x00000800)
+    (partition0.sectors . #x039a3800)
+    (NORM_INT . #x00000000)
+    (ERR_INT . #x00000000)
+    (PSTATE . #x03f30000)
+    (BLOCK_SIZE . #x00000200)
+    (BLOCK_COUNT . #x00000000)
+    (XFER_MODE . #x00000012)
+    (CMD_R . #x0000113a)
+    (ARGUMENT . #x00000000))
+#+end_example
+
+The raw Lisp store directory was already present and listed =boot.lisp=. The
+entry was overwritten with a harmless persistence check:
+
+#+begin_example
+(ls)
+=> ((status . ready) (ready . #t) (count . 1)
+    (directory-sector . #x00000100)
+    (files "boot.lisp"))
+
+(save-file "boot.lisp" "(begin (define persisted 41) (+ persisted 1))")
+=> ((status . ready)
+    (ready . #t)
+    (path-len . 9)
+    (content-len . 45)
+    (directory-sector . #x00000100)
+    (data-sector . #x00000101))
+
+(read-file "boot.lisp")
+=> ((status . ready)
+    (ready . #t)
+    (path-len . 9)
+    (content-len . 45)
+    (directory-sector . #x00000100)
+    (data-sector . #x00000101)
+    (content . "(begin (define persisted 41) (+ persisted 1))"))
+
+(load "boot.lisp")
+=> 42
+#+end_example
+
+A reboot confirmed that startup auto-loads the persisted file:
+
+#+begin_example
+PSoC6 lisp-psoc-pc
+UART: SCB5 P5.1 TX / P5.0 RX, 115200 8N1
+boot.lisp => 42
+Try: (help), (ls), (cat "boot.lisp"), (+ 1 2 3)
+#+end_example
+
+This verifies card detect, SDHC initialization, single-block read, raw-store
+directory read, raw-store write, raw-store read, evaluator load, and boot
+autoload on the currently inserted card. The current store is still a raw-sector
+Lisp store at sector =#x100=, not a FAT/exFAT filesystem.
+
 * Next actions
 
 1. Add REPL history and better editing across continuation lines.
