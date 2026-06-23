@@ -39,6 +39,29 @@ impl State {
         led_set(p, false);
     }
 
+    pub fn reboot_marker(&mut self, p: &Peripherals, delay: &mut cortex_m::delay::Delay) {
+        const PATTERN: &[(bool, u32)] = &[
+            (true, 80),
+            (false, 80),
+            (true, 80),
+            (false, 180),
+            (true, 320),
+            (false, 180),
+            (true, 80),
+            (false, 80),
+            (true, 320),
+        ];
+
+        self.heartbeat_enabled = false;
+        for &(on, duration_ms) in PATTERN {
+            self.led_state = on;
+            led_set(p, on);
+            delay.delay_ms(duration_ms);
+        }
+        self.led_state = false;
+        led_set(p, false);
+    }
+
     pub fn tick_ms(&mut self, p: &Peripherals) {
         self.uptime_ms = self.uptime_ms.wrapping_add(1);
 

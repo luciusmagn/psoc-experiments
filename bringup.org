@@ -23,7 +23,8 @@ The board is flashed with:
 - UART: =SCB5= on =P5.1 TX= and =P5.0 RX=
 - Host serial device: =/dev/ttyACM0=
 - Baud: =115200 8N1=
-- User LED default: off; console heartbeat disabled by default
+- User LED: finite reboot marker at startup, then off; console heartbeat
+  disabled by default
 
 Working serial capture:
 
@@ -62,8 +63,10 @@ lisp> (led status)
 => #f
 #+end_example
 
-The current firmware intentionally does not blink the LED at idle. This
-keeps the board quiet while doing longer bring-up work. To restore a
+The current firmware emits a finite reboot marker on LED4 at startup, then
+turns LED4 off and intentionally does not blink the LED at idle. The marker is
+short, short, long, short, long. This makes resets visible from across the
+room while keeping the board quiet during longer bring-up work. To restore a
 visible heartbeat from the console:
 
 #+begin_example
@@ -71,7 +74,7 @@ lisp> (heartbeat on)
 => #t
 #+end_example
 
-The red user LED blinks, which means the CM4 app loop is running.
+The red user LED then blinks, which means the CM4 app loop is running.
 
 * Hardware facts
 
@@ -2694,6 +2697,32 @@ Post-format checks:
 
 The red LED remained quiet during this validation. The remaining storage work
 is to move file primitives from the raw sector store onto FAT.
+
+* 2026-06-23 Finite reboot LED marker
+
+Added a requested startup-only LED4 reboot marker. The CM4 app now flashes a
+distinct short, short, long, short, long pattern during boot and then drives
+LED4 off. The idle heartbeat remains disabled unless explicitly enabled with
+=(heartbeat on)=.
+
+Validation:
+
+#+begin_example
+tools/build-lisp.scm
+tools/flash-lisp.scm
+tools/serial-console.scm
+#+end_example
+
+After flashing, the console rebooted cleanly and printed the usual banner:
+
+#+begin_example
+PSoC6 lisp-psoc-pc
+UART: SCB5 P5.1 TX / P5.0 RX, 115200 8N1
+boot.lisp => 42
+Try: (help), (ls), (cat "boot.lisp"), (+ 1 2 3)
+
+lisp>
+#+end_example
 
 * Next actions
 

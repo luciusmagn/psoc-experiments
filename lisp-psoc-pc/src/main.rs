@@ -36,7 +36,7 @@ fn main() -> ! {
     let mut machine = lisp::Machine::new();
     let mut board_state = board::State::new();
 
-    board_state.led_off(&p);
+    board_state.reboot_marker(&p, &mut delay);
     if let Err(error) = machine.bootstrap() {
         writeln!(console, "\nLisp bootstrap failed: {}", error.message()).ok();
     }
