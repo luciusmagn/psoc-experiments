@@ -419,6 +419,22 @@ impl lisp::Board for PsocBoard<'_> {
         wifi_sdio_interrupt_ack_report(wifi_sdio::ack_interrupts(self.p))
     }
 
+    fn wifi_interrupt_state(&mut self) -> lisp::WifiSdioInterruptStateReport {
+        wifi_sdio_interrupt_state_report(wifi_sdio::interrupt_state(self.p))
+    }
+
+    fn wifi_keep_awake(&mut self) -> lisp::WifiSdioKeepAwakeReport {
+        wifi_sdio_keep_awake_report(wifi_sdio::keep_awake(self.p))
+    }
+
+    fn wifi_host_reset_lines(&mut self) -> lisp::WifiSdioHostResetReport {
+        wifi_sdio_host_reset_report(wifi_sdio::host_reset_lines(self.p))
+    }
+
+    fn wifi_abort_read(&mut self) -> lisp::WifiSdioAbortReadReport {
+        wifi_sdio_abort_read_report(wifi_sdio::abort_read(self.p))
+    }
+
     fn wifi_core_state(&mut self, base: u32) -> lisp::WifiSdioCoreStateReport {
         wifi_sdio_core_state_report(wifi_sdio::core_state(self.p, base))
     }
@@ -861,6 +877,30 @@ fn wifi_sdio_interrupt_ack_status(status: wifi_sdio::WifiSdioInterruptAckStatus)
     }
 }
 
+fn wifi_sdio_interrupt_state_status(
+    status: wifi_sdio::WifiSdioInterruptStateStatus,
+) -> &'static [u8] {
+    match status {
+        wifi_sdio::WifiSdioInterruptStateStatus::Ready => b"ready",
+        wifi_sdio::WifiSdioInterruptStateStatus::IoEnableReadFailed => b"io-enable-read-failed",
+        wifi_sdio::WifiSdioInterruptStateStatus::IoReadyReadFailed => b"io-ready-read-failed",
+        wifi_sdio::WifiSdioInterruptStateStatus::InterruptEnableReadFailed => {
+            b"interrupt-enable-read-failed"
+        }
+        wifi_sdio::WifiSdioInterruptStateStatus::InterruptPendingReadFailed => {
+            b"interrupt-pending-read-failed"
+        }
+        wifi_sdio::WifiSdioInterruptStateStatus::BusControlReadFailed => b"bus-control-read-failed",
+    }
+}
+
+fn wifi_sdio_keep_awake_status(status: wifi_sdio::WifiSdioKeepAwakeStatus) -> &'static [u8] {
+    match status {
+        wifi_sdio::WifiSdioKeepAwakeStatus::Ready => b"ready",
+        wifi_sdio::WifiSdioKeepAwakeStatus::Timeout => b"timeout",
+    }
+}
+
 fn wifi_sdio_core_state_status(status: wifi_sdio::WifiSdioCoreStateStatus) -> &'static [u8] {
     match status {
         wifi_sdio::WifiSdioCoreStateStatus::Ready => b"ready",
@@ -1213,6 +1253,77 @@ fn wifi_sdio_interrupt_ack_report(
         clear_response: report.clear_response,
         clear_readback: report.clear_readback,
         final_response: report.final_response,
+        last_error: report.last_error.map(wifi_sdio_command_error_report),
+        host: wifi_sdio_host_report(report.host),
+    }
+}
+
+fn wifi_sdio_interrupt_state_report(
+    report: wifi_sdio::WifiSdioInterruptStateReport,
+) -> lisp::WifiSdioInterruptStateReport {
+    lisp::WifiSdioInterruptStateReport {
+        status: wifi_sdio_interrupt_state_status(report.status),
+        io_enable: report.io_enable,
+        io_ready: report.io_ready,
+        interrupt_enable: report.interrupt_enable,
+        interrupt_pending: report.interrupt_pending,
+        bus_control: report.bus_control,
+        master_enabled: report.master_enabled,
+        function1_enabled: report.function1_enabled,
+        function2_enabled: report.function2_enabled,
+        function1_ready: report.function1_ready,
+        function2_ready: report.function2_ready,
+        function1_pending: report.function1_pending,
+        function2_pending: report.function2_pending,
+        host_card_interrupt: report.host_card_interrupt,
+        io_enable_response: report.io_enable_response,
+        io_ready_response: report.io_ready_response,
+        interrupt_enable_response: report.interrupt_enable_response,
+        interrupt_pending_response: report.interrupt_pending_response,
+        bus_control_response: report.bus_control_response,
+        host_normal_int: report.host_normal_int,
+        host_error_int: report.host_error_int,
+        last_error: report.last_error.map(wifi_sdio_command_error_report),
+        host: wifi_sdio_host_report(report.host),
+    }
+}
+
+fn wifi_sdio_keep_awake_report(
+    report: wifi_sdio::WifiSdioKeepAwakeReport,
+) -> lisp::WifiSdioKeepAwakeReport {
+    lisp::WifiSdioKeepAwakeReport {
+        status: wifi_sdio_keep_awake_status(report.status),
+        attempts: report.attempts,
+        write_value: report.write_value,
+        first_write_response: report.first_write_response,
+        second_write_response: report.second_write_response,
+        retry_write_response: report.retry_write_response,
+        read_value: report.read_value,
+        read_response: report.read_response,
+        keep_wl_kso: report.keep_wl_kso,
+        wl_devon: report.wl_devon,
+        last_error: report.last_error.map(wifi_sdio_command_error_report),
+        host: wifi_sdio_host_report(report.host),
+    }
+}
+
+fn wifi_sdio_host_reset_report(
+    report: wifi_sdio::WifiSdioHostResetReport,
+) -> lisp::WifiSdioHostResetReport {
+    lisp::WifiSdioHostResetReport {
+        command_reset: report.command_reset,
+        data_reset: report.data_reset,
+        before: wifi_sdio_host_report(report.before),
+        after: wifi_sdio_host_report(report.after),
+    }
+}
+
+fn wifi_sdio_abort_read_report(
+    report: wifi_sdio::WifiSdioAbortReadReport,
+) -> lisp::WifiSdioAbortReadReport {
+    lisp::WifiSdioAbortReadReport {
+        io_abort_response: report.io_abort_response,
+        frame_control_response: report.frame_control_response,
         last_error: report.last_error.map(wifi_sdio_command_error_report),
         host: wifi_sdio_host_report(report.host),
     }

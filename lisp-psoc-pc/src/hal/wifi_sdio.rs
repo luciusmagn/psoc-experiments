@@ -57,6 +57,8 @@ const SOCSRAM_BLOCK_PROBE_NO_MISMATCH: u32 = 0xffff_ffff;
 const SDIO_CCCR_IO_ENABLE: u32 = 0x02;
 const SDIO_CCCR_IO_READY: u32 = 0x03;
 const SDIO_CCCR_INTERRUPT_ENABLE: u32 = 0x04;
+const SDIO_CCCR_INTERRUPT_PENDING: u32 = 0x05;
+const SDIO_CCCR_IO_ABORT: u32 = 0x06;
 const SDIO_CCCR_BUS_INTERFACE_CONTROL: u32 = 0x07;
 const SDIO_CCCR_BLOCK_SIZE_LOW: u32 = 0x10;
 const SDIO_CCCR_BLOCK_SIZE_HIGH: u32 = 0x11;
@@ -70,9 +72,11 @@ const SDIO_FUNCTION_READY_2: u8 = 0x04;
 const SDIO_BACKPLANE_ADDRESS_LOW: u32 = 0x1000a;
 const SDIO_BACKPLANE_ADDRESS_MID: u32 = 0x1000b;
 const SDIO_BACKPLANE_ADDRESS_HIGH: u32 = 0x1000c;
+const SDIO_FRAME_CONTROL: u32 = 0x1000d;
 const SDIO_FUNCTION2_WATERMARK: u32 = 0x10008;
 const SDIO_CHIP_CLOCK_CSR: u32 = 0x1000e;
 const SDIO_PULL_UP: u32 = 0x1000f;
+const SDIO_SLEEP_CSR: u32 = 0x1001f;
 const SDIO_FUNCTION_ENABLE_1: u8 = 0x02;
 const SDIO_FUNCTION_READY_1: u8 = 0x02;
 const SDIO_INTERRUPT_MASTER_FUNC1_FUNC2: u8 = 0x07;
@@ -91,9 +95,13 @@ const SBSDIO_ALP_AVAIL_REQ: u8 = 0x08;
 const SBSDIO_FORCE_HW_CLKREQ_OFF: u8 = 0x20;
 const SBSDIO_ALP_AVAIL: u8 = 0x40;
 const SBSDIO_HT_AVAIL: u8 = 0x80;
+const SBSDIO_SLPCSR_KEEP_WL_KSO: u8 = 1 << 0;
+const SBSDIO_SLPCSR_WL_DEVON: u8 = 1 << 1;
 const SBSDIO_SB_OFT_ADDR_MASK: u32 = 0x07fff;
 const SBSDIO_SB_ACCESS_2_4B_FLAG: u32 = 0x08000;
 const SDIO_F2_WATERMARK: u8 = 8;
+const SDIO_KSO_MAX_ATTEMPTS: u16 = 64;
+const SDIO_FRAME_CONTROL_READ_TERMINATE: u8 = 1 << 0;
 const HOST_INTERRUPT_MASK: u32 = 0x0000_00f0;
 const AI_IOCTRL_OFFSET: u32 = 0x408;
 const AI_RESETCTRL_OFFSET: u32 = 0x800;
@@ -255,6 +263,22 @@ pub enum WifiSdioInterruptAckStatus {
     MailboxAckWriteFailed,
     InterruptClearWriteFailed,
     FinalIntStatusReadFailed,
+}
+
+#[derive(Clone, Copy)]
+pub enum WifiSdioInterruptStateStatus {
+    Ready,
+    IoEnableReadFailed,
+    IoReadyReadFailed,
+    InterruptEnableReadFailed,
+    InterruptPendingReadFailed,
+    BusControlReadFailed,
+}
+
+#[derive(Clone, Copy)]
+pub enum WifiSdioKeepAwakeStatus {
+    Ready,
+    Timeout,
 }
 
 #[derive(Clone, Copy)]
@@ -947,6 +971,61 @@ pub struct WifiSdioInterruptAckReport {
     pub clear_response: u32,
     pub clear_readback: u32,
     pub final_response: u32,
+    pub last_error: Option<CommandError>,
+    pub host: WifiSdioHostSnapshot,
+}
+
+pub struct WifiSdioInterruptStateReport {
+    pub status: WifiSdioInterruptStateStatus,
+    pub io_enable: u8,
+    pub io_ready: u8,
+    pub interrupt_enable: u8,
+    pub interrupt_pending: u8,
+    pub bus_control: u8,
+    pub master_enabled: bool,
+    pub function1_enabled: bool,
+    pub function2_enabled: bool,
+    pub function1_ready: bool,
+    pub function2_ready: bool,
+    pub function1_pending: bool,
+    pub function2_pending: bool,
+    pub host_card_interrupt: bool,
+    pub io_enable_response: u32,
+    pub io_ready_response: u32,
+    pub interrupt_enable_response: u32,
+    pub interrupt_pending_response: u32,
+    pub bus_control_response: u32,
+    pub host_normal_int: u16,
+    pub host_error_int: u16,
+    pub last_error: Option<CommandError>,
+    pub host: WifiSdioHostSnapshot,
+}
+
+pub struct WifiSdioKeepAwakeReport {
+    pub status: WifiSdioKeepAwakeStatus,
+    pub attempts: u16,
+    pub write_value: u8,
+    pub first_write_response: u32,
+    pub second_write_response: u32,
+    pub retry_write_response: u32,
+    pub read_value: u8,
+    pub read_response: u32,
+    pub keep_wl_kso: bool,
+    pub wl_devon: bool,
+    pub last_error: Option<CommandError>,
+    pub host: WifiSdioHostSnapshot,
+}
+
+pub struct WifiSdioHostResetReport {
+    pub command_reset: bool,
+    pub data_reset: bool,
+    pub before: WifiSdioHostSnapshot,
+    pub after: WifiSdioHostSnapshot,
+}
+
+pub struct WifiSdioAbortReadReport {
+    pub io_abort_response: u32,
+    pub frame_control_response: u32,
     pub last_error: Option<CommandError>,
     pub host: WifiSdioHostSnapshot,
 }
@@ -4022,6 +4101,273 @@ pub fn ack_interrupts(p: &Peripherals) -> WifiSdioInterruptAckReport {
     )
 }
 
+pub fn interrupt_state(p: &Peripherals) -> WifiSdioInterruptStateReport {
+    let core = &p.SDHC0.core;
+    let host_normal_int = core.normal_int_stat_r.read().bits();
+    let host_error_int = core.error_int_stat_r.read().bits();
+
+    let io_enable = match cmd52_read_byte_selected(core, SDIO_CCCR_IO_ENABLE) {
+        Ok(read) => read,
+        Err(error) => {
+            return interrupt_state_report(
+                p,
+                WifiSdioInterruptStateStatus::IoEnableReadFailed,
+                0,
+                0,
+                0,
+                0,
+                0,
+                0,
+                0,
+                0,
+                0,
+                0,
+                host_normal_int,
+                host_error_int,
+                Some(error),
+            );
+        }
+    };
+
+    let io_ready = match cmd52_read_byte_selected(core, SDIO_CCCR_IO_READY) {
+        Ok(read) => read,
+        Err(error) => {
+            return interrupt_state_report(
+                p,
+                WifiSdioInterruptStateStatus::IoReadyReadFailed,
+                io_enable.0,
+                0,
+                0,
+                0,
+                0,
+                io_enable.1,
+                0,
+                0,
+                0,
+                0,
+                host_normal_int,
+                host_error_int,
+                Some(error),
+            );
+        }
+    };
+
+    let interrupt_enable = match cmd52_read_byte_selected(core, SDIO_CCCR_INTERRUPT_ENABLE) {
+        Ok(read) => read,
+        Err(error) => {
+            return interrupt_state_report(
+                p,
+                WifiSdioInterruptStateStatus::InterruptEnableReadFailed,
+                io_enable.0,
+                io_ready.0,
+                0,
+                0,
+                0,
+                io_enable.1,
+                io_ready.1,
+                0,
+                0,
+                0,
+                host_normal_int,
+                host_error_int,
+                Some(error),
+            );
+        }
+    };
+
+    let interrupt_pending = match cmd52_read_byte_selected(core, SDIO_CCCR_INTERRUPT_PENDING) {
+        Ok(read) => read,
+        Err(error) => {
+            return interrupt_state_report(
+                p,
+                WifiSdioInterruptStateStatus::InterruptPendingReadFailed,
+                io_enable.0,
+                io_ready.0,
+                interrupt_enable.0,
+                0,
+                0,
+                io_enable.1,
+                io_ready.1,
+                interrupt_enable.1,
+                0,
+                0,
+                host_normal_int,
+                host_error_int,
+                Some(error),
+            );
+        }
+    };
+
+    let bus_control = match cmd52_read_byte_selected(core, SDIO_CCCR_BUS_INTERFACE_CONTROL) {
+        Ok(read) => read,
+        Err(error) => {
+            return interrupt_state_report(
+                p,
+                WifiSdioInterruptStateStatus::BusControlReadFailed,
+                io_enable.0,
+                io_ready.0,
+                interrupt_enable.0,
+                interrupt_pending.0,
+                0,
+                io_enable.1,
+                io_ready.1,
+                interrupt_enable.1,
+                interrupt_pending.1,
+                0,
+                host_normal_int,
+                host_error_int,
+                Some(error),
+            );
+        }
+    };
+
+    interrupt_state_report(
+        p,
+        WifiSdioInterruptStateStatus::Ready,
+        io_enable.0,
+        io_ready.0,
+        interrupt_enable.0,
+        interrupt_pending.0,
+        bus_control.0,
+        io_enable.1,
+        io_ready.1,
+        interrupt_enable.1,
+        interrupt_pending.1,
+        bus_control.1,
+        host_normal_int,
+        host_error_int,
+        None,
+    )
+}
+
+pub fn keep_awake(p: &Peripherals) -> WifiSdioKeepAwakeReport {
+    let core = &p.SDHC0.core;
+    let write_value = SBSDIO_SLPCSR_KEEP_WL_KSO;
+    let compare_value = SBSDIO_SLPCSR_KEEP_WL_KSO | SBSDIO_SLPCSR_WL_DEVON;
+
+    let mut first_write_response = 0;
+    let mut second_write_response = 0;
+    let mut retry_write_response = 0;
+    let mut read_value = 0;
+    let mut read_response = 0;
+    let mut last_error = None;
+
+    match cmd52_write_function_byte_selected(
+        core,
+        SDIO_BACKPLANE_FUNCTION,
+        SDIO_SLEEP_CSR,
+        write_value,
+    ) {
+        Ok(response) => first_write_response = response,
+        Err(error) => last_error = Some(error),
+    }
+    match cmd52_write_function_byte_selected(
+        core,
+        SDIO_BACKPLANE_FUNCTION,
+        SDIO_SLEEP_CSR,
+        write_value,
+    ) {
+        Ok(response) => second_write_response = response,
+        Err(error) => last_error = Some(error),
+    }
+
+    let mut attempts = 0;
+    while attempts < SDIO_KSO_MAX_ATTEMPTS {
+        attempts += 1;
+
+        match cmd52_read_function_byte_selected(core, SDIO_BACKPLANE_FUNCTION, SDIO_SLEEP_CSR) {
+            Ok(read) => {
+                read_value = read.0;
+                read_response = read.1;
+                last_error = None;
+                if read_value != 0xff && (read_value & compare_value) == compare_value {
+                    return keep_awake_report(
+                        p,
+                        WifiSdioKeepAwakeStatus::Ready,
+                        attempts,
+                        write_value,
+                        first_write_response,
+                        second_write_response,
+                        retry_write_response,
+                        read_value,
+                        read_response,
+                        last_error,
+                    );
+                }
+            }
+            Err(error) => last_error = Some(error),
+        }
+
+        delay_ms(1);
+
+        match cmd52_write_function_byte_selected(
+            core,
+            SDIO_BACKPLANE_FUNCTION,
+            SDIO_SLEEP_CSR,
+            write_value,
+        ) {
+            Ok(response) => retry_write_response = response,
+            Err(error) => last_error = Some(error),
+        }
+    }
+
+    keep_awake_report(
+        p,
+        WifiSdioKeepAwakeStatus::Timeout,
+        attempts,
+        write_value,
+        first_write_response,
+        second_write_response,
+        retry_write_response,
+        read_value,
+        read_response,
+        last_error,
+    )
+}
+
+pub fn host_reset_lines(p: &Peripherals) -> WifiSdioHostResetReport {
+    let before = host_snapshot(p);
+    let core = &p.SDHC0.core;
+    let command_reset = software_reset_command_line(core);
+    let data_reset = software_reset_data_line(core);
+    let after = host_snapshot(p);
+
+    WifiSdioHostResetReport {
+        command_reset,
+        data_reset,
+        before,
+        after,
+    }
+}
+
+pub fn abort_read(p: &Peripherals) -> WifiSdioAbortReadReport {
+    let core = &p.SDHC0.core;
+    let mut io_abort_response = 0;
+    let mut frame_control_response = 0;
+    let mut last_error = None;
+
+    match cmd52_write_byte_selected(core, SDIO_CCCR_IO_ABORT, 2) {
+        Ok(response) => io_abort_response = response,
+        Err(error) => last_error = Some(error),
+    }
+    match cmd52_write_function_byte_selected(
+        core,
+        SDIO_BACKPLANE_FUNCTION,
+        SDIO_FRAME_CONTROL,
+        SDIO_FRAME_CONTROL_READ_TERMINATE,
+    ) {
+        Ok(response) => frame_control_response = response,
+        Err(error) => last_error = Some(error),
+    }
+
+    WifiSdioAbortReadReport {
+        io_abort_response,
+        frame_control_response,
+        last_error,
+        host: host_snapshot(p),
+    }
+}
+
 fn prepare_cyw43430_socram(p: &Peripherals) -> Result<SocramPrepared, SocramPrepareError> {
     let setup = setup_backplane(p);
     if !matches!(setup.status, WifiSdioBackplaneStatus::Ready) {
@@ -6606,6 +6952,78 @@ fn interrupt_ack_report(
         clear_response,
         clear_readback,
         final_response,
+        last_error,
+        host: host_snapshot(p),
+    }
+}
+
+fn interrupt_state_report(
+    p: &Peripherals,
+    status: WifiSdioInterruptStateStatus,
+    io_enable: u8,
+    io_ready: u8,
+    interrupt_enable: u8,
+    interrupt_pending: u8,
+    bus_control: u8,
+    io_enable_response: u32,
+    io_ready_response: u32,
+    interrupt_enable_response: u32,
+    interrupt_pending_response: u32,
+    bus_control_response: u32,
+    host_normal_int: u16,
+    host_error_int: u16,
+    last_error: Option<CommandError>,
+) -> WifiSdioInterruptStateReport {
+    WifiSdioInterruptStateReport {
+        status,
+        io_enable,
+        io_ready,
+        interrupt_enable,
+        interrupt_pending,
+        bus_control,
+        master_enabled: interrupt_enable & 0x01 != 0,
+        function1_enabled: interrupt_enable & 0x02 != 0,
+        function2_enabled: interrupt_enable & 0x04 != 0,
+        function1_ready: io_ready & 0x02 != 0,
+        function2_ready: io_ready & 0x04 != 0,
+        function1_pending: interrupt_pending & 0x02 != 0,
+        function2_pending: interrupt_pending & 0x04 != 0,
+        host_card_interrupt: host_normal_int & NORMAL_INT_CARD_INTERRUPT != 0,
+        io_enable_response,
+        io_ready_response,
+        interrupt_enable_response,
+        interrupt_pending_response,
+        bus_control_response,
+        host_normal_int,
+        host_error_int,
+        last_error,
+        host: host_snapshot(p),
+    }
+}
+
+fn keep_awake_report(
+    p: &Peripherals,
+    status: WifiSdioKeepAwakeStatus,
+    attempts: u16,
+    write_value: u8,
+    first_write_response: u32,
+    second_write_response: u32,
+    retry_write_response: u32,
+    read_value: u8,
+    read_response: u32,
+    last_error: Option<CommandError>,
+) -> WifiSdioKeepAwakeReport {
+    WifiSdioKeepAwakeReport {
+        status,
+        attempts,
+        write_value,
+        first_write_response,
+        second_write_response,
+        retry_write_response,
+        read_value,
+        read_response,
+        keep_wl_kso: read_value & SBSDIO_SLPCSR_KEEP_WL_KSO != 0,
+        wl_devon: read_value & SBSDIO_SLPCSR_WL_DEVON != 0,
         last_error,
         host: host_snapshot(p),
     }

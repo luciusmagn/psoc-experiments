@@ -2140,14 +2140,126 @@ directory read, raw-store write, raw-store read, evaluator load, and boot
 autoload on the currently inserted card. The current store is still a raw-sector
 Lisp store at sector =#x100=, not a FAT/exFAT filesystem.
 
+* 2026-06-23 Wi-Fi post-frame SDIO diagnostics
+
+Added four stateful Wi-Fi diagnostics:
+
+1. =(wifi-interrupt-state)= reads selected-card CCCR =IO_ENABLE=,
+   =IO_READY=, =INTERRUPT_ENABLE=, =INTERRUPT_PENDING=, and bus-control state
+   without reinitializing the card.
+2. =(wifi-keep-awake)= ports WHD's CYW43430-class KSO wake sequence by writing
+   function-1 =SDIO_SLEEP_CSR #x1001f= with =KEEP_WL_KSO= twice, then polling
+   for =KEEP_WL_KSO | WL_DEVON=.
+3. =(wifi-host-reset-lines)= resets only the PSoC SDHC command and data lines
+   and reports before/after host snapshots.
+4. =(wifi-abort-read)= ports WHD's read-abort sequence: CCCR =IOABORT= for
+   function 2, then function-1 =SDIO_FRAME_CONTROL= with =SFC_RF_TERM=.
+
+Live validation before consuming the startup frame:
+
+#+begin_example
+(wifi-keep-awake)
+=> ((status . ready)
+    (attempts . #x00000001)
+    (write-value . #x00000001)
+    (first-write-response . #x00001001)
+    (second-write-response . #x00001001)
+    (read-value . #x00000003)
+    (read-response . #x00001003)
+    (keep-wl-kso . #t)
+    (wl-devon . #t)
+    (last-error) ...)
+
+(wifi-interrupt-state)
+=> ((status . ready)
+    (CCCR.IO_ENABLE . #x00000006)
+    (CCCR.IO_READY . #x00000006)
+    (CCCR.INTERRUPT_ENABLE . #x00000005)
+    (CCCR.INTERRUPT_PENDING . #x00000006)
+    (CCCR.BUS_CONTROL . #x00000042)
+    (master-enabled . #t)
+    (function2-enabled . #t)
+    (function1-ready . #t)
+    (function2-ready . #t)
+    (function1-pending . #t)
+    (function2-pending . #t)
+    (host-card-interrupt . #t)
+    (last-error) ...)
+#+end_example
+
+This confirms that selected-card CMD52 reads are valid before the first F2
+frame. KSO wake succeeds and the CCCR interrupt-pending register shows F1 and
+F2 pending, while the interrupt-enable register has master plus F2 enabled.
+
+After reading the known-good 12-byte SDPCM startup frame, all subsequent direct
+register reads and writes return zero responses:
+
+#+begin_example
+(wifi-f2-read-frame)
+=> ((status . ready)
+    (length . #x0000000c)
+    (checksum . #x0000fff3)
+    (valid . #t)
+    (bytes #x0000000c #x00000000 #x000000f3 #x000000ff
+           #x00000000 #x00000001 #x00000000 #x0000000c
+           #x00000000 #x00000010 #x00000000 #x00000000)
+    (bus-data-credit . #x00000010) ...)
+
+(wifi-keep-awake)
+=> ((status . timeout)
+    (attempts . #x00000040)
+    (first-write-response . #x00000000)
+    (second-write-response . #x00000000)
+    (read-value . #x00000000)
+    (read-response . #x00000000)
+    (keep-wl-kso . #f)
+    (wl-devon . #f)
+    (last-error) ...)
+
+(wifi-host-reset-lines)
+=> ((command-reset . #t)
+    (data-reset . #t)
+    (before ... (PSTATE . #x03f30000) ...)
+    (after ... (PSTATE . #x03f30000) ...))
+
+(wifi-abort-read)
+=> ((io-abort-response . #x00000000)
+    (frame-control-response . #x00000000)
+    (last-error) ...)
+#+end_example
+
+A follow-up F2 header read then fails with an SDHC command-status error:
+
+#+begin_example
+(wifi-f2-read-header)
+=> ((status . cmd53-failed)
+    (last-error
+     (code . command-status-error)
+     (NORM_INT . #x00008100)
+     (ERR_INT . #x00000001)
+     (PSTATE . #x03f30207)
+     (CMD_R . #x0000353a)
+     (ARGUMENT . #x24000004)
+     (PSTATE.after-write . #x03f30000)
+     (NORM_INT.after-write . #x00000100)
+     (ERR_INT.after-write . #x00000000)) ...)
+#+end_example
+
+The current failure boundary is therefore the PSoC SDHC/CMD53 read completion
+path after the first F2 packet, not firmware upload, KSO wake, CCCR
+interrupt-state reads, or the SDPCM startup frame format. The next code change
+should compare our =configure_cmd53_read= / =read_cmd53_bytes= completion path
+against Infineon's =cyhal_sdio_bulk_transfer= and WHD's byte-mode F2 read path.
+
 * Next actions
 
 1. Add REPL history and better editing across continuation lines.
 2. Add a FAT/exFAT-aware storage layer after raw block reads/writes work.
 3. Test the newer Infineon target =infineon/cy8cxxa.cfg= as a replacement
    for obsolete =target/psoc6_2m.cfg=.
-4. Add a stateful CCCR =INTPEND= and host card-interrupt diagnostic after the
-   startup frame is consumed.
-5. Send the first host-to-device SDPCM control message after the credit update.
+4. Fix the PSoC SDHC CMD53 byte-mode read completion path after the first F2
+   startup frame.
+5. Send the first host-to-device SDPCM control message after CMD53 reads remain
+   usable post-frame.
 6. Start Wi-Fi from a known-good Infineon or Zephyr sample before trying
    to hand-port the full CYW4343W network stack.

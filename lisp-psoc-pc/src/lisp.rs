@@ -89,6 +89,10 @@ pub trait Board {
     fn wifi_f2_read_header(&mut self) -> WifiSdioF2HeaderReport;
     fn wifi_f2_read_frame(&mut self) -> WifiSdioF2FrameReport;
     fn wifi_ack_interrupts(&mut self) -> WifiSdioInterruptAckReport;
+    fn wifi_interrupt_state(&mut self) -> WifiSdioInterruptStateReport;
+    fn wifi_keep_awake(&mut self) -> WifiSdioKeepAwakeReport;
+    fn wifi_host_reset_lines(&mut self) -> WifiSdioHostResetReport;
+    fn wifi_abort_read(&mut self) -> WifiSdioAbortReadReport;
     fn wifi_core_state(&mut self, base: u32) -> WifiSdioCoreStateReport;
     fn wifi_reset_core(&mut self, base: u32) -> WifiSdioCoreResetReport;
     fn sdhc_registers(&mut self) -> SdhcReport;
@@ -602,6 +606,65 @@ pub struct WifiSdioInterruptAckReport {
 }
 
 #[derive(Clone, Copy)]
+pub struct WifiSdioInterruptStateReport {
+    pub status: &'static [u8],
+    pub io_enable: u8,
+    pub io_ready: u8,
+    pub interrupt_enable: u8,
+    pub interrupt_pending: u8,
+    pub bus_control: u8,
+    pub master_enabled: bool,
+    pub function1_enabled: bool,
+    pub function2_enabled: bool,
+    pub function1_ready: bool,
+    pub function2_ready: bool,
+    pub function1_pending: bool,
+    pub function2_pending: bool,
+    pub host_card_interrupt: bool,
+    pub io_enable_response: u32,
+    pub io_ready_response: u32,
+    pub interrupt_enable_response: u32,
+    pub interrupt_pending_response: u32,
+    pub bus_control_response: u32,
+    pub host_normal_int: u16,
+    pub host_error_int: u16,
+    pub last_error: Option<WifiSdioCommandErrorReport>,
+    pub host: WifiSdioHostReport,
+}
+
+#[derive(Clone, Copy)]
+pub struct WifiSdioKeepAwakeReport {
+    pub status: &'static [u8],
+    pub attempts: u16,
+    pub write_value: u8,
+    pub first_write_response: u32,
+    pub second_write_response: u32,
+    pub retry_write_response: u32,
+    pub read_value: u8,
+    pub read_response: u32,
+    pub keep_wl_kso: bool,
+    pub wl_devon: bool,
+    pub last_error: Option<WifiSdioCommandErrorReport>,
+    pub host: WifiSdioHostReport,
+}
+
+#[derive(Clone, Copy)]
+pub struct WifiSdioHostResetReport {
+    pub command_reset: bool,
+    pub data_reset: bool,
+    pub before: WifiSdioHostReport,
+    pub after: WifiSdioHostReport,
+}
+
+#[derive(Clone, Copy)]
+pub struct WifiSdioAbortReadReport {
+    pub io_abort_response: u32,
+    pub frame_control_response: u32,
+    pub last_error: Option<WifiSdioCommandErrorReport>,
+    pub host: WifiSdioHostReport,
+}
+
+#[derive(Clone, Copy)]
 pub struct WifiSdioCoreStateReport {
     pub status: &'static [u8],
     pub setup_status: &'static [u8],
@@ -725,6 +788,10 @@ pub enum Primitive {
     WifiF2ReadHeader,
     WifiF2ReadFrame,
     WifiAckInterrupts,
+    WifiInterruptState,
+    WifiKeepAwake,
+    WifiHostResetLines,
+    WifiAbortRead,
     WifiCoreState,
     WifiResetCore,
     SdhcRegs,
@@ -797,6 +864,10 @@ impl Primitive {
             Self::WifiF2ReadHeader => "wifi-f2-read-header",
             Self::WifiF2ReadFrame => "wifi-f2-read-frame",
             Self::WifiAckInterrupts => "wifi-ack-interrupts",
+            Self::WifiInterruptState => "wifi-interrupt-state",
+            Self::WifiKeepAwake => "wifi-keep-awake",
+            Self::WifiHostResetLines => "wifi-host-reset-lines",
+            Self::WifiAbortRead => "wifi-abort-read",
             Self::WifiCoreState => "wifi-core-state",
             Self::WifiResetCore => "wifi-reset-core",
             Self::SdhcRegs => "sdhc-regs",
@@ -1024,6 +1095,10 @@ impl Machine {
         self.install_primitive(b"wifi-f2-read-header", Primitive::WifiF2ReadHeader)?;
         self.install_primitive(b"wifi-f2-read-frame", Primitive::WifiF2ReadFrame)?;
         self.install_primitive(b"wifi-ack-interrupts", Primitive::WifiAckInterrupts)?;
+        self.install_primitive(b"wifi-interrupt-state", Primitive::WifiInterruptState)?;
+        self.install_primitive(b"wifi-keep-awake", Primitive::WifiKeepAwake)?;
+        self.install_primitive(b"wifi-host-reset-lines", Primitive::WifiHostResetLines)?;
+        self.install_primitive(b"wifi-abort-read", Primitive::WifiAbortRead)?;
         self.install_primitive(b"wifi-core-state", Primitive::WifiCoreState)?;
         self.install_primitive(b"wifi-reset-core", Primitive::WifiResetCore)?;
         self.install_primitive(b"sdhc-regs", Primitive::SdhcRegs)?;
@@ -1799,6 +1874,22 @@ impl Machine {
                 self.expect_count(args, 0)?;
                 self.wifi_sdio_interrupt_ack_report(board.wifi_ack_interrupts())
             }
+            Primitive::WifiInterruptState => {
+                self.expect_count(args, 0)?;
+                self.wifi_sdio_interrupt_state_report(board.wifi_interrupt_state())
+            }
+            Primitive::WifiKeepAwake => {
+                self.expect_count(args, 0)?;
+                self.wifi_sdio_keep_awake_report(board.wifi_keep_awake())
+            }
+            Primitive::WifiHostResetLines => {
+                self.expect_count(args, 0)?;
+                self.wifi_sdio_host_reset_report(board.wifi_host_reset_lines())
+            }
+            Primitive::WifiAbortRead => {
+                self.expect_count(args, 0)?;
+                self.wifi_sdio_abort_read_report(board.wifi_abort_read())
+            }
             Primitive::WifiCoreState => {
                 self.expect_count(args, 1)?;
                 let base = self.expect_u32(args[0])?;
@@ -2180,6 +2271,10 @@ impl Machine {
             b"wifi-f2-read-header",
             b"wifi-f2-read-frame",
             b"wifi-ack-interrupts",
+            b"wifi-interrupt-state",
+            b"wifi-keep-awake",
+            b"wifi-host-reset-lines",
+            b"wifi-abort-read",
             b"wifi-core-state",
             b"wifi-reset-core",
             b"sdhc-regs",
@@ -3041,6 +3136,139 @@ impl Machine {
             last_error,
             host,
         ];
+        self.make_list_from_values(&entries)
+    }
+
+    fn wifi_sdio_interrupt_state_report(
+        &mut self,
+        report: WifiSdioInterruptStateReport,
+    ) -> LispResult<Value> {
+        let status = self.symbol_entry(b"status", report.status)?;
+        let io_enable = self.word_entry(b"CCCR.IO_ENABLE", report.io_enable as u32)?;
+        let io_ready = self.word_entry(b"CCCR.IO_READY", report.io_ready as u32)?;
+        let interrupt_enable =
+            self.word_entry(b"CCCR.INTERRUPT_ENABLE", report.interrupt_enable as u32)?;
+        let interrupt_pending =
+            self.word_entry(b"CCCR.INTERRUPT_PENDING", report.interrupt_pending as u32)?;
+        let bus_control = self.word_entry(b"CCCR.BUS_CONTROL", report.bus_control as u32)?;
+        let master_enabled = self.bool_entry(b"master-enabled", report.master_enabled)?;
+        let function1_enabled = self.bool_entry(b"function1-enabled", report.function1_enabled)?;
+        let function2_enabled = self.bool_entry(b"function2-enabled", report.function2_enabled)?;
+        let function1_ready = self.bool_entry(b"function1-ready", report.function1_ready)?;
+        let function2_ready = self.bool_entry(b"function2-ready", report.function2_ready)?;
+        let function1_pending = self.bool_entry(b"function1-pending", report.function1_pending)?;
+        let function2_pending = self.bool_entry(b"function2-pending", report.function2_pending)?;
+        let host_card_interrupt =
+            self.bool_entry(b"host-card-interrupt", report.host_card_interrupt)?;
+        let io_enable_response =
+            self.word_entry(b"CCCR.IO_ENABLE.response", report.io_enable_response)?;
+        let io_ready_response =
+            self.word_entry(b"CCCR.IO_READY.response", report.io_ready_response)?;
+        let interrupt_enable_response = self.word_entry(
+            b"CCCR.INTERRUPT_ENABLE.response",
+            report.interrupt_enable_response,
+        )?;
+        let interrupt_pending_response = self.word_entry(
+            b"CCCR.INTERRUPT_PENDING.response",
+            report.interrupt_pending_response,
+        )?;
+        let bus_control_response =
+            self.word_entry(b"CCCR.BUS_CONTROL.response", report.bus_control_response)?;
+        let host_normal_int = self.word_entry(b"HOST.NORM_INT", report.host_normal_int as u32)?;
+        let host_error_int = self.word_entry(b"HOST.ERR_INT", report.host_error_int as u32)?;
+        let last_error = self.wifi_sdio_error_entry(b"last-error", report.last_error)?;
+        let host = self.wifi_sdio_host_report(report.host)?;
+        let host = self.entry(b"SDHC0", host)?;
+        let entries = [
+            status,
+            io_enable,
+            io_ready,
+            interrupt_enable,
+            interrupt_pending,
+            bus_control,
+            master_enabled,
+            function1_enabled,
+            function2_enabled,
+            function1_ready,
+            function2_ready,
+            function1_pending,
+            function2_pending,
+            host_card_interrupt,
+            io_enable_response,
+            io_ready_response,
+            interrupt_enable_response,
+            interrupt_pending_response,
+            bus_control_response,
+            host_normal_int,
+            host_error_int,
+            last_error,
+            host,
+        ];
+        self.make_list_from_values(&entries)
+    }
+
+    fn wifi_sdio_keep_awake_report(
+        &mut self,
+        report: WifiSdioKeepAwakeReport,
+    ) -> LispResult<Value> {
+        let status = self.symbol_entry(b"status", report.status)?;
+        let attempts = self.word_entry(b"attempts", report.attempts as u32)?;
+        let write_value = self.word_entry(b"write-value", report.write_value as u32)?;
+        let first_write_response =
+            self.word_entry(b"first-write-response", report.first_write_response)?;
+        let second_write_response =
+            self.word_entry(b"second-write-response", report.second_write_response)?;
+        let retry_write_response =
+            self.word_entry(b"retry-write-response", report.retry_write_response)?;
+        let read_value = self.word_entry(b"read-value", report.read_value as u32)?;
+        let read_response = self.word_entry(b"read-response", report.read_response)?;
+        let keep_wl_kso = self.bool_entry(b"keep-wl-kso", report.keep_wl_kso)?;
+        let wl_devon = self.bool_entry(b"wl-devon", report.wl_devon)?;
+        let last_error = self.wifi_sdio_error_entry(b"last-error", report.last_error)?;
+        let host = self.wifi_sdio_host_report(report.host)?;
+        let host = self.entry(b"SDHC0", host)?;
+        let entries = [
+            status,
+            attempts,
+            write_value,
+            first_write_response,
+            second_write_response,
+            retry_write_response,
+            read_value,
+            read_response,
+            keep_wl_kso,
+            wl_devon,
+            last_error,
+            host,
+        ];
+        self.make_list_from_values(&entries)
+    }
+
+    fn wifi_sdio_host_reset_report(
+        &mut self,
+        report: WifiSdioHostResetReport,
+    ) -> LispResult<Value> {
+        let command_reset = self.bool_entry(b"command-reset", report.command_reset)?;
+        let data_reset = self.bool_entry(b"data-reset", report.data_reset)?;
+        let before = self.wifi_sdio_host_report(report.before)?;
+        let before = self.entry(b"before", before)?;
+        let after = self.wifi_sdio_host_report(report.after)?;
+        let after = self.entry(b"after", after)?;
+        let entries = [command_reset, data_reset, before, after];
+        self.make_list_from_values(&entries)
+    }
+
+    fn wifi_sdio_abort_read_report(
+        &mut self,
+        report: WifiSdioAbortReadReport,
+    ) -> LispResult<Value> {
+        let io_abort_response = self.word_entry(b"io-abort-response", report.io_abort_response)?;
+        let frame_control_response =
+            self.word_entry(b"frame-control-response", report.frame_control_response)?;
+        let last_error = self.wifi_sdio_error_entry(b"last-error", report.last_error)?;
+        let host = self.wifi_sdio_host_report(report.host)?;
+        let host = self.entry(b"SDHC0", host)?;
+        let entries = [io_abort_response, frame_control_response, last_error, host];
         self.make_list_from_values(&entries)
     }
 

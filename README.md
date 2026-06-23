@@ -45,7 +45,10 @@ WLAN ARM core, waits for HT clock, and polls function 2 readiness.
 the already-started firmware session. `(wifi-f2-read-frame)` reads the full
 initial 12-byte SDPCM startup frame and decodes its control fields.
 `(wifi-ack-interrupts)` reports and clears device-side SDIO software interrupt
-bits when they are present.
+bits when they are present. `(wifi-interrupt-state)`, `(wifi-keep-awake)`,
+`(wifi-host-reset-lines)`, and `(wifi-abort-read)` are stateful diagnostics for
+CCCR interrupt state, WHD KSO wake, PSoC SDHC line reset, and WHD read-abort
+behavior after the startup frame.
 
 To keep the large vendor tools out of git, install ModusToolbox into the
 ignored `.local/ModusToolbox` directory:
