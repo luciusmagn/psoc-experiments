@@ -7596,8 +7596,9 @@ fn wait_command_complete(core: &sdhc0::CORE, trace: CommandTrace) -> Result<(), 
 }
 
 fn clear_interrupts(core: &sdhc0::CORE) {
+    let normal_clear = NORMAL_INT_ALL & !NORMAL_INT_CARD_INTERRUPT;
     core.normal_int_stat_r
-        .write(|w| unsafe { w.bits(NORMAL_INT_ALL) });
+        .write(|w| unsafe { w.bits(normal_clear) });
     core.error_int_stat_r
         .write(|w| unsafe { w.bits(ERROR_INT_ALL) });
 }

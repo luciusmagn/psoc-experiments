@@ -2887,6 +2887,70 @@ responses:
     (last-error))
 #+end_example
 
+* 2026-06-23 Preserve SDIO card interrupt status
+
+Changed the Wi-Fi SDHC interrupt cleanup helper so it no longer clears the
+host-side =NORMAL_INT_CARD_INTERRUPT= bit as collateral damage. The Infineon
+HAL clears command and transfer completion around SDIO operations and leaves
+card-interrupt state to the SDIO protocol layer, so preserving this bit is a
+closer match for the vendor stack.
+
+Validation:
+
+#+begin_example
+cargo fmt
+tools/build-flash-lisp.scm --wifi-firmware
+tools/serial-console.scm
+tools/send-lisp.scm '(+ 1 2 3)'
+tools/send-lisp.scm '(wifi-start-firmware)'
+tools/send-lisp.scm '(wifi-poll-read-frame)'
+#+end_example
+
+The firmware still boots, evaluates Lisp, downloads the CYW4343W firmware, and
+reads the first function-2 startup frame. Preserving the card-interrupt bit does
+not fix the post-frame selected-card CMD52 failure:
+
+#+begin_example
+(wifi-poll-read-frame)
+=> ((ack.status . ready)
+    (ack.INT_STATUS.before . #x008200c0)
+    (ack.INT_STATUS.clear . #x000000c0)
+    (ack.INT_STATUS.after . #x00820000)
+    (frame.status . ready)
+    (frame.valid . #t)
+    (frame.length . #x0000000c)
+    (frame.channel . #x00000001)
+    (frame.bus-data-credit . #x00000010)
+    (post.status . io-enable-read-failed)
+    (post.HOST.NORM_INT . #x00000100)
+    (post.HOST.ERR_INT . #x00000000)
+    (post.last-error (code . command-status-error)
+      (NORM_INT . #x00008100)
+      (ERR_INT . #x00000001)
+      (PSTATE . #x03f30001)
+      (CMD_R . #x0000341a)
+      (ARGUMENT . #x00000400)
+      (PSTATE.after-write . #x03f30000)
+      (NORM_INT.after-write . #x00000100)
+      (ERR_INT.after-write . #x00000000)))
+#+end_example
+
+Also tested explicit KSO keep-awake around the frame read:
+
+#+begin_example
+tools/send-lisp.scm '(wifi-start-firmware)'
+tools/send-lisp.scm '(wifi-keep-awake)'
+tools/send-lisp.scm '(wifi-f2-read-frame)'
+tools/send-lisp.scm '(wifi-keep-awake)'
+tools/send-lisp.scm '(wifi-interrupt-state)'
+#+end_example
+
+The first keep-awake succeeds with =read-value . #x00000003=. After the valid
+12-byte frame read, keep-awake times out with zero CMD52 responses and
+=wifi-interrupt-state= again returns zero selected-card CCCR values. The next
+step should focus on the function-2 receive transaction itself and the first
+SDPCM control exchange rather than host interrupt clearing or KSO retry alone.
+
 * Next actions
 
 1. Add REPL history and better editing across continuation lines.
