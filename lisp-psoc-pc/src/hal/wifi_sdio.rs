@@ -54,10 +54,12 @@ const SDIO_CMD53_BLOCK_BYTES: u16 = 64;
 const SDIO_CMD53_BLOCK_WORDS: usize = 16;
 const SDPCM_HEADER_BYTES: u8 = 12;
 const SDPCM_WLC_UP_PACKET_BYTES: u8 = 28;
+const SDPCM_GET_VERSION_PACKET_BYTES: u8 = 32;
 const SDPCM_CONTROL_CHANNEL: u8 = 0;
 const CDC_SET_FLAG: u32 = 0x02;
 const CDC_IOCTL_ID_SHIFT: u8 = 16;
 const WLC_UP_IOCTL: u32 = 2;
+const WLC_GET_VERSION_IOCTL: u32 = 1;
 const SOCSRAM_BLOCK_PROBE_NO_MISMATCH: u32 = 0xffff_ffff;
 const SDIO_CCCR_IO_ENABLE: u32 = 0x02;
 const SDIO_CCCR_IO_READY: u32 = 0x03;
@@ -282,6 +284,16 @@ pub enum WifiSdioWlcUpStatus {
     SendFailed,
     StartupFrameFailed,
     UnexpectedStartupFrame,
+    ResponseFrameFailed,
+    UnexpectedResponseFrame,
+    CdcStatusError,
+}
+
+#[derive(Clone, Copy)]
+pub enum WifiSdioGetVersionStatus {
+    Ready,
+    HtRequestFailed,
+    SendFailed,
     ResponseFrameFailed,
     UnexpectedResponseFrame,
     CdcStatusError,
@@ -1032,6 +1044,36 @@ pub struct WifiSdioWlcUpReport {
     pub ht_last_error: Option<CommandError>,
     pub send_last_error: Option<CommandError>,
     pub startup_last_error: Option<CommandError>,
+    pub response_last_error: Option<CommandError>,
+    pub host_normal_int: u16,
+    pub host_error_int: u16,
+    pub host: WifiSdioHostSnapshot,
+}
+
+pub struct WifiSdioGetVersionReport {
+    pub status: WifiSdioGetVersionStatus,
+    pub ht_status: WifiSdioHtRequestStatus,
+    pub ht_attempts: u16,
+    pub ht_write_response: u32,
+    pub ht_read_value: u8,
+    pub ht_read_response: u32,
+    pub ht_available: bool,
+    pub send_status: WifiSdioF2ControlStatus,
+    pub send_packet_length: u8,
+    pub send_write_response: u32,
+    pub response_status: WifiSdioF2FrameStatus,
+    pub response_length: u16,
+    pub response_sequence: u8,
+    pub response_channel: u8,
+    pub response_bus_data_credit: u8,
+    pub cdc_command: u32,
+    pub cdc_length: u32,
+    pub cdc_flags: u32,
+    pub cdc_id: u16,
+    pub cdc_status: u32,
+    pub version: u32,
+    pub ht_last_error: Option<CommandError>,
+    pub send_last_error: Option<CommandError>,
     pub response_last_error: Option<CommandError>,
     pub host_normal_int: u16,
     pub host_error_int: u16,
@@ -4336,6 +4378,97 @@ pub fn send_wlc_up(p: &Peripherals) -> WifiSdioF2ControlReport {
     }
 }
 
+fn send_get_version(p: &Peripherals) -> WifiSdioF2ControlReport {
+    let initial_tx_credit = 0x11;
+    let packet = get_version_control_packet_words();
+    let core = &p.SDHC0.core;
+    let descriptor_address =
+        prepare_cmd53_write_words(&packet, SDPCM_GET_VERSION_PACKET_BYTES as u16);
+    if !configure_cmd53_write_adma(
+        core,
+        SDPCM_GET_VERSION_PACKET_BYTES,
+        false,
+        descriptor_address,
+    ) {
+        return f2_control_report(
+            p,
+            WifiSdioF2ControlStatus::DataSetupBusy,
+            initial_tx_credit,
+            SDPCM_GET_VERSION_PACKET_BYTES,
+            0,
+            None,
+        );
+    }
+
+    let argument = cmd53_argument(
+        true,
+        2,
+        false,
+        true,
+        0,
+        SDPCM_GET_VERSION_PACKET_BYTES as u16,
+    );
+    let write_response = match send_command(
+        core,
+        Command {
+            index: 53,
+            argument,
+            response: ResponseType::Len48,
+            command_type: CommandType::Normal,
+            data_present: true,
+            crc_check: true,
+            index_check: true,
+        },
+    ) {
+        Ok(response) => response,
+        Err(error) => {
+            return f2_control_report(
+                p,
+                WifiSdioF2ControlStatus::Cmd53Failed,
+                initial_tx_credit,
+                SDPCM_GET_VERSION_PACKET_BYTES,
+                0,
+                Some(error),
+            )
+        }
+    };
+
+    match wait_cmd53_adma_write_complete(core) {
+        Ok(()) => f2_control_report(
+            p,
+            WifiSdioF2ControlStatus::Ready,
+            initial_tx_credit,
+            SDPCM_GET_VERSION_PACKET_BYTES,
+            write_response,
+            None,
+        ),
+        Err(WifiSdioBackplaneWrite32Status::TransferTimeout) => f2_control_report(
+            p,
+            WifiSdioF2ControlStatus::TransferTimeout,
+            initial_tx_credit,
+            SDPCM_GET_VERSION_PACKET_BYTES,
+            write_response,
+            None,
+        ),
+        Err(WifiSdioBackplaneWrite32Status::DataLineBusy) => f2_control_report(
+            p,
+            WifiSdioF2ControlStatus::DataLineBusy,
+            initial_tx_credit,
+            SDPCM_GET_VERSION_PACKET_BYTES,
+            write_response,
+            None,
+        ),
+        Err(_) => f2_control_report(
+            p,
+            WifiSdioF2ControlStatus::Cmd53Failed,
+            initial_tx_credit,
+            SDPCM_GET_VERSION_PACKET_BYTES,
+            write_response,
+            None,
+        ),
+    }
+}
+
 pub fn wlc_up(p: &Peripherals) -> WifiSdioWlcUpReport {
     let mut report = empty_wlc_up_report(p);
 
@@ -4414,6 +4547,69 @@ pub fn wlc_up(p: &Peripherals) -> WifiSdioWlcUpReport {
     }
 
     finish_wlc_up_report(p, report)
+}
+
+pub fn get_version(p: &Peripherals) -> WifiSdioGetVersionReport {
+    let mut report = empty_get_version_report(p);
+
+    let ht = request_ht(p);
+    report.ht_status = ht.status;
+    report.ht_attempts = ht.attempts;
+    report.ht_write_response = ht.write_response;
+    report.ht_read_value = ht.read_value;
+    report.ht_read_response = ht.read_response;
+    report.ht_available = ht.ht_available;
+    report.ht_last_error = ht.last_error;
+    if !matches!(ht.status, WifiSdioHtRequestStatus::Ready) {
+        report.status = WifiSdioGetVersionStatus::HtRequestFailed;
+        return finish_get_version_report(p, report);
+    }
+
+    let send = send_get_version(p);
+    report.send_status = send.status;
+    report.send_packet_length = send.packet_length;
+    report.send_write_response = send.write_response;
+    report.send_last_error = send.write_last_error;
+    if !matches!(send.status, WifiSdioF2ControlStatus::Ready) {
+        report.status = WifiSdioGetVersionStatus::SendFailed;
+        return finish_get_version_report(p, report);
+    }
+
+    let response = f2_read_frame(p);
+    report.response_status = response.status;
+    report.response_length = response.length;
+    report.response_sequence = response.sequence;
+    report.response_channel = response.channel;
+    report.response_bus_data_credit = response.bus_data_credit;
+    report.response_last_error = response.last_error;
+    if !matches!(response.status, WifiSdioF2FrameStatus::Ready) {
+        report.status = WifiSdioGetVersionStatus::ResponseFrameFailed;
+        return finish_get_version_report(p, report);
+    }
+    if !response.valid
+        || response.length < (SDPCM_HEADER_BYTES as u16 + 16 + 4)
+        || response.header_length != SDPCM_HEADER_BYTES
+        || response.channel != SDPCM_CONTROL_CHANNEL
+    {
+        report.status = WifiSdioGetVersionStatus::UnexpectedResponseFrame;
+        return finish_get_version_report(p, report);
+    }
+
+    report.cdc_command = read_le_u32(&response.bytes, 12);
+    report.cdc_length = read_le_u32(&response.bytes, 16);
+    report.cdc_flags = read_le_u32(&response.bytes, 20);
+    report.cdc_id = (report.cdc_flags >> CDC_IOCTL_ID_SHIFT) as u16;
+    report.cdc_status = read_le_u32(&response.bytes, 24);
+    report.version = read_le_u32(&response.bytes, 28);
+    if report.cdc_command != WLC_GET_VERSION_IOCTL || report.cdc_id != 2 {
+        report.status = WifiSdioGetVersionStatus::UnexpectedResponseFrame;
+    } else if report.cdc_status != 0 {
+        report.status = WifiSdioGetVersionStatus::CdcStatusError;
+    } else {
+        report.status = WifiSdioGetVersionStatus::Ready;
+    }
+
+    finish_get_version_report(p, report)
 }
 
 pub fn ack_interrupts(p: &Peripherals) -> WifiSdioInterruptAckReport {
@@ -7528,6 +7724,21 @@ fn wlc_up_control_packet_words() -> [u32; SDIO_CMD53_BLOCK_WORDS] {
     bytes_to_words(&bytes)
 }
 
+fn get_version_control_packet_words() -> [u32; SDIO_CMD53_BLOCK_WORDS] {
+    let mut bytes = [0u8; SDIO_CMD53_BLOCK_BYTES as usize];
+    write_le_u16(&mut bytes, 0, SDPCM_GET_VERSION_PACKET_BYTES as u16);
+    write_le_u16(&mut bytes, 2, !(SDPCM_GET_VERSION_PACKET_BYTES as u16));
+    bytes[4] = 1;
+    bytes[5] = SDPCM_CONTROL_CHANNEL;
+    bytes[7] = SDPCM_HEADER_BYTES;
+    write_le_u32(&mut bytes, 12, WLC_GET_VERSION_IOCTL);
+    write_le_u32(&mut bytes, 16, 4);
+    write_le_u32(&mut bytes, 20, 2u32 << CDC_IOCTL_ID_SHIFT);
+    write_le_u32(&mut bytes, 24, 0);
+    write_le_u32(&mut bytes, 28, 0);
+    bytes_to_words(&bytes)
+}
+
 fn write_le_u16(bytes: &mut [u8; SDIO_CMD53_BLOCK_BYTES as usize], offset: usize, value: u16) {
     bytes[offset] = value as u8;
     bytes[offset + 1] = (value >> 8) as u8;
@@ -7680,6 +7891,49 @@ fn empty_wlc_up_report(p: &Peripherals) -> WifiSdioWlcUpReport {
 }
 
 fn finish_wlc_up_report(p: &Peripherals, mut report: WifiSdioWlcUpReport) -> WifiSdioWlcUpReport {
+    let core = &p.SDHC0.core;
+    report.host_normal_int = core.normal_int_stat_r.read().bits();
+    report.host_error_int = core.error_int_stat_r.read().bits();
+    report.host = host_snapshot(p);
+    report
+}
+
+fn empty_get_version_report(p: &Peripherals) -> WifiSdioGetVersionReport {
+    WifiSdioGetVersionReport {
+        status: WifiSdioGetVersionStatus::HtRequestFailed,
+        ht_status: WifiSdioHtRequestStatus::Timeout,
+        ht_attempts: 0,
+        ht_write_response: 0,
+        ht_read_value: 0,
+        ht_read_response: 0,
+        ht_available: false,
+        send_status: WifiSdioF2ControlStatus::NotRun,
+        send_packet_length: 0,
+        send_write_response: 0,
+        response_status: WifiSdioF2FrameStatus::NotRun,
+        response_length: 0,
+        response_sequence: 0,
+        response_channel: 0,
+        response_bus_data_credit: 0,
+        cdc_command: 0,
+        cdc_length: 0,
+        cdc_flags: 0,
+        cdc_id: 0,
+        cdc_status: 0,
+        version: 0,
+        ht_last_error: None,
+        send_last_error: None,
+        response_last_error: None,
+        host_normal_int: 0,
+        host_error_int: 0,
+        host: host_snapshot(p),
+    }
+}
+
+fn finish_get_version_report(
+    p: &Peripherals,
+    mut report: WifiSdioGetVersionReport,
+) -> WifiSdioGetVersionReport {
     let core = &p.SDHC0.core;
     report.host_normal_int = core.normal_int_stat_r.read().bits();
     report.host_error_int = core.error_int_stat_r.read().bits();

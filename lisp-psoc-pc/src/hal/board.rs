@@ -520,6 +520,10 @@ impl lisp::Board for PsocBoard<'_> {
         wifi_sdio_wlc_up_report(wifi_sdio::wlc_up(self.p))
     }
 
+    fn wifi_get_version(&mut self) -> lisp::WifiSdioGetVersionReport {
+        wifi_sdio_get_version_report(wifi_sdio::get_version(self.p))
+    }
+
     fn wifi_f2_read_frame_abort(&mut self) -> lisp::WifiSdioF2AbortProbeReport {
         let frame = wifi_sdio::f2_read_frame(self.p);
         let abort = wifi_sdio::abort_read(self.p);
@@ -1078,6 +1082,19 @@ fn wifi_sdio_wlc_up_status(status: wifi_sdio::WifiSdioWlcUpStatus) -> &'static [
     }
 }
 
+fn wifi_sdio_get_version_status(status: wifi_sdio::WifiSdioGetVersionStatus) -> &'static [u8] {
+    match status {
+        wifi_sdio::WifiSdioGetVersionStatus::Ready => b"ready",
+        wifi_sdio::WifiSdioGetVersionStatus::HtRequestFailed => b"ht-request-failed",
+        wifi_sdio::WifiSdioGetVersionStatus::SendFailed => b"send-failed",
+        wifi_sdio::WifiSdioGetVersionStatus::ResponseFrameFailed => b"response-frame-failed",
+        wifi_sdio::WifiSdioGetVersionStatus::UnexpectedResponseFrame => {
+            b"unexpected-response-frame"
+        }
+        wifi_sdio::WifiSdioGetVersionStatus::CdcStatusError => b"cdc-status-error",
+    }
+}
+
 fn wifi_sdio_interrupt_ack_status(status: wifi_sdio::WifiSdioInterruptAckStatus) -> &'static [u8] {
     match status {
         wifi_sdio::WifiSdioInterruptAckStatus::Ready => b"ready",
@@ -1503,6 +1520,42 @@ fn wifi_sdio_wlc_up_report(report: wifi_sdio::WifiSdioWlcUpReport) -> lisp::Wifi
         startup_last_error: report
             .startup_last_error
             .map(wifi_sdio_command_error_report),
+        response_last_error: report
+            .response_last_error
+            .map(wifi_sdio_command_error_report),
+        host_normal_int: report.host_normal_int,
+        host_error_int: report.host_error_int,
+        host: wifi_sdio_host_report(report.host),
+    }
+}
+
+fn wifi_sdio_get_version_report(
+    report: wifi_sdio::WifiSdioGetVersionReport,
+) -> lisp::WifiSdioGetVersionReport {
+    lisp::WifiSdioGetVersionReport {
+        status: wifi_sdio_get_version_status(report.status),
+        ht_status: wifi_sdio_ht_request_status(report.ht_status),
+        ht_attempts: report.ht_attempts,
+        ht_write_response: report.ht_write_response,
+        ht_read_value: report.ht_read_value,
+        ht_read_response: report.ht_read_response,
+        ht_available: report.ht_available,
+        send_status: wifi_sdio_f2_control_status(report.send_status),
+        send_packet_length: report.send_packet_length,
+        send_write_response: report.send_write_response,
+        response_status: wifi_sdio_f2_frame_status(report.response_status),
+        response_length: report.response_length,
+        response_sequence: report.response_sequence,
+        response_channel: report.response_channel,
+        response_bus_data_credit: report.response_bus_data_credit,
+        cdc_command: report.cdc_command,
+        cdc_length: report.cdc_length,
+        cdc_flags: report.cdc_flags,
+        cdc_id: report.cdc_id,
+        cdc_status: report.cdc_status,
+        version: report.version,
+        ht_last_error: report.ht_last_error.map(wifi_sdio_command_error_report),
+        send_last_error: report.send_last_error.map(wifi_sdio_command_error_report),
         response_last_error: report
             .response_last_error
             .map(wifi_sdio_command_error_report),
