@@ -2528,6 +2528,85 @@ next investigation should compare the remaining WHD post-frame path, especially
 read-abort semantics, retry delays, and the first host-to-device SDPCM control
 message, before more SDHC data-path rewrites.
 
+* 2026-06-23 Wi-Fi inline F2 read-abort probe
+
+Added =(wifi-f2-read-frame-abort)= to remove REPL timing from the post-frame
+SDIO failure. The primitive reads the first F2 SDPCM frame, immediately issues
+the WHD-style read abort sequence, then samples selected CCCR state.
+
+Validation build and flash:
+
+#+begin_example
+tools/build-lisp.scm --wifi-firmware
+tools/flash-lisp.scm
+#+end_example
+
+The CYW4343W firmware still starts and reaches F2 ready:
+
+#+begin_example
+(wifi-start-firmware)
+=> ((status . ready)
+    (firmware-status . ready)
+    (setup-status . ready)
+    (read-status . ready)
+    (write-status . ready)
+    (firmware-bytes . #x00066e2d)
+    (nvram-bytes . #x00000286)
+    (IOEN . #x00000006)
+    (IORDY . #x00000006)
+    (F2-attempts . #x0000001f)
+    (last-response . #x00001006) ...)
+#+end_example
+
+The inline probe confirms that the frame read itself is good, but an immediate
+F0 =IO_ABORT= command fails and selected-card reads remain unusable afterward:
+
+#+begin_example
+(wifi-f2-read-frame-abort)
+=> ((frame.status . ready)
+    (frame.valid . #t)
+    (frame.length . #x0000000c)
+    (frame.channel . #x00000001)
+    (frame.bus-data-credit . #x00000010)
+    (frame.header-response . #x00001000)
+    (frame.body-response . #x00001000)
+    (abort.io-abort-response . #x00000000)
+    (abort.frame-control-response . #x00001000)
+    (post.CCCR.IO_ENABLE . #x00000000)
+    (post.CCCR.IO_READY . #x00000000)
+    (post.CCCR.INTPEND . #x00000000)
+    (post.CCCR.IO_ENABLE.response . #x00000000)
+    (post.CCCR.IO_READY.response . #x00000000)
+    (post.CCCR.INTPEND.response . #x00000000)
+    (post.HOST.NORM_INT . #x00000100)
+    (post.HOST.ERR_INT . #x00000000)
+    (frame.last-error)
+    (abort.last-error
+     (code . command-status-error)
+     (NORM_INT . #x00008100)
+     (ERR_INT . #x00000001)
+     (PSTATE . #x03f30001)
+     (CMD_R . #x0000341a)
+     (ARGUMENT . #x80000c02)
+     (PSTATE.after-write . #x03d30000)
+     (NORM_INT.after-write . #x00000100)
+     (ERR_INT.after-write . #x00000000))
+    (post.last-error
+     (code . command-status-error)
+     (ARGUMENT . #x00000600) ...))
+#+end_example
+
+Running =(wifi-host-reset-lines)= after this state resets the host command and
+data lines, but does not restore valid CMD52 responses. A follow-up
+=(wifi-interrupt-state)= still returns zero CCCR values and =(wifi-keep-awake)=
+still times out with zero responses.
+
+Interpretation: the REPL delay is not the cause. A successful ADMA F2 read
+leaves either the CYW4343W SDIO core or the PSoC SDHC command path in a state
+where the F0 abort command cannot complete. The next useful comparison is the
+complete WHD interrupt/read loop around the first frame, plus host command
+error recovery in =cyhal_sdio_host_send_cmd= / =cyhal_sdio_host_bulk_transfer=.
+
 * 2026-06-23 FAT32 formatter with console progress
 
 Added =(fat-format)= as a destructive Lisp primitive for the inserted 32GB
