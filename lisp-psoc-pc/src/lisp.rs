@@ -97,6 +97,7 @@ pub trait Board {
     fn wifi_f2_read_frame(&mut self) -> WifiSdioF2FrameReport;
     fn wifi_f2_read_frame_single(&mut self) -> WifiSdioF2FrameReport;
     fn wifi_send_wlc_up(&mut self) -> WifiSdioF2ControlReport;
+    fn wifi_wlc_up(&mut self) -> WifiSdioWlcUpReport;
     fn wifi_f2_read_frame_abort(&mut self) -> WifiSdioF2AbortProbeReport;
     fn wifi_poll_read_frame(&mut self) -> WifiSdioPollReadFrameReport;
     fn wifi_ack_interrupts(&mut self) -> WifiSdioInterruptAckReport;
@@ -650,6 +651,34 @@ pub struct WifiSdioF2ControlReport {
 }
 
 #[derive(Clone, Copy)]
+pub struct WifiSdioWlcUpReport {
+    pub status: &'static [u8],
+    pub send_status: &'static [u8],
+    pub send_packet_length: u8,
+    pub send_write_response: u32,
+    pub startup_status: &'static [u8],
+    pub startup_length: u16,
+    pub startup_channel: u8,
+    pub startup_bus_data_credit: u8,
+    pub response_status: &'static [u8],
+    pub response_length: u16,
+    pub response_sequence: u8,
+    pub response_channel: u8,
+    pub response_bus_data_credit: u8,
+    pub cdc_command: u32,
+    pub cdc_length: u32,
+    pub cdc_flags: u32,
+    pub cdc_id: u16,
+    pub cdc_status: u32,
+    pub send_last_error: Option<WifiSdioCommandErrorReport>,
+    pub startup_last_error: Option<WifiSdioCommandErrorReport>,
+    pub response_last_error: Option<WifiSdioCommandErrorReport>,
+    pub host_normal_int: u16,
+    pub host_error_int: u16,
+    pub host: WifiSdioHostReport,
+}
+
+#[derive(Clone, Copy)]
 pub struct WifiSdioF2AbortProbeReport {
     pub frame_status: &'static [u8],
     pub frame_valid: bool,
@@ -923,6 +952,7 @@ pub enum Primitive {
     WifiF2ReadFrame,
     WifiF2ReadFrameSingle,
     WifiSendWlcUp,
+    WifiWlcUp,
     WifiF2ReadFrameAbort,
     WifiPollReadFrame,
     WifiAckInterrupts,
@@ -1006,6 +1036,7 @@ impl Primitive {
             Self::WifiF2ReadFrame => "wifi-f2-read-frame",
             Self::WifiF2ReadFrameSingle => "wifi-f2-read-frame-single",
             Self::WifiSendWlcUp => "wifi-send-wlc-up",
+            Self::WifiWlcUp => "wifi-wlc-up",
             Self::WifiF2ReadFrameAbort => "wifi-f2-read-frame-abort",
             Self::WifiPollReadFrame => "wifi-poll-read-frame",
             Self::WifiAckInterrupts => "wifi-ack-interrupts",
@@ -1247,6 +1278,7 @@ impl Machine {
             Primitive::WifiF2ReadFrameSingle,
         )?;
         self.install_primitive(b"wifi-send-wlc-up", Primitive::WifiSendWlcUp)?;
+        self.install_primitive(b"wifi-wlc-up", Primitive::WifiWlcUp)?;
         self.install_primitive(b"wifi-f2-read-frame-abort", Primitive::WifiF2ReadFrameAbort)?;
         self.install_primitive(b"wifi-poll-read-frame", Primitive::WifiPollReadFrame)?;
         self.install_primitive(b"wifi-ack-interrupts", Primitive::WifiAckInterrupts)?;
@@ -2076,6 +2108,10 @@ impl Machine {
                 self.expect_count(args, 0)?;
                 self.wifi_sdio_f2_control_report(board.wifi_send_wlc_up())
             }
+            Primitive::WifiWlcUp => {
+                self.expect_count(args, 0)?;
+                self.wifi_sdio_wlc_up_report(board.wifi_wlc_up())
+            }
             Primitive::WifiF2ReadFrameAbort => {
                 self.expect_count(args, 0)?;
                 self.wifi_sdio_f2_abort_probe_report(board.wifi_f2_read_frame_abort())
@@ -2490,6 +2526,7 @@ impl Machine {
             b"wifi-f2-read-frame",
             b"wifi-f2-read-frame-single",
             b"wifi-send-wlc-up",
+            b"wifi-wlc-up",
             b"wifi-f2-read-frame-abort",
             b"wifi-poll-read-frame",
             b"wifi-ack-interrupts",
@@ -3422,6 +3459,74 @@ impl Machine {
             host_normal_int,
             host_error_int,
             write_last_error,
+            host,
+        ];
+        self.make_list_from_values(&entries)
+    }
+
+    fn wifi_sdio_wlc_up_report(&mut self, report: WifiSdioWlcUpReport) -> LispResult<Value> {
+        let status = self.symbol_entry(b"status", report.status)?;
+        let send_status = self.symbol_entry(b"send.status", report.send_status)?;
+        let send_packet_length =
+            self.word_entry(b"send.packet-length", report.send_packet_length as u32)?;
+        let send_write_response =
+            self.word_entry(b"send.write-response", report.send_write_response)?;
+        let startup_status = self.symbol_entry(b"startup.status", report.startup_status)?;
+        let startup_length = self.word_entry(b"startup.length", report.startup_length as u32)?;
+        let startup_channel = self.word_entry(b"startup.channel", report.startup_channel as u32)?;
+        let startup_bus_data_credit = self.word_entry(
+            b"startup.bus-data-credit",
+            report.startup_bus_data_credit as u32,
+        )?;
+        let response_status = self.symbol_entry(b"response.status", report.response_status)?;
+        let response_length = self.word_entry(b"response.length", report.response_length as u32)?;
+        let response_sequence =
+            self.word_entry(b"response.sequence", report.response_sequence as u32)?;
+        let response_channel =
+            self.word_entry(b"response.channel", report.response_channel as u32)?;
+        let response_bus_data_credit = self.word_entry(
+            b"response.bus-data-credit",
+            report.response_bus_data_credit as u32,
+        )?;
+        let cdc_command = self.word_entry(b"cdc.command", report.cdc_command)?;
+        let cdc_length = self.word_entry(b"cdc.length", report.cdc_length)?;
+        let cdc_flags = self.word_entry(b"cdc.flags", report.cdc_flags)?;
+        let cdc_id = self.word_entry(b"cdc.id", report.cdc_id as u32)?;
+        let cdc_status = self.word_entry(b"cdc.status", report.cdc_status)?;
+        let host_normal_int = self.word_entry(b"HOST.NORM_INT", report.host_normal_int as u32)?;
+        let host_error_int = self.word_entry(b"HOST.ERR_INT", report.host_error_int as u32)?;
+        let send_last_error =
+            self.wifi_sdio_error_entry(b"send.last-error", report.send_last_error)?;
+        let startup_last_error =
+            self.wifi_sdio_error_entry(b"startup.last-error", report.startup_last_error)?;
+        let response_last_error =
+            self.wifi_sdio_error_entry(b"response.last-error", report.response_last_error)?;
+        let host = self.wifi_sdio_host_report(report.host)?;
+        let host = self.entry(b"SDHC0", host)?;
+        let entries = [
+            status,
+            send_status,
+            send_packet_length,
+            send_write_response,
+            startup_status,
+            startup_length,
+            startup_channel,
+            startup_bus_data_credit,
+            response_status,
+            response_length,
+            response_sequence,
+            response_channel,
+            response_bus_data_credit,
+            cdc_command,
+            cdc_length,
+            cdc_flags,
+            cdc_id,
+            cdc_status,
+            host_normal_int,
+            host_error_int,
+            send_last_error,
+            startup_last_error,
+            response_last_error,
             host,
         ];
         self.make_list_from_values(&entries)

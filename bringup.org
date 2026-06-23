@@ -3037,7 +3037,6 @@ tools/send-lisp.scm '(wifi-start-firmware)'
 tools/send-lisp.scm '(wifi-send-wlc-up)'
 tools/send-lisp.scm '(wifi-f2-read-frame)'
 tools/send-lisp.scm '(wifi-f2-read-frame)'
-tools/send-lisp.scm '(wifi-interrupt-state)'
 #+end_example
 
 The WLC_UP write completed without host or card command errors:
@@ -3093,8 +3092,9 @@ flags  = #x00010000 ; ioctl id 1
 status = #x00000000
 #+end_example
 
-Selected-card access remained healthy after this transmit-then-receive
-sequence:
+A separate check after sending WLC_UP and draining only the startup credit
+frame, before consuming the 28-byte response, showed selected-card access still
+healthy:
 
 #+begin_example
 (wifi-interrupt-state)
@@ -3109,11 +3109,126 @@ sequence:
     (last-error))
 #+end_example
 
-Interpretation: the first SDPCM control transmit path works. The earlier
-zero-response state is tied to reading the startup frame before the first host
-control packet, not to every F2 receive transaction. The next firmware slice
-should wrap send/read/CDC-response parsing into one Lisp form, then add the next
-high-level IOCTL needed by WHD before association.
+Interpretation: the first SDPCM control transmit path works, and the WLC_UP CDC
+response is valid. This did not prove that command traffic remains healthy after
+the response body is consumed; see the next entry.
+
+* 2026-06-23 High-level WLC_UP wrapper and post-response failure
+
+Added =(wifi-wlc-up)= to wrap the working WLC_UP sequence into one Lisp form:
+send the 28-byte WLC_UP control packet, drain the 12-byte startup credit frame,
+read the 28-byte control response, and parse the CDC command fields.
+
+Validation:
+
+#+begin_example
+cargo fmt
+tools/build-lisp.scm --wifi-firmware
+tools/flash-lisp.scm
+tools/serial-console.scm
+tools/send-lisp.scm '(wifi-start-firmware)'
+tools/send-lisp.scm '(wifi-wlc-up)'
+tools/send-lisp.scm '(wifi-interrupt-state)'
+#+end_example
+
+The wrapped transaction succeeds and decodes the expected CDC response:
+
+#+begin_example
+(wifi-wlc-up)
+=> ((status . ready)
+    (send.status . ready)
+    (send.packet-length . #x0000001c)
+    (send.write-response . #x00001000)
+    (startup.status . ready)
+    (startup.length . #x0000000c)
+    (startup.channel . #x00000001)
+    (startup.bus-data-credit . #x00000010)
+    (response.status . ready)
+    (response.length . #x0000001c)
+    (response.sequence . #x00000001)
+    (response.channel . #x00000000)
+    (response.bus-data-credit . #x00000011)
+    (cdc.command . #x00000002)
+    (cdc.length . #x00000000)
+    (cdc.flags . #x00010000)
+    (cdc.id . #x00000001)
+    (cdc.status . #x00000000)
+    (HOST.NORM_INT . #x00000100)
+    (HOST.ERR_INT . #x00000000)
+    (send.last-error)
+    (startup.last-error)
+    (response.last-error))
+#+end_example
+
+However, the first selected-card check after the full 28-byte response read
+returns zero response bytes:
+
+#+begin_example
+(wifi-interrupt-state)
+=> ((status . ready)
+    (CCCR.IO_ENABLE . #x00000000)
+    (CCCR.IO_READY . #x00000000)
+    (CCCR.INTERRUPT_ENABLE . #x00000000)
+    (CCCR.INTERRUPT_PENDING . #x00000000)
+    (CCCR.BUS_CONTROL . #x00000000)
+    (CCCR.IO_ENABLE.response . #x00000000)
+    (CCCR.IO_READY.response . #x00000000)
+    (CCCR.INTERRUPT_ENABLE.response . #x00000000)
+    (CCCR.INTERRUPT_PENDING.response . #x00000000)
+    (CCCR.BUS_CONTROL.response . #x00000000)
+    (HOST.NORM_INT . #x00000100)
+    (HOST.ERR_INT . #x00000000)
+    (last-error))
+#+end_example
+
+Waiting before the CCCR read did not recover it. =(wifi-keep-awake)= also
+timed out with zero CMD52 responses.
+
+An immediate read-abort after the WLC_UP response did not recover the bus:
+
+#+begin_example
+(wifi-f2-read-frame-abort)
+=> ((frame.status . ready)
+    (frame.valid . #t)
+    (frame.length . #x0000001c)
+    (frame.channel . #x00000000)
+    (frame.bus-data-credit . #x00000011)
+    (abort.io-abort-response . #x00000000)
+    (abort.frame-control-response . #x00000000)
+    (post.CCCR.IO_ENABLE . #x00000000)
+    (post.CCCR.IO_READY . #x00000000)
+    (post.CCCR.INTPEND . #x00000000)
+    (abort.last-error (code . command-status-error)
+      (NORM_INT . #x00008100)
+      (ERR_INT . #x00000001))
+    (post.last-error (code . command-status-error)
+      (NORM_INT . #x00008100)
+      (ERR_INT . #x00000002)))
+#+end_example
+
+After the response read, function-2 reads also fail:
+
+#+begin_example
+(wifi-f2-read-header)
+=> ((status . cmd53-failed)
+    (response . #x00000000)
+    (length . #x00000000)
+    (checksum . #x00000000)
+    (valid . #f)
+    (last-error (code . command-status-error)
+      (NORM_INT . #x00008100)
+      (ERR_INT . #x00000001)))
+#+end_example
+
+=(wifi-host-reset-lines)= clears the ADMA error but does not restore
+selected-card responses.
+
+Interpretation: WLC_UP itself is now proven through the CDC response. The next
+blocking issue is the host/card state after the complete control response is
+read. The failure affects later CMD52 and CMD53 commands, so the next probe
+should compare our CMD53 read completion and SDHC reset behavior with WHD's
+SDIO host implementation, or test whether a different receive mode avoids the
+post-response zero-response state.
 
 * Next actions
 
@@ -3121,8 +3236,7 @@ high-level IOCTL needed by WHD before association.
 2. Add a FAT/exFAT-aware storage layer after raw block reads/writes work.
 3. Test the newer Infineon target =infineon/cy8cxxa.cfg= as a replacement
    for obsolete =target/psoc6_2m.cfg=.
-4. Wrap WLC_UP send, startup-frame drain, response read, and CDC response
-   parsing into one high-level Lisp form.
-5. Add the next WHD-style high-level IOCTL forms needed before association.
+4. Investigate the post-WLC_UP-response zero-response state after full F2 reads.
+5. Add SDPCM tx sequence and credit state before sending IOCTLs after WLC_UP.
 6. Start Wi-Fi from a known-good Infineon or Zephyr sample before trying
    to hand-port the full CYW4343W network stack.

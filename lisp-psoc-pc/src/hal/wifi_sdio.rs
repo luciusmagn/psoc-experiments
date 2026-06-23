@@ -254,6 +254,7 @@ pub enum WifiSdioCmd53ReadStatus {
 
 #[derive(Clone, Copy)]
 pub enum WifiSdioF2FrameStatus {
+    NotRun,
     Ready,
     HeaderReadFailed,
     InvalidHeader,
@@ -265,11 +266,23 @@ pub enum WifiSdioF2FrameStatus {
 
 #[derive(Clone, Copy)]
 pub enum WifiSdioF2ControlStatus {
+    NotRun,
     Ready,
     DataSetupBusy,
     Cmd53Failed,
     TransferTimeout,
     DataLineBusy,
+}
+
+#[derive(Clone, Copy)]
+pub enum WifiSdioWlcUpStatus {
+    Ready,
+    SendFailed,
+    StartupFrameFailed,
+    UnexpectedStartupFrame,
+    ResponseFrameFailed,
+    UnexpectedResponseFrame,
+    CdcStatusError,
 }
 
 #[derive(Clone, Copy)]
@@ -978,6 +991,33 @@ pub struct WifiSdioF2ControlReport {
     pub host_normal_int: u16,
     pub host_error_int: u16,
     pub write_last_error: Option<CommandError>,
+    pub host: WifiSdioHostSnapshot,
+}
+
+pub struct WifiSdioWlcUpReport {
+    pub status: WifiSdioWlcUpStatus,
+    pub send_status: WifiSdioF2ControlStatus,
+    pub send_packet_length: u8,
+    pub send_write_response: u32,
+    pub startup_status: WifiSdioF2FrameStatus,
+    pub startup_length: u16,
+    pub startup_channel: u8,
+    pub startup_bus_data_credit: u8,
+    pub response_status: WifiSdioF2FrameStatus,
+    pub response_length: u16,
+    pub response_sequence: u8,
+    pub response_channel: u8,
+    pub response_bus_data_credit: u8,
+    pub cdc_command: u32,
+    pub cdc_length: u32,
+    pub cdc_flags: u32,
+    pub cdc_id: u16,
+    pub cdc_status: u32,
+    pub send_last_error: Option<CommandError>,
+    pub startup_last_error: Option<CommandError>,
+    pub response_last_error: Option<CommandError>,
+    pub host_normal_int: u16,
+    pub host_error_int: u16,
     pub host: WifiSdioHostSnapshot,
 }
 
@@ -4098,6 +4138,73 @@ pub fn send_wlc_up(p: &Peripherals) -> WifiSdioF2ControlReport {
     }
 }
 
+pub fn wlc_up(p: &Peripherals) -> WifiSdioWlcUpReport {
+    let mut report = empty_wlc_up_report(p);
+
+    let send = send_wlc_up(p);
+    report.send_status = send.status;
+    report.send_packet_length = send.packet_length;
+    report.send_write_response = send.write_response;
+    report.send_last_error = send.write_last_error;
+    if !matches!(send.status, WifiSdioF2ControlStatus::Ready) {
+        report.status = WifiSdioWlcUpStatus::SendFailed;
+        return finish_wlc_up_report(p, report);
+    }
+
+    let startup = f2_read_frame(p);
+    report.startup_status = startup.status;
+    report.startup_length = startup.length;
+    report.startup_channel = startup.channel;
+    report.startup_bus_data_credit = startup.bus_data_credit;
+    report.startup_last_error = startup.last_error;
+    if !matches!(startup.status, WifiSdioF2FrameStatus::Ready) {
+        report.status = WifiSdioWlcUpStatus::StartupFrameFailed;
+        return finish_wlc_up_report(p, report);
+    }
+    if !startup.valid
+        || startup.length != SDPCM_HEADER_BYTES as u16
+        || startup.header_length != SDPCM_HEADER_BYTES
+    {
+        report.status = WifiSdioWlcUpStatus::UnexpectedStartupFrame;
+        return finish_wlc_up_report(p, report);
+    }
+
+    let response = f2_read_frame(p);
+    report.response_status = response.status;
+    report.response_length = response.length;
+    report.response_sequence = response.sequence;
+    report.response_channel = response.channel;
+    report.response_bus_data_credit = response.bus_data_credit;
+    report.response_last_error = response.last_error;
+    if !matches!(response.status, WifiSdioF2FrameStatus::Ready) {
+        report.status = WifiSdioWlcUpStatus::ResponseFrameFailed;
+        return finish_wlc_up_report(p, report);
+    }
+    if !response.valid
+        || response.length != SDPCM_WLC_UP_PACKET_BYTES as u16
+        || response.header_length != SDPCM_HEADER_BYTES
+        || response.channel != SDPCM_CONTROL_CHANNEL
+    {
+        report.status = WifiSdioWlcUpStatus::UnexpectedResponseFrame;
+        return finish_wlc_up_report(p, report);
+    }
+
+    report.cdc_command = read_le_u32(&response.bytes, 12);
+    report.cdc_length = read_le_u32(&response.bytes, 16);
+    report.cdc_flags = read_le_u32(&response.bytes, 20);
+    report.cdc_id = (report.cdc_flags >> CDC_IOCTL_ID_SHIFT) as u16;
+    report.cdc_status = read_le_u32(&response.bytes, 24);
+    if report.cdc_command != WLC_UP_IOCTL || report.cdc_id != 1 {
+        report.status = WifiSdioWlcUpStatus::UnexpectedResponseFrame;
+    } else if report.cdc_status != 0 {
+        report.status = WifiSdioWlcUpStatus::CdcStatusError;
+    } else {
+        report.status = WifiSdioWlcUpStatus::Ready;
+    }
+
+    finish_wlc_up_report(p, report)
+}
+
 pub fn ack_interrupts(p: &Peripherals) -> WifiSdioInterruptAckReport {
     let core = &p.SDHC0.core;
     let host_normal_int_before = core.normal_int_stat_r.read().bits();
@@ -7108,6 +7215,13 @@ fn write_le_u32(bytes: &mut [u8; SDIO_CMD53_BLOCK_BYTES as usize], offset: usize
     bytes[offset + 3] = (value >> 24) as u8;
 }
 
+fn read_le_u32(bytes: &[u8; SDIO_CMD53_PREVIEW_BYTES], offset: usize) -> u32 {
+    (bytes[offset] as u32)
+        | ((bytes[offset + 1] as u32) << 8)
+        | ((bytes[offset + 2] as u32) << 16)
+        | ((bytes[offset + 3] as u32) << 24)
+}
+
 fn bytes_to_words(bytes: &[u8; SDIO_CMD53_BLOCK_BYTES as usize]) -> [u32; SDIO_CMD53_BLOCK_WORDS] {
     let mut words = [0u32; SDIO_CMD53_BLOCK_WORDS];
     let mut index = 0usize;
@@ -7202,6 +7316,43 @@ fn f2_control_report(
         write_last_error,
         host: host_snapshot(p),
     }
+}
+
+fn empty_wlc_up_report(p: &Peripherals) -> WifiSdioWlcUpReport {
+    WifiSdioWlcUpReport {
+        status: WifiSdioWlcUpStatus::SendFailed,
+        send_status: WifiSdioF2ControlStatus::NotRun,
+        send_packet_length: 0,
+        send_write_response: 0,
+        startup_status: WifiSdioF2FrameStatus::NotRun,
+        startup_length: 0,
+        startup_channel: 0,
+        startup_bus_data_credit: 0,
+        response_status: WifiSdioF2FrameStatus::NotRun,
+        response_length: 0,
+        response_sequence: 0,
+        response_channel: 0,
+        response_bus_data_credit: 0,
+        cdc_command: 0,
+        cdc_length: 0,
+        cdc_flags: 0,
+        cdc_id: 0,
+        cdc_status: 0,
+        send_last_error: None,
+        startup_last_error: None,
+        response_last_error: None,
+        host_normal_int: 0,
+        host_error_int: 0,
+        host: host_snapshot(p),
+    }
+}
+
+fn finish_wlc_up_report(p: &Peripherals, mut report: WifiSdioWlcUpReport) -> WifiSdioWlcUpReport {
+    let core = &p.SDHC0.core;
+    report.host_normal_int = core.normal_int_stat_r.read().bits();
+    report.host_error_int = core.error_int_stat_r.read().bits();
+    report.host = host_snapshot(p);
+    report
 }
 
 fn interrupt_ack_report(

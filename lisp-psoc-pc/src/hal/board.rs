@@ -508,6 +508,10 @@ impl lisp::Board for PsocBoard<'_> {
         wifi_sdio_f2_control_report(wifi_sdio::send_wlc_up(self.p))
     }
 
+    fn wifi_wlc_up(&mut self) -> lisp::WifiSdioWlcUpReport {
+        wifi_sdio_wlc_up_report(wifi_sdio::wlc_up(self.p))
+    }
+
     fn wifi_f2_read_frame_abort(&mut self) -> lisp::WifiSdioF2AbortProbeReport {
         let frame = wifi_sdio::f2_read_frame(self.p);
         let abort = wifi_sdio::abort_read(self.p);
@@ -1027,6 +1031,7 @@ fn wifi_sdio_firmware_start_status(
 
 fn wifi_sdio_f2_frame_status(status: wifi_sdio::WifiSdioF2FrameStatus) -> &'static [u8] {
     match status {
+        wifi_sdio::WifiSdioF2FrameStatus::NotRun => b"not-run",
         wifi_sdio::WifiSdioF2FrameStatus::Ready => b"ready",
         wifi_sdio::WifiSdioF2FrameStatus::HeaderReadFailed => b"header-read-failed",
         wifi_sdio::WifiSdioF2FrameStatus::InvalidHeader => b"invalid-header",
@@ -1039,11 +1044,24 @@ fn wifi_sdio_f2_frame_status(status: wifi_sdio::WifiSdioF2FrameStatus) -> &'stat
 
 fn wifi_sdio_f2_control_status(status: wifi_sdio::WifiSdioF2ControlStatus) -> &'static [u8] {
     match status {
+        wifi_sdio::WifiSdioF2ControlStatus::NotRun => b"not-run",
         wifi_sdio::WifiSdioF2ControlStatus::Ready => b"ready",
         wifi_sdio::WifiSdioF2ControlStatus::DataSetupBusy => b"data-setup-busy",
         wifi_sdio::WifiSdioF2ControlStatus::Cmd53Failed => b"cmd53-failed",
         wifi_sdio::WifiSdioF2ControlStatus::TransferTimeout => b"transfer-timeout",
         wifi_sdio::WifiSdioF2ControlStatus::DataLineBusy => b"data-line-busy",
+    }
+}
+
+fn wifi_sdio_wlc_up_status(status: wifi_sdio::WifiSdioWlcUpStatus) -> &'static [u8] {
+    match status {
+        wifi_sdio::WifiSdioWlcUpStatus::Ready => b"ready",
+        wifi_sdio::WifiSdioWlcUpStatus::SendFailed => b"send-failed",
+        wifi_sdio::WifiSdioWlcUpStatus::StartupFrameFailed => b"startup-frame-failed",
+        wifi_sdio::WifiSdioWlcUpStatus::UnexpectedStartupFrame => b"unexpected-startup-frame",
+        wifi_sdio::WifiSdioWlcUpStatus::ResponseFrameFailed => b"response-frame-failed",
+        wifi_sdio::WifiSdioWlcUpStatus::UnexpectedResponseFrame => b"unexpected-response-frame",
+        wifi_sdio::WifiSdioWlcUpStatus::CdcStatusError => b"cdc-status-error",
     }
 }
 
@@ -1428,6 +1446,39 @@ fn wifi_sdio_f2_control_report(
         host_normal_int: report.host_normal_int,
         host_error_int: report.host_error_int,
         write_last_error: report.write_last_error.map(wifi_sdio_command_error_report),
+        host: wifi_sdio_host_report(report.host),
+    }
+}
+
+fn wifi_sdio_wlc_up_report(report: wifi_sdio::WifiSdioWlcUpReport) -> lisp::WifiSdioWlcUpReport {
+    lisp::WifiSdioWlcUpReport {
+        status: wifi_sdio_wlc_up_status(report.status),
+        send_status: wifi_sdio_f2_control_status(report.send_status),
+        send_packet_length: report.send_packet_length,
+        send_write_response: report.send_write_response,
+        startup_status: wifi_sdio_f2_frame_status(report.startup_status),
+        startup_length: report.startup_length,
+        startup_channel: report.startup_channel,
+        startup_bus_data_credit: report.startup_bus_data_credit,
+        response_status: wifi_sdio_f2_frame_status(report.response_status),
+        response_length: report.response_length,
+        response_sequence: report.response_sequence,
+        response_channel: report.response_channel,
+        response_bus_data_credit: report.response_bus_data_credit,
+        cdc_command: report.cdc_command,
+        cdc_length: report.cdc_length,
+        cdc_flags: report.cdc_flags,
+        cdc_id: report.cdc_id,
+        cdc_status: report.cdc_status,
+        send_last_error: report.send_last_error.map(wifi_sdio_command_error_report),
+        startup_last_error: report
+            .startup_last_error
+            .map(wifi_sdio_command_error_report),
+        response_last_error: report
+            .response_last_error
+            .map(wifi_sdio_command_error_report),
+        host_normal_int: report.host_normal_int,
+        host_error_int: report.host_error_int,
         host: wifi_sdio_host_report(report.host),
     }
 }
