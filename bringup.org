@@ -2724,6 +2724,55 @@ Try: (help), (ls), (cat "boot.lisp"), (+ 1 2 3)
 lisp>
 #+end_example
 
+* 2026-06-23 Rejected CMD52 retry recovery
+
+Tested a local-only CMD52 retry experiment after the first successful F2 SDPCM
+startup frame. The experiment retried selected-card CMD52 commands up to three
+times, resetting the host command and data lines before the second and third
+attempts. It was built and flashed with the embedded CYW4343W firmware blob:
+
+#+begin_example
+tools/build-flash-lisp.scm --wifi-firmware
+tools/serial-console.scm
+tools/send-lisp.scm '(wifi-start-firmware)'
+tools/send-lisp.scm '(wifi-f2-read-frame-abort)'
+#+end_example
+
+The firmware still reached ready state, but the abort probe did not recover
+usable post-frame CMD52 responses:
+
+#+begin_example
+(wifi-f2-read-frame-abort)
+=> ((frame.status . ready)
+    (frame.valid . #t)
+    (frame.length . #x0000000c)
+    (frame.channel . #x00000001)
+    (frame.bus-data-credit . #x00000010)
+    (frame.header-response . #x00001000)
+    (frame.body-response . #x00001000)
+    (abort.io-abort-response . #x00000000)
+    (abort.frame-control-response . #x00000000)
+    (post.CCCR.IO_ENABLE . #x00000000)
+    (post.CCCR.IO_READY . #x00000000)
+    (post.CCCR.INTPEND . #x00000000)
+    (post.CCCR.IO_ENABLE.response . #x00000000)
+    (post.CCCR.IO_READY.response . #x00000000)
+    (post.CCCR.INTPEND.response . #x00000000)
+    (post.HOST.NORM_INT . #x00000100)
+    (post.HOST.ERR_INT . #x00000000)
+    (frame.last-error)
+    (abort.last-error)
+    (post.last-error))
+#+end_example
+
+Interpretation: retrying CMD52 with host line resets can make the immediate
+Rust-side command error disappear, but all selected-card responses remain zero.
+That is not a valid recovery and risks masking the real failure, so the retry
+change was discarded instead of committed. The next Wi-Fi step should follow
+the full WHD post-frame flow around interrupt clearing, read abort, and the
+first host-to-device SDPCM control message rather than adding generic CMD52
+retries.
+
 * Next actions
 
 1. Add REPL history and better editing across continuation lines.
