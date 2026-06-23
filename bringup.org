@@ -2346,13 +2346,76 @@ the pre-ADMA behavior:
     (SDHC0 ... (ADMA_ERR_STAT . #x00000060) ...))
 #+end_example
 
+Two additional clean-sequence checks narrowed this further.
+
+First, acknowledging WHD-style SDIO core interrupts before reading the F2 frame
+does not prevent the zero-response state:
+
+#+begin_example
+(wifi-ack-interrupts)
+=> ((status . ready)
+    (INT_STATUS.before . #x008200c0)
+    (TO_HOST_MAILBOX_DATA . #x00040008)
+    (TO_SB_MAILBOX.ack . #x00000002)
+    (INT_STATUS.clear . #x000000c0)
+    (INT_STATUS.after . #x00820000)
+    (INT_STATUS.response . #x00001000)
+    (last-error) ...)
+
+(wifi-f2-read-frame)
+=> ((status . ready) ... (ADMA_ERR_STAT . #x00000000) ...)
+
+(wifi-keep-awake)
+=> ((status . timeout)
+    (first-write-response . #x00000000)
+    (read-response . #x00000000)
+    (last-error) ...)
+#+end_example
+
+Second, acknowledging immediately after the valid F2 frame, without running the
+KSO retry loop first, already sees zero SDIO responses:
+
+#+begin_example
+(wifi-f2-read-frame)
+=> ((status . ready) ... (ADMA_ERR_STAT . #x00000000) ...)
+
+(wifi-ack-interrupts)
+=> ((status . ready)
+    (INT_STATUS.before . #x00000000)
+    (INT_STATUS.response . #x00000000)
+    (INT_STATUS.after . #x00000000)
+    (HOST.NORM_INT.before . #x00000100)
+    (HOST.ERR_INT.before . #x00000000)
+    (last-error) ...)
+#+end_example
+
+WHD's =INITIAL_READ= is =4=, so the current 4-byte F2 length-tag read followed
+by an 8-byte body read matches WHD's documented read-frame path for this
+12-byte startup packet.
+
+Trying =(wifi-start-firmware)= again after the post-frame zero-response state
+did not recover the bus. It failed while preparing SOCSRAM for a fresh firmware
+load:
+
+#+begin_example
+(wifi-start-firmware)
+=> ((status . firmware-failed)
+    (firmware-status . bank-index-write-failed)
+    (write-status . transfer-timeout)
+    (ADMA_ERR_STAT . #x00000057)
+    (SW_RST . #x00000004) ...)
+#+end_example
+
+A full target reset through OpenOCD restores clean firmware start behavior.
+
 Interpretation: the original PIO receive-buffer drain was not the sole
 problem. A successful ADMA CMD53 F2 read can fetch the startup frame with no
-ADMA error, but the card or host still stops producing valid responses after
-that frame is consumed. The next investigation should compare the WHD
-post-frame path, especially interrupt acknowledgement, read-abort semantics,
-and the first host-to-device SDPCM control message, before more SDHC data-path
-rewrites.
+ADMA error, but the card or host stops producing valid responses immediately
+after that frame is consumed. The KSO retry loop does not cause the state, and
+pre-acknowledging the WHD SDIO core interrupt bits does not prevent it. The
+next investigation should compare the remaining WHD post-frame path, especially
+read-abort semantics, retry delays, and the first host-to-device SDPCM control
+message, before more SDHC data-path rewrites.
 
 * Next actions
 
