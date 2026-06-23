@@ -3306,6 +3306,22 @@ control response into a 4-byte header read followed by a 24-byte body read. A
 single 28-byte CMD53 read of the complete response is enough to reproduce the
 zero-response state.
 
+Follow-up over-read probes used the same reset/start/WLC_UP sequence, then read
+the response with larger exact counts:
+
+#+begin_example
+tools/send-lisp.scm '(wifi-f2-read-frame-exact 32)'
+tools/send-lisp.scm '(wifi-interrupt-state)'
+
+tools/send-lisp.scm '(wifi-f2-read-frame-exact 64)'
+tools/send-lisp.scm '(wifi-interrupt-state)'
+#+end_example
+
+Both reads returned the 28-byte response followed by zero padding and then
+reproduced the same zero-response state on =(wifi-interrupt-state)=. Therefore
+the failure is not fixed by draining 32 bytes or a 64-byte F2 block-sized amount
+from the response FIFO.
+
 * Next actions
 
 1. Add REPL history and better editing across continuation lines.
