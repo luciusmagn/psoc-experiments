@@ -1861,13 +1861,55 @@ is consistent with firmware raising an SDIO interrupt after boot. The next
 Wi-Fi milestone is reading and acknowledging SDPCM/F2 frames and finding
 the firmware-ready mailbox/protocol state.
 
+* 2026-06-23 Wi-Fi F2 header read
+
+Added =(wifi-f2-read-header)= as the first stateful SDPCM diagnostic after
+=(wifi-start-firmware)=. The form does not rerun SDIO setup and should be used
+in the same live firmware session after the CYW43430 ARM core has been
+released. It reads the four-byte function-2 hardware tag from address zero,
+decodes the little-endian length/checksum pair, and reports whether the tag
+satisfies the SDPCM invariant =length != 0 && (length ^ checksum) == #xffff=.
+
+Live validation after flashing the blob-enabled image:
+
+#+begin_example
+(wifi-start-firmware)
+=> ((status . ready) ... (IORDY . #x00000006)
+    (F2-attempts . #x0000001f)
+    (SDHC0 ... (NORM_INT . #x00000100)
+               (ERR_INT . #x00000000) ...))
+
+(wifi-f2-read-header)
+=> ((status . ready)
+    (response . #x00001000)
+    (length . #x0000000c)
+    (checksum . #x0000fff3)
+    (valid . #t)
+    (byte0 . #x0000000c)
+    (byte1 . #x00000000)
+    (byte2 . #x000000f3)
+    (byte3 . #x000000ff)
+    (last-error)
+    (SDHC0 ... (XFER_MODE . #x00000012)
+               (BLOCKSIZE . #x00000004)
+               (NORM_INT . #x00000100)
+               (ERR_INT . #x00000000)
+               (ARGUMENT . #x24000004)
+               (RESP01 . #x00001000) ...))
+#+end_example
+
+This proves that the started firmware is producing a real function-2 SDPCM
+frame. The next Wi-Fi milestone is reading all =#x000c= bytes of that initial
+frame, parsing the SDPCM header/control fields, and acknowledging the interrupt
+without resetting or reinitializing the chip.
+
 * Next actions
 
 1. Add REPL history and better editing across continuation lines.
 2. Add a FAT/exFAT-aware storage layer after raw block reads/writes work.
 3. Test the newer Infineon target =infineon/cy8cxxa.cfg= as a replacement
    for obsolete =target/psoc6_2m.cfg=.
-4. Add SDPCM/F2 frame diagnostics now that the CYW43430 firmware boots and
-   function 2 becomes ready.
+4. Add full SDPCM/F2 frame read and interrupt acknowledgement diagnostics now
+   that the initial function-2 hardware tag is valid.
 5. Start Wi-Fi from a known-good Infineon or Zephyr sample before trying
    to hand-port the full CYW4343W network stack.

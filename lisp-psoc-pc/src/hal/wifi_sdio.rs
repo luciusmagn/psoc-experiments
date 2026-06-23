@@ -865,6 +865,17 @@ pub struct WifiSdioFirmwareStartReport {
     pub host: WifiSdioHostSnapshot,
 }
 
+pub struct WifiSdioF2HeaderReport {
+    pub status: WifiSdioCmd53ReadStatus,
+    pub response: u32,
+    pub bytes: [u8; 4],
+    pub length: u16,
+    pub checksum: u16,
+    pub valid: bool,
+    pub last_error: Option<CommandError>,
+    pub host: WifiSdioHostSnapshot,
+}
+
 #[derive(Clone, Copy)]
 pub struct WifiSdioCoreSnapshot {
     pub ioctrl: u8,
@@ -3615,6 +3626,44 @@ pub fn start_firmware(
     )
 }
 
+pub fn f2_read_header(p: &Peripherals) -> WifiSdioF2HeaderReport {
+    let core = &p.SDHC0.core;
+    if !configure_cmd53_read(core, 4, false) {
+        return f2_header_report(p, WifiSdioCmd53ReadStatus::DataSetupBusy, 0, [0; 4], None);
+    }
+
+    let response = match send_command(
+        core,
+        Command {
+            index: 53,
+            argument: cmd53_argument(false, 2, false, true, 0, 4),
+            response: ResponseType::Len48,
+            command_type: CommandType::Normal,
+            data_present: true,
+            crc_check: true,
+            index_check: true,
+        },
+    ) {
+        Ok(response) => response,
+        Err(error) => {
+            return f2_header_report(
+                p,
+                WifiSdioCmd53ReadStatus::Cmd53Failed,
+                0,
+                [0; 4],
+                Some(error),
+            );
+        }
+    };
+
+    let bytes = match read_cmd53_bytes(core, 4) {
+        Ok(bytes) => [bytes[0], bytes[1], bytes[2], bytes[3]],
+        Err(status) => return f2_header_report(p, status, response, [0; 4], None),
+    };
+
+    f2_header_report(p, WifiSdioCmd53ReadStatus::Ready, response, bytes, None)
+}
+
 fn prepare_cyw43430_socram(p: &Peripherals) -> Result<SocramPrepared, SocramPrepareError> {
     let setup = setup_backplane(p);
     if !matches!(setup.status, WifiSdioBackplaneStatus::Ready) {
@@ -6026,6 +6075,27 @@ fn firmware_start_command_error_report(
         last_response,
         Some(error),
     )
+}
+
+fn f2_header_report(
+    p: &Peripherals,
+    status: WifiSdioCmd53ReadStatus,
+    response: u32,
+    bytes: [u8; 4],
+    last_error: Option<CommandError>,
+) -> WifiSdioF2HeaderReport {
+    let length = u16::from_le_bytes([bytes[0], bytes[1]]);
+    let checksum = u16::from_le_bytes([bytes[2], bytes[3]]);
+    WifiSdioF2HeaderReport {
+        status,
+        response,
+        bytes,
+        length,
+        checksum,
+        valid: length != 0 && (length ^ checksum) == 0xffff,
+        last_error,
+        host: host_snapshot(p),
+    }
 }
 
 fn core_state_report(

@@ -407,6 +407,10 @@ impl lisp::Board for PsocBoard<'_> {
         ))
     }
 
+    fn wifi_f2_read_header(&mut self) -> lisp::WifiSdioF2HeaderReport {
+        wifi_sdio_f2_header_report(wifi_sdio::f2_read_header(self.p))
+    }
+
     fn wifi_core_state(&mut self, base: u32) -> lisp::WifiSdioCoreStateReport {
         wifi_sdio_core_state_report(wifi_sdio::core_state(self.p, base))
     }
@@ -1104,6 +1108,21 @@ fn wifi_sdio_firmware_start_report(
         io_ready: report.io_ready,
         f2_attempts: report.f2_attempts,
         last_response: report.last_response,
+        last_error: report.last_error.map(wifi_sdio_command_error_report),
+        host: wifi_sdio_host_report(report.host),
+    }
+}
+
+fn wifi_sdio_f2_header_report(
+    report: wifi_sdio::WifiSdioF2HeaderReport,
+) -> lisp::WifiSdioF2HeaderReport {
+    lisp::WifiSdioF2HeaderReport {
+        status: wifi_sdio_cmd53_read_status(report.status),
+        response: report.response,
+        bytes: report.bytes,
+        length: report.length,
+        checksum: report.checksum,
+        valid: report.valid,
         last_error: report.last_error.map(wifi_sdio_command_error_report),
         host: wifi_sdio_host_report(report.host),
     }

@@ -28,9 +28,8 @@ flashing script looks for Infineon OpenOCD in this order: `OPENOCD_ROOT`,
 `MODUSTOOLBOX_OPENOCD_ROOT`, `MODUSTOOLBOX_ROOT`, `.local/ModusToolbox`,
 and `/opt/ModusToolbox`.
 
-To include the local CYW4343W firmware blob in the CM4 image and enable
-`(wifi-load-firmware)` and `(wifi-start-firmware)` to use real local Wi-Fi
-resources:
+To include the local CYW4343W firmware blob in the CM4 image and enable the
+firmware-loading Wi-Fi forms to use real local Wi-Fi resources:
 
 ```sh
 tools/prepare-wifi-resources.scm --check
@@ -42,6 +41,8 @@ tools/flash-lisp.scm
 flow in one step. `(wifi-load-firmware)` loads and verifies SOCSRAM without
 starting the WLAN core. `(wifi-start-firmware)` also writes NVRAM, releases the
 WLAN ARM core, waits for HT clock, and polls function 2 readiness.
+`(wifi-f2-read-header)` then reads the first function-2 SDPCM hardware tag from
+the already-started firmware session.
 
 To keep the large vendor tools out of git, install ModusToolbox into the
 ignored `.local/ModusToolbox` directory:
