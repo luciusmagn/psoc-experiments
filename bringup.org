@@ -3340,6 +3340,77 @@ succeeded, but the post-response =(wifi-interrupt-state)= again returned zero
 CCCR values and zero responses. Holding KSO before the first control exchange is
 therefore not sufficient to avoid the post-response failure.
 
+* 2026-06-23 F2 block-mode response read probe
+
+Added =(wifi-f2-read-frame-block)= as a narrow F2 FIFO diagnostic. It performs
+one CMD53 function-2 read in 64-byte block mode, with CMD53 count =1= and host
+block size 64, then reports the result through the existing F2 frame report
+shape.
+
+Validation:
+
+#+begin_example
+cargo fmt
+tools/build-lisp.scm --wifi-firmware
+tools/flash-lisp.scm
+tools/serial-console.scm
+tools/send-lisp.scm '(wifi-start-firmware)'
+tools/send-lisp.scm '(wifi-send-wlc-up)'
+tools/send-lisp.scm '(wifi-f2-read-frame)'
+tools/send-lisp.scm '(wifi-f2-read-frame-block)'
+tools/send-lisp.scm '(wifi-interrupt-state)'
+tools/send-lisp.scm '(wifi-ack-interrupts)'
+tools/send-lisp.scm '(wifi-interrupt-state)'
+#+end_example
+
+After the startup credit frame was drained with the existing byte-mode reader,
+the block-mode F2 read returned the same valid WLC_UP CDC response padded to a
+64-byte block:
+
+#+begin_example
+(wifi-f2-read-frame-block)
+=> ((status . ready)
+    (length . #x0000001c)
+    (valid . #t)
+    (byte-count . #x00000040)
+    (channel . #x00000000)
+    (bus-data-credit . #x00000011)
+    (header-response . #x00001000)
+    (last-error)
+    (SDHC0 ... (BLOCKSIZE . #x00000040) (ARGUMENT . #x2c000001)))
+#+end_example
+
+The following selected-card reads still returned zero values and zero
+responses:
+
+#+begin_example
+(wifi-interrupt-state)
+=> ((status . ready)
+    (CCCR.IO_ENABLE . #x00000000)
+    (CCCR.IO_READY . #x00000000)
+    (CCCR.INTERRUPT_ENABLE . #x00000000)
+    (CCCR.INTERRUPT_PENDING . #x00000000)
+    (CCCR.BUS_CONTROL . #x00000000)
+    (host-card-interrupt . #t)
+    (HOST.NORM_INT . #x00000100)
+    (HOST.ERR_INT . #x00000000)
+    (last-error))
+
+(wifi-ack-interrupts)
+=> ((status . ready)
+    (INT_STATUS.before . #x00000000)
+    (TO_HOST_MAILBOX_DATA . #x00000000)
+    (TO_SB_MAILBOX.ack . #x00000000)
+    (INT_STATUS.after . #x00000000)
+    (last-error))
+#+end_example
+
+Interpretation: true 64-byte CMD53 block mode can read the WLC_UP response and
+does not produce a host-controller error, but it does not prevent the
+post-response zero-read state. The failure is now after consuming a valid WLC_UP
+response, not specifically caused by byte-mode F2 reads, split response reads,
+short response reads, or pre-WLC_UP KSO state.
+
 * Next actions
 
 1. Add REPL history and better editing across continuation lines.

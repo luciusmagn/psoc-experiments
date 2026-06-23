@@ -4158,6 +4158,70 @@ pub fn f2_read_frame_exact(p: &Peripherals, count: u8) -> WifiSdioF2FrameReport 
     )
 }
 
+pub fn f2_read_frame_block(p: &Peripherals) -> WifiSdioF2FrameReport {
+    let transfer = f2_read_block(p);
+    let mut bytes = [0; SDIO_CMD53_PREVIEW_BYTES];
+    copy_bytes(&mut bytes, 0, &transfer.bytes, SDIO_CMD53_BLOCK_BYTES as u8);
+
+    if !matches!(transfer.status, WifiSdioCmd53ReadStatus::Ready) {
+        return f2_frame_report(
+            p,
+            WifiSdioF2FrameStatus::HeaderReadFailed,
+            transfer.status,
+            WifiSdioCmd53ReadStatus::Ready,
+            transfer.response,
+            0,
+            bytes,
+            0,
+            transfer.last_error,
+        );
+    }
+
+    let length = u16::from_le_bytes([bytes[0], bytes[1]]);
+    let checksum = u16::from_le_bytes([bytes[2], bytes[3]]);
+    let valid = length != 0 && (length ^ checksum) == 0xffff;
+
+    if !valid {
+        return f2_frame_report(
+            p,
+            WifiSdioF2FrameStatus::InvalidHeader,
+            transfer.status,
+            WifiSdioCmd53ReadStatus::Ready,
+            transfer.response,
+            0,
+            bytes,
+            SDIO_CMD53_BLOCK_BYTES as u8,
+            None,
+        );
+    }
+
+    if length < SDPCM_HEADER_BYTES as u16 {
+        return f2_frame_report(
+            p,
+            WifiSdioF2FrameStatus::FrameTooShort,
+            transfer.status,
+            WifiSdioCmd53ReadStatus::Ready,
+            transfer.response,
+            0,
+            bytes,
+            SDIO_CMD53_BLOCK_BYTES as u8,
+            None,
+        );
+    }
+
+    f2_frame_report(
+        p,
+        WifiSdioF2FrameStatus::Ready,
+        transfer.status,
+        WifiSdioCmd53ReadStatus::Ready,
+        transfer.response,
+        0,
+        bytes,
+        SDIO_CMD53_BLOCK_BYTES as u8,
+        None,
+    )
+}
+
 pub fn send_wlc_up(p: &Peripherals) -> WifiSdioF2ControlReport {
     let initial_tx_credit = 1;
     let packet = wlc_up_control_packet_words();
@@ -7256,6 +7320,44 @@ fn f2_read_bytes(p: &Peripherals, count: u8) -> F2Transfer {
     };
 
     let bytes = match read_cmd53_bytes(core, count) {
+        Ok(bytes) => bytes,
+        Err(status) => return f2_transfer(status, response, None),
+    };
+
+    F2Transfer {
+        status: WifiSdioCmd53ReadStatus::Ready,
+        response,
+        bytes,
+        last_error: None,
+    }
+}
+
+fn f2_read_block(p: &Peripherals) -> F2Transfer {
+    let core = &p.SDHC0.core;
+    let descriptor_address = prepare_cmd53_read_words(SDIO_CMD53_BLOCK_BYTES);
+    if !configure_cmd53_read(core, SDIO_CMD53_BLOCK_BYTES as u8, true, descriptor_address) {
+        return f2_transfer(WifiSdioCmd53ReadStatus::DataSetupBusy, 0, None);
+    }
+
+    let response = match send_command(
+        core,
+        Command {
+            index: 53,
+            argument: cmd53_argument(false, 2, true, true, 0, 1),
+            response: ResponseType::Len48,
+            command_type: CommandType::Normal,
+            data_present: true,
+            crc_check: true,
+            index_check: true,
+        },
+    ) {
+        Ok(response) => response,
+        Err(error) => {
+            return f2_transfer(WifiSdioCmd53ReadStatus::Cmd53Failed, 0, Some(error));
+        }
+    };
+
+    let bytes = match read_cmd53_bytes(core, SDIO_CMD53_BLOCK_BYTES as u8) {
         Ok(bytes) => bytes,
         Err(status) => return f2_transfer(status, response, None),
     };
