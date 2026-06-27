@@ -568,6 +568,13 @@ impl lisp::Board for PsocBoard<'_> {
         ))
     }
 
+    fn wifi_disable_tx_glomming(&mut self) -> lisp::WifiSdioTxGlommingReport {
+        wifi_sdio_tx_glomming_report(wifi_sdio::disable_tx_glomming(
+            self.p,
+            &mut self.state.wifi_control_state,
+        ))
+    }
+
     fn wifi_enable_network_events(&mut self) -> lisp::WifiSdioEventMaskReport {
         wifi_sdio_event_mask_report(wifi_sdio::enable_network_events(
             self.p,
@@ -577,6 +584,13 @@ impl lisp::Board for PsocBoard<'_> {
 
     fn wifi_start_scan(&mut self) -> lisp::WifiSdioScanStartReport {
         wifi_sdio_scan_start_report(wifi_sdio::start_scan(
+            self.p,
+            &mut self.state.wifi_control_state,
+        ))
+    }
+
+    fn wifi_drain_scan_events(&mut self) -> lisp::WifiSdioScanEventDrainReport {
+        wifi_sdio_scan_event_drain_report(wifi_sdio::drain_scan_events(
             self.p,
             &mut self.state.wifi_control_state,
         ))
@@ -1207,6 +1221,19 @@ fn wifi_sdio_event_mask_status(status: wifi_sdio::WifiSdioEventMaskStatus) -> &'
     }
 }
 
+fn wifi_sdio_tx_glomming_status(status: wifi_sdio::WifiSdioTxGlommingStatus) -> &'static [u8] {
+    match status {
+        wifi_sdio::WifiSdioTxGlommingStatus::Ready => b"ready",
+        wifi_sdio::WifiSdioTxGlommingStatus::HtRequestFailed => b"ht-request-failed",
+        wifi_sdio::WifiSdioTxGlommingStatus::SendFailed => b"send-failed",
+        wifi_sdio::WifiSdioTxGlommingStatus::ResponseFrameFailed => b"response-frame-failed",
+        wifi_sdio::WifiSdioTxGlommingStatus::UnexpectedResponseFrame => {
+            b"unexpected-response-frame"
+        }
+        wifi_sdio::WifiSdioTxGlommingStatus::CdcStatusError => b"cdc-status-error",
+    }
+}
+
 fn wifi_sdio_scan_start_status(status: wifi_sdio::WifiSdioScanStartStatus) -> &'static [u8] {
     match status {
         wifi_sdio::WifiSdioScanStartStatus::Ready => b"ready",
@@ -1215,6 +1242,33 @@ fn wifi_sdio_scan_start_status(status: wifi_sdio::WifiSdioScanStartStatus) -> &'
         wifi_sdio::WifiSdioScanStartStatus::ResponseFrameFailed => b"response-frame-failed",
         wifi_sdio::WifiSdioScanStartStatus::UnexpectedResponseFrame => b"unexpected-response-frame",
         wifi_sdio::WifiSdioScanStartStatus::CdcStatusError => b"cdc-status-error",
+    }
+}
+
+fn wifi_sdio_scan_event_drain_status(
+    status: wifi_sdio::WifiSdioScanEventDrainStatus,
+) -> &'static [u8] {
+    match status {
+        wifi_sdio::WifiSdioScanEventDrainStatus::Ready => b"ready",
+        wifi_sdio::WifiSdioScanEventDrainStatus::AckFailed => b"ack-failed",
+    }
+}
+
+fn wifi_sdio_scan_event_stop_reason(
+    reason: wifi_sdio::WifiSdioScanEventStopReason,
+) -> &'static [u8] {
+    match reason {
+        wifi_sdio::WifiSdioScanEventStopReason::NotStopped => b"not-stopped",
+        wifi_sdio::WifiSdioScanEventStopReason::FrameLimit => b"frame-limit",
+        wifi_sdio::WifiSdioScanEventStopReason::FrameReadFailed => b"frame-read-failed",
+        wifi_sdio::WifiSdioScanEventStopReason::InvalidFrame => b"invalid-frame",
+        wifi_sdio::WifiSdioScanEventStopReason::NonEventChannel => b"non-event-channel",
+        wifi_sdio::WifiSdioScanEventStopReason::BdcHeaderTooShort => b"bdc-header-too-short",
+        wifi_sdio::WifiSdioScanEventStopReason::EventHeaderTooShort => b"event-header-too-short",
+        wifi_sdio::WifiSdioScanEventStopReason::WrongEtherType => b"wrong-ethertype",
+        wifi_sdio::WifiSdioScanEventStopReason::WrongOui => b"wrong-oui",
+        wifi_sdio::WifiSdioScanEventStopReason::ScanComplete => b"scan-complete",
+        wifi_sdio::WifiSdioScanEventStopReason::ScanAborted => b"scan-aborted",
     }
 }
 
@@ -1235,6 +1289,7 @@ fn wifi_sdio_get_clm_version_status(
 
 fn wifi_sdio_interrupt_ack_status(status: wifi_sdio::WifiSdioInterruptAckStatus) -> &'static [u8] {
     match status {
+        wifi_sdio::WifiSdioInterruptAckStatus::NotRun => b"not-run",
         wifi_sdio::WifiSdioInterruptAckStatus::Ready => b"ready",
         wifi_sdio::WifiSdioInterruptAckStatus::IntStatusReadFailed => b"int-status-read-failed",
         wifi_sdio::WifiSdioInterruptAckStatus::MailboxReadFailed => b"mailbox-read-failed",
@@ -1862,6 +1917,43 @@ fn wifi_sdio_event_mask_report(
     }
 }
 
+fn wifi_sdio_tx_glomming_report(
+    report: wifi_sdio::WifiSdioTxGlommingReport,
+) -> lisp::WifiSdioTxGlommingReport {
+    lisp::WifiSdioTxGlommingReport {
+        status: wifi_sdio_tx_glomming_status(report.status),
+        ht_status: wifi_sdio_ht_request_status(report.ht_status),
+        ht_attempts: report.ht_attempts,
+        ht_write_response: report.ht_write_response,
+        ht_read_value: report.ht_read_value,
+        ht_read_response: report.ht_read_response,
+        ht_available: report.ht_available,
+        enabled: report.enabled,
+        value: report.value,
+        send_status: wifi_sdio_f2_control_status(report.send_status),
+        send_packet_length: report.send_packet_length,
+        send_write_response: report.send_write_response,
+        response_status: wifi_sdio_f2_frame_status(report.response_status),
+        response_length: report.response_length,
+        response_sequence: report.response_sequence,
+        response_channel: report.response_channel,
+        response_bus_data_credit: report.response_bus_data_credit,
+        cdc_command: report.cdc_command,
+        cdc_length: report.cdc_length,
+        cdc_flags: report.cdc_flags,
+        cdc_id: report.cdc_id,
+        cdc_status: report.cdc_status,
+        ht_last_error: report.ht_last_error.map(wifi_sdio_command_error_report),
+        send_last_error: report.send_last_error.map(wifi_sdio_command_error_report),
+        response_last_error: report
+            .response_last_error
+            .map(wifi_sdio_command_error_report),
+        host_normal_int: report.host_normal_int,
+        host_error_int: report.host_error_int,
+        host: wifi_sdio_host_report(report.host),
+    }
+}
+
 fn wifi_sdio_scan_start_report(
     report: wifi_sdio::WifiSdioScanStartReport,
 ) -> lisp::WifiSdioScanStartReport {
@@ -1901,6 +1993,46 @@ fn wifi_sdio_scan_start_report(
         host_normal_int: report.host_normal_int,
         host_error_int: report.host_error_int,
         host: wifi_sdio_host_report(report.host),
+    }
+}
+
+fn wifi_sdio_scan_event_drain_report(
+    report: wifi_sdio::WifiSdioScanEventDrainReport,
+) -> lisp::WifiSdioScanEventDrainReport {
+    lisp::WifiSdioScanEventDrainReport {
+        status: wifi_sdio_scan_event_drain_status(report.status),
+        stop_reason: wifi_sdio_scan_event_stop_reason(report.stop_reason),
+        requested_frames: report.requested_frames,
+        frames_read: report.frames_read,
+        non_event_frames: report.non_event_frames,
+        events_seen: report.events_seen,
+        other_events: report.other_events,
+        scan_events: report.scan_events,
+        scan_partial: report.scan_partial,
+        scan_complete: report.scan_complete,
+        scan_abort: report.scan_abort,
+        scan_other_status: report.scan_other_status,
+        last_frame_status: wifi_sdio_f2_frame_status(report.last_frame_status),
+        last_frame_length: report.last_frame_length,
+        last_frame_channel: report.last_frame_channel,
+        last_frame_bus_data_credit: report.last_frame_bus_data_credit,
+        last_event_type: report.last_event_type,
+        last_event_status: report.last_event_status,
+        last_event_reason: report.last_event_reason,
+        last_event_datalen: report.last_event_datalen,
+        last_event_ifidx: report.last_event_ifidx,
+        last_event_bsscfgidx: report.last_event_bsscfgidx,
+        last_escan_buflen: report.last_escan_buflen,
+        last_escan_version: report.last_escan_version,
+        last_escan_sync_id: report.last_escan_sync_id,
+        last_escan_bss_count: report.last_escan_bss_count,
+        ack_status: wifi_sdio_interrupt_ack_status(report.ack_status),
+        ack_int_status_before: report.ack_int_status_before,
+        ack_clear_value: report.ack_clear_value,
+        ack_int_status_after: report.ack_int_status_after,
+        ack_final_response: report.ack_final_response,
+        frame_last_error: report.frame_last_error.map(wifi_sdio_command_error_report),
+        ack_last_error: report.ack_last_error.map(wifi_sdio_command_error_report),
     }
 }
 

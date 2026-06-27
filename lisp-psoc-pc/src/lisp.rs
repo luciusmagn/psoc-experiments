@@ -107,8 +107,10 @@ pub trait Board {
     fn wifi_load_clm(&mut self) -> WifiSdioClmLoadReport;
     fn wifi_get_country(&mut self) -> WifiSdioCountryReport;
     fn wifi_set_country(&mut self, country_code: [u8; 2], revision: i32) -> WifiSdioCountryReport;
+    fn wifi_disable_tx_glomming(&mut self) -> WifiSdioTxGlommingReport;
     fn wifi_enable_network_events(&mut self) -> WifiSdioEventMaskReport;
     fn wifi_start_scan(&mut self) -> WifiSdioScanStartReport;
+    fn wifi_drain_scan_events(&mut self) -> WifiSdioScanEventDrainReport;
     fn wifi_get_clm_version(&mut self) -> WifiSdioGetClmVersionReport;
     fn wifi_f2_read_frame_abort(&mut self) -> WifiSdioF2AbortProbeReport;
     fn wifi_poll_read_frame(&mut self) -> WifiSdioPollReadFrameReport;
@@ -865,6 +867,38 @@ pub struct WifiSdioEventMaskReport {
 }
 
 #[derive(Clone, Copy)]
+pub struct WifiSdioTxGlommingReport {
+    pub status: &'static [u8],
+    pub ht_status: &'static [u8],
+    pub ht_attempts: u16,
+    pub ht_write_response: u32,
+    pub ht_read_value: u8,
+    pub ht_read_response: u32,
+    pub ht_available: bool,
+    pub enabled: bool,
+    pub value: u32,
+    pub send_status: &'static [u8],
+    pub send_packet_length: u16,
+    pub send_write_response: u32,
+    pub response_status: &'static [u8],
+    pub response_length: u16,
+    pub response_sequence: u8,
+    pub response_channel: u8,
+    pub response_bus_data_credit: u8,
+    pub cdc_command: u32,
+    pub cdc_length: u32,
+    pub cdc_flags: u32,
+    pub cdc_id: u16,
+    pub cdc_status: u32,
+    pub ht_last_error: Option<WifiSdioCommandErrorReport>,
+    pub send_last_error: Option<WifiSdioCommandErrorReport>,
+    pub response_last_error: Option<WifiSdioCommandErrorReport>,
+    pub host_normal_int: u16,
+    pub host_error_int: u16,
+    pub host: WifiSdioHostReport,
+}
+
+#[derive(Clone, Copy)]
 pub struct WifiSdioScanStartReport {
     pub status: &'static [u8],
     pub ht_status: &'static [u8],
@@ -899,6 +933,43 @@ pub struct WifiSdioScanStartReport {
     pub host_normal_int: u16,
     pub host_error_int: u16,
     pub host: WifiSdioHostReport,
+}
+
+#[derive(Clone, Copy)]
+pub struct WifiSdioScanEventDrainReport {
+    pub status: &'static [u8],
+    pub stop_reason: &'static [u8],
+    pub requested_frames: u8,
+    pub frames_read: u8,
+    pub non_event_frames: u8,
+    pub events_seen: u8,
+    pub other_events: u8,
+    pub scan_events: u8,
+    pub scan_partial: u8,
+    pub scan_complete: u8,
+    pub scan_abort: u8,
+    pub scan_other_status: u8,
+    pub last_frame_status: &'static [u8],
+    pub last_frame_length: u16,
+    pub last_frame_channel: u8,
+    pub last_frame_bus_data_credit: u8,
+    pub last_event_type: u32,
+    pub last_event_status: u32,
+    pub last_event_reason: u32,
+    pub last_event_datalen: u32,
+    pub last_event_ifidx: u8,
+    pub last_event_bsscfgidx: u8,
+    pub last_escan_buflen: u32,
+    pub last_escan_version: u32,
+    pub last_escan_sync_id: u16,
+    pub last_escan_bss_count: u16,
+    pub ack_status: &'static [u8],
+    pub ack_int_status_before: u32,
+    pub ack_clear_value: u32,
+    pub ack_int_status_after: u32,
+    pub ack_final_response: u32,
+    pub frame_last_error: Option<WifiSdioCommandErrorReport>,
+    pub ack_last_error: Option<WifiSdioCommandErrorReport>,
 }
 
 #[derive(Clone, Copy)]
@@ -1230,8 +1301,10 @@ pub enum Primitive {
     WifiLoadClm,
     WifiGetCountry,
     WifiSetCountry,
+    WifiDisableTxGlomming,
     WifiEnableNetworkEvents,
     WifiStartScan,
+    WifiDrainScanEvents,
     WifiGetClmVersion,
     WifiF2ReadFrameAbort,
     WifiPollReadFrame,
@@ -1325,8 +1398,10 @@ impl Primitive {
             Self::WifiLoadClm => "wifi-load-clm",
             Self::WifiGetCountry => "wifi-get-country",
             Self::WifiSetCountry => "wifi-set-country",
+            Self::WifiDisableTxGlomming => "wifi-disable-tx-glomming",
             Self::WifiEnableNetworkEvents => "wifi-enable-network-events",
             Self::WifiStartScan => "wifi-start-scan",
+            Self::WifiDrainScanEvents => "wifi-drain-scan-events",
             Self::WifiGetClmVersion => "wifi-get-clm-version",
             Self::WifiF2ReadFrameAbort => "wifi-f2-read-frame-abort",
             Self::WifiPollReadFrame => "wifi-poll-read-frame",
@@ -1579,10 +1654,15 @@ impl Machine {
         self.install_primitive(b"wifi-get-country", Primitive::WifiGetCountry)?;
         self.install_primitive(b"wifi-set-country", Primitive::WifiSetCountry)?;
         self.install_primitive(
+            b"wifi-disable-tx-glomming",
+            Primitive::WifiDisableTxGlomming,
+        )?;
+        self.install_primitive(
             b"wifi-enable-network-events",
             Primitive::WifiEnableNetworkEvents,
         )?;
         self.install_primitive(b"wifi-start-scan", Primitive::WifiStartScan)?;
+        self.install_primitive(b"wifi-drain-scan-events", Primitive::WifiDrainScanEvents)?;
         self.install_primitive(b"wifi-get-clm-version", Primitive::WifiGetClmVersion)?;
         self.install_primitive(b"wifi-f2-read-frame-abort", Primitive::WifiF2ReadFrameAbort)?;
         self.install_primitive(b"wifi-poll-read-frame", Primitive::WifiPollReadFrame)?;
@@ -2449,6 +2529,10 @@ impl Machine {
                 let revision = self.expect_int(args[1])?;
                 self.wifi_sdio_country_report(board.wifi_set_country(country_code, revision))
             }
+            Primitive::WifiDisableTxGlomming => {
+                self.expect_count(args, 0)?;
+                self.wifi_sdio_tx_glomming_report(board.wifi_disable_tx_glomming())
+            }
             Primitive::WifiEnableNetworkEvents => {
                 self.expect_count(args, 0)?;
                 self.wifi_sdio_event_mask_report(board.wifi_enable_network_events())
@@ -2456,6 +2540,10 @@ impl Machine {
             Primitive::WifiStartScan => {
                 self.expect_count(args, 0)?;
                 self.wifi_sdio_scan_start_report(board.wifi_start_scan())
+            }
+            Primitive::WifiDrainScanEvents => {
+                self.expect_count(args, 0)?;
+                self.wifi_sdio_scan_event_drain_report(board.wifi_drain_scan_events())
             }
             Primitive::WifiGetClmVersion => {
                 self.expect_count(args, 0)?;
@@ -2900,8 +2988,10 @@ impl Machine {
             b"wifi-load-clm",
             b"wifi-get-country",
             b"wifi-set-country",
+            b"wifi-disable-tx-glomming",
             b"wifi-enable-network-events",
             b"wifi-start-scan",
+            b"wifi-drain-scan-events",
             b"wifi-get-clm-version",
             b"wifi-f2-read-frame-abort",
             b"wifi-poll-read-frame",
@@ -4310,6 +4400,81 @@ impl Machine {
         self.make_list_from_values(&entries)
     }
 
+    fn wifi_sdio_tx_glomming_report(
+        &mut self,
+        report: WifiSdioTxGlommingReport,
+    ) -> LispResult<Value> {
+        let status = self.symbol_entry(b"status", report.status)?;
+        let ht_status = self.symbol_entry(b"ht.status", report.ht_status)?;
+        let ht_attempts = self.word_entry(b"ht.attempts", report.ht_attempts as u32)?;
+        let ht_write_response = self.word_entry(b"ht.write-response", report.ht_write_response)?;
+        let ht_read_value = self.word_entry(b"ht.read-value", report.ht_read_value as u32)?;
+        let ht_read_response = self.word_entry(b"ht.read-response", report.ht_read_response)?;
+        let ht_available = self.bool_entry(b"ht.available", report.ht_available)?;
+        let enabled = self.bool_entry(b"tx-glomming.enabled", report.enabled)?;
+        let value = self.word_entry(b"tx-glomming.value", report.value)?;
+        let send_status = self.symbol_entry(b"send.status", report.send_status)?;
+        let send_packet_length =
+            self.word_entry(b"send.packet-length", report.send_packet_length as u32)?;
+        let send_write_response =
+            self.word_entry(b"send.write-response", report.send_write_response)?;
+        let response_status = self.symbol_entry(b"response.status", report.response_status)?;
+        let response_length = self.word_entry(b"response.length", report.response_length as u32)?;
+        let response_sequence =
+            self.word_entry(b"response.sequence", report.response_sequence as u32)?;
+        let response_channel =
+            self.word_entry(b"response.channel", report.response_channel as u32)?;
+        let response_bus_data_credit = self.word_entry(
+            b"response.bus-data-credit",
+            report.response_bus_data_credit as u32,
+        )?;
+        let cdc_command = self.word_entry(b"cdc.command", report.cdc_command)?;
+        let cdc_length = self.word_entry(b"cdc.length", report.cdc_length)?;
+        let cdc_flags = self.word_entry(b"cdc.flags", report.cdc_flags)?;
+        let cdc_id = self.word_entry(b"cdc.id", report.cdc_id as u32)?;
+        let cdc_status = self.word_entry(b"cdc.status", report.cdc_status)?;
+        let host_normal_int = self.word_entry(b"HOST.NORM_INT", report.host_normal_int as u32)?;
+        let host_error_int = self.word_entry(b"HOST.ERR_INT", report.host_error_int as u32)?;
+        let ht_last_error = self.wifi_sdio_error_entry(b"ht.last-error", report.ht_last_error)?;
+        let send_last_error =
+            self.wifi_sdio_error_entry(b"send.last-error", report.send_last_error)?;
+        let response_last_error =
+            self.wifi_sdio_error_entry(b"response.last-error", report.response_last_error)?;
+        let host = self.wifi_sdio_host_report(report.host)?;
+        let host = self.entry(b"SDHC0", host)?;
+        let entries = [
+            status,
+            ht_status,
+            ht_attempts,
+            ht_write_response,
+            ht_read_value,
+            ht_read_response,
+            ht_available,
+            enabled,
+            value,
+            send_status,
+            send_packet_length,
+            send_write_response,
+            response_status,
+            response_length,
+            response_sequence,
+            response_channel,
+            response_bus_data_credit,
+            cdc_command,
+            cdc_length,
+            cdc_flags,
+            cdc_id,
+            cdc_status,
+            host_normal_int,
+            host_error_int,
+            ht_last_error,
+            send_last_error,
+            response_last_error,
+            host,
+        ];
+        self.make_list_from_values(&entries)
+    }
+
     fn wifi_sdio_scan_start_report(
         &mut self,
         report: WifiSdioScanStartReport,
@@ -4395,6 +4560,101 @@ impl Machine {
             send_last_error,
             response_last_error,
             host,
+        ];
+        self.make_list_from_values(&entries)
+    }
+
+    fn wifi_sdio_scan_event_drain_report(
+        &mut self,
+        report: WifiSdioScanEventDrainReport,
+    ) -> LispResult<Value> {
+        let status = self.symbol_entry(b"status", report.status)?;
+        let stop_reason = self.symbol_entry(b"stop.reason", report.stop_reason)?;
+        let requested_frames =
+            self.word_entry(b"requested.frames", report.requested_frames as u32)?;
+        let frames_read = self.word_entry(b"frames.read", report.frames_read as u32)?;
+        let non_event_frames =
+            self.word_entry(b"non-event.frames", report.non_event_frames as u32)?;
+        let events_seen = self.word_entry(b"events.seen", report.events_seen as u32)?;
+        let other_events = self.word_entry(b"events.other", report.other_events as u32)?;
+        let scan_events = self.word_entry(b"scan.events", report.scan_events as u32)?;
+        let scan_partial = self.word_entry(b"scan.partial", report.scan_partial as u32)?;
+        let scan_complete = self.word_entry(b"scan.complete", report.scan_complete as u32)?;
+        let scan_abort = self.word_entry(b"scan.abort", report.scan_abort as u32)?;
+        let scan_other_status =
+            self.word_entry(b"scan.other-status", report.scan_other_status as u32)?;
+        let last_frame_status =
+            self.symbol_entry(b"last.frame.status", report.last_frame_status)?;
+        let last_frame_length =
+            self.word_entry(b"last.frame.length", report.last_frame_length as u32)?;
+        let last_frame_channel =
+            self.word_entry(b"last.frame.channel", report.last_frame_channel as u32)?;
+        let last_frame_bus_data_credit = self.word_entry(
+            b"last.frame.bus-data-credit",
+            report.last_frame_bus_data_credit as u32,
+        )?;
+        let last_event_type = self.word_entry(b"last.event.type", report.last_event_type)?;
+        let last_event_status = self.word_entry(b"last.event.status", report.last_event_status)?;
+        let last_event_reason = self.word_entry(b"last.event.reason", report.last_event_reason)?;
+        let last_event_datalen =
+            self.word_entry(b"last.event.datalen", report.last_event_datalen)?;
+        let last_event_ifidx =
+            self.word_entry(b"last.event.ifidx", report.last_event_ifidx as u32)?;
+        let last_event_bsscfgidx =
+            self.word_entry(b"last.event.bsscfgidx", report.last_event_bsscfgidx as u32)?;
+        let last_escan_buflen = self.word_entry(b"last.escan.buflen", report.last_escan_buflen)?;
+        let last_escan_version =
+            self.word_entry(b"last.escan.version", report.last_escan_version)?;
+        let last_escan_sync_id =
+            self.word_entry(b"last.escan.sync-id", report.last_escan_sync_id as u32)?;
+        let last_escan_bss_count =
+            self.word_entry(b"last.escan.bss-count", report.last_escan_bss_count as u32)?;
+        let ack_status = self.symbol_entry(b"ack.status", report.ack_status)?;
+        let ack_int_status_before =
+            self.word_entry(b"ack.INT_STATUS.before", report.ack_int_status_before)?;
+        let ack_clear_value = self.word_entry(b"ack.INT_STATUS.clear", report.ack_clear_value)?;
+        let ack_int_status_after =
+            self.word_entry(b"ack.INT_STATUS.after", report.ack_int_status_after)?;
+        let ack_final_response =
+            self.word_entry(b"ack.INT_STATUS.final-response", report.ack_final_response)?;
+        let frame_last_error =
+            self.wifi_sdio_error_entry(b"frame.last-error", report.frame_last_error)?;
+        let ack_last_error =
+            self.wifi_sdio_error_entry(b"ack.last-error", report.ack_last_error)?;
+        let entries = [
+            status,
+            stop_reason,
+            requested_frames,
+            frames_read,
+            non_event_frames,
+            events_seen,
+            other_events,
+            scan_events,
+            scan_partial,
+            scan_complete,
+            scan_abort,
+            scan_other_status,
+            last_frame_status,
+            last_frame_length,
+            last_frame_channel,
+            last_frame_bus_data_credit,
+            last_event_type,
+            last_event_status,
+            last_event_reason,
+            last_event_datalen,
+            last_event_ifidx,
+            last_event_bsscfgidx,
+            last_escan_buflen,
+            last_escan_version,
+            last_escan_sync_id,
+            last_escan_bss_count,
+            ack_status,
+            ack_int_status_before,
+            ack_clear_value,
+            ack_int_status_after,
+            ack_final_response,
+            frame_last_error,
+            ack_last_error,
         ];
         self.make_list_from_values(&entries)
     }

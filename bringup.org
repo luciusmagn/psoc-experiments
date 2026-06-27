@@ -4233,6 +4233,101 @@ Observed shape:
 => (help ... wifi-enable-network-events ... reboot)
 #+end_example
 
+* 2026-06-28 Scan event drain and TX glomming
+
+Added =(wifi-drain-scan-events)= as a sanitized scan-event diagnostic. It
+acknowledges the SDIO interrupt, reads up to 32 full F2 frames, parses the
+SDPCM async-event channel, BDC header, Broadcom Ethernet event header, and
+fixed event message fields, then reports counters and numeric metadata only.
+It deliberately does not print raw scan payloads, SSIDs, BSSIDs, MAC
+addresses, or generated local addresses.
+
+The parser follows the Infineon WHD SDPCM/CDC/BDC event layout from the local
+reference checkout under =.local/reference/wifi-host-driver=. The event of
+interest is =WLC_E_ESCAN_RESULT= (=#x45=). Status =#x8= is a partial scan
+result and status =#x0= is scan completion.
+
+The first 32-frame build, before disabling TX glomming, proved the event
+parser but hit non-event SDPCM channel 3 frames after scan partials:
+
+#+begin_example
+(wifi-drain-scan-events)
+=> ((status . ready)
+    (stop.reason . non-event-channel)
+    (requested.frames . #x00000020)
+    (frames.read . #x0000000a)
+    (events.seen . #x00000009)
+    (scan.events . #x00000009)
+    (scan.partial . #x00000009)
+    (last.frame.length . #x00000010)
+    (last.frame.channel . #x00000003)
+    (last.event.type . #x00000045)
+    (last.event.status . #x00000008))
+#+end_example
+
+A second drain immediately saw another channel 3 frame with length
+=#x00000480=. WHD drops unknown SDPCM channels in its RX dispatcher and also
+sets =bus:txglom= to zero during management initialization, so the firmware now
+has =(wifi-disable-tx-glomming)= and the drain counts/skips non-event frames
+instead of treating them as a parser failure.
+
+Validation:
+
+#+begin_example
+cargo fmt
+tools/build-lisp.scm --wifi-firmware
+git diff --check
+tools/flash-lisp.scm
+tools/serial-console.scm
+tools/send-lisp.scm '(wifi-sdio-init)'
+tools/send-lisp.scm '(wifi-start-firmware)'
+tools/send-lisp.scm '(wifi-wlc-up)'
+tools/send-lisp.scm '(wifi-ack-interrupts)'
+tools/send-lisp.scm '(wifi-load-clm)'
+tools/send-lisp.scm '(wifi-disable-tx-glomming)'
+tools/send-lisp.scm '(wifi-set-country "XX" -1)'
+tools/send-lisp.scm '(wifi-enable-network-events)'
+tools/send-lisp.scm '(wifi-start-scan)'
+tools/send-lisp.scm '(wifi-drain-scan-events)'
+#+end_example
+
+Observed shape after disabling TX glomming:
+
+#+begin_example
+(wifi-disable-tx-glomming)
+=> ((status . ready)
+    (tx-glomming.enabled . #f)
+    (tx-glomming.value . #x00000000)
+    (send.packet-length . #x0000002b)
+    (response.status . ready)
+    (cdc.command . #x00000107)
+    (cdc.length . #x0000000f)
+    (cdc.status . #x00000000))
+
+(wifi-drain-scan-events)
+=> ((status . ready)
+    (stop.reason . scan-complete)
+    (requested.frames . #x00000020)
+    (frames.read . #x0000001e)
+    (non-event.frames . #x00000000)
+    (events.seen . #x0000001e)
+    (events.other . #x00000000)
+    (scan.events . #x0000001e)
+    (scan.partial . #x0000001d)
+    (scan.complete . #x00000001)
+    (scan.abort . #x00000000)
+    (last.frame.length . #x0000006c)
+    (last.frame.channel . #x00000001)
+    (last.event.type . #x00000045)
+    (last.event.status . #x00000000)
+    (last.event.datalen . #x0000000c))
+#+end_example
+
+The repo-local sender now defaults to 200 ms per byte. The earlier 100 ms
+default once dropped a closing parenthesis, leaving the REPL in a continuation
+prompt. Keep using =(wifi-sdio-init)= as the clean recovery path after stale F2
+state because it power-cycles =WL_REG_ON=.
+
 * Next actions
 
 1. Watch for any remaining UART corruption during longer Wi-Fi association
@@ -4241,7 +4336,7 @@ Observed shape:
 3. Add a FAT/exFAT-aware storage layer after raw block reads/writes work.
 4. Test the newer Infineon target =infineon/cy8cxxa.cfg= as a replacement
    for obsolete =target/psoc6_2m.cfg=.
-5. Add generic CDC ioctl/iovar helpers for firmware version, scan events, and join.
-6. Add a sanitized channel scan summary after scan-start setup.
+5. Turn parsed scan events into a sanitized AP summary and join workflow.
+6. Add generic CDC ioctl/iovar helpers for firmware version and join.
 7. Start Wi-Fi from a known-good Infineon or Zephyr sample before trying
    to hand-port the full CYW4343W network stack.
