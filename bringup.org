@@ -3715,6 +3715,60 @@ and bus credits:
 The post-test SDIO state still reports =IO_ENABLE=#x06, =IO_READY=#x06,
 =INTERRUPT_ENABLE=#x05, and =BUS_CONTROL=#x42= with nonzero CMD52 responses.
 
+* 2026-06-27 WLC_GET_VAR mpc iovar
+
+Added =(wifi-get-mpc)= as the first narrow =WLC_GET_VAR= iovar smoke test.
+The command sends =mpc\0= plus a four-byte value slot through the stateful
+SDPCM/CDC control path and reads the returned little-endian value.
+
+Validation:
+
+#+begin_example
+cargo fmt
+tools/build-lisp.scm --wifi-firmware
+tools/flash-lisp.scm
+tools/serial-console.scm
+tools/send-lisp.scm '(+ 5 6)'
+tools/send-lisp.scm '(help)'
+tools/send-lisp.scm '(wifi-start-firmware)'
+tools/send-lisp.scm '(wifi-wlc-up)'
+tools/send-lisp.scm '(wifi-ack-interrupts)'
+tools/send-lisp.scm '(wifi-get-mpc)'
+tools/send-lisp.scm '(wifi-get-version)'
+#+end_example
+
+The =mpc= iovar read succeeded:
+
+#+begin_example
+(wifi-get-mpc)
+=> ((status . ready)
+    (ht.status . ready)
+    (send.status . ready)
+    (send.packet-length . #x00000024)
+    (response.status . ready)
+    (response.length . #x00000024)
+    (response.sequence . #x00000002)
+    (response.channel . #x00000000)
+    (response.bus-data-credit . #x00000012)
+    (cdc.command . #x00000106)
+    (cdc.length . #x00000008)
+    (cdc.flags . #x00020000)
+    (cdc.id . #x00000002)
+    (cdc.status . #x00000000)
+    (value . #x00000001)
+    (ht.last-error)
+    (send.last-error)
+    (response.last-error))
+#+end_example
+
+A follow-up version ioctl in the same firmware session advanced normally to
+=cdc.id=#x3=, =response.sequence=#x3=, and =response.bus-data-credit=#x13=.
+
+Interpretation: the board now handles at least one real iovar exchange after
+=WLC_UP=, not only fixed command numbers. The next Wi-Fi work should generalize
+the iovar send/receive code and then extend the F2 write/read path for the
+larger payloads needed by CLM download, scan results, and join state.
+
 * Next actions
 
 1. Add REPL history and better editing across continuation lines.

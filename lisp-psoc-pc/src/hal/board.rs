@@ -533,6 +533,13 @@ impl lisp::Board for PsocBoard<'_> {
         ))
     }
 
+    fn wifi_get_mpc(&mut self) -> lisp::WifiSdioGetMpcReport {
+        wifi_sdio_get_mpc_report(wifi_sdio::get_mpc(
+            self.p,
+            &mut self.state.wifi_control_state,
+        ))
+    }
+
     fn wifi_f2_read_frame_abort(&mut self) -> lisp::WifiSdioF2AbortProbeReport {
         let frame = wifi_sdio::f2_read_frame(self.p);
         let abort = wifi_sdio::abort_read(self.p);
@@ -1106,6 +1113,17 @@ fn wifi_sdio_get_version_status(status: wifi_sdio::WifiSdioGetVersionStatus) -> 
     }
 }
 
+fn wifi_sdio_get_mpc_status(status: wifi_sdio::WifiSdioGetMpcStatus) -> &'static [u8] {
+    match status {
+        wifi_sdio::WifiSdioGetMpcStatus::Ready => b"ready",
+        wifi_sdio::WifiSdioGetMpcStatus::HtRequestFailed => b"ht-request-failed",
+        wifi_sdio::WifiSdioGetMpcStatus::SendFailed => b"send-failed",
+        wifi_sdio::WifiSdioGetMpcStatus::ResponseFrameFailed => b"response-frame-failed",
+        wifi_sdio::WifiSdioGetMpcStatus::UnexpectedResponseFrame => b"unexpected-response-frame",
+        wifi_sdio::WifiSdioGetMpcStatus::CdcStatusError => b"cdc-status-error",
+    }
+}
+
 fn wifi_sdio_interrupt_ack_status(status: wifi_sdio::WifiSdioInterruptAckStatus) -> &'static [u8] {
     match status {
         wifi_sdio::WifiSdioInterruptAckStatus::Ready => b"ready",
@@ -1565,6 +1583,40 @@ fn wifi_sdio_get_version_report(
         cdc_id: report.cdc_id,
         cdc_status: report.cdc_status,
         version: report.version,
+        ht_last_error: report.ht_last_error.map(wifi_sdio_command_error_report),
+        send_last_error: report.send_last_error.map(wifi_sdio_command_error_report),
+        response_last_error: report
+            .response_last_error
+            .map(wifi_sdio_command_error_report),
+        host_normal_int: report.host_normal_int,
+        host_error_int: report.host_error_int,
+        host: wifi_sdio_host_report(report.host),
+    }
+}
+
+fn wifi_sdio_get_mpc_report(report: wifi_sdio::WifiSdioGetMpcReport) -> lisp::WifiSdioGetMpcReport {
+    lisp::WifiSdioGetMpcReport {
+        status: wifi_sdio_get_mpc_status(report.status),
+        ht_status: wifi_sdio_ht_request_status(report.ht_status),
+        ht_attempts: report.ht_attempts,
+        ht_write_response: report.ht_write_response,
+        ht_read_value: report.ht_read_value,
+        ht_read_response: report.ht_read_response,
+        ht_available: report.ht_available,
+        send_status: wifi_sdio_f2_control_status(report.send_status),
+        send_packet_length: report.send_packet_length,
+        send_write_response: report.send_write_response,
+        response_status: wifi_sdio_f2_frame_status(report.response_status),
+        response_length: report.response_length,
+        response_sequence: report.response_sequence,
+        response_channel: report.response_channel,
+        response_bus_data_credit: report.response_bus_data_credit,
+        cdc_command: report.cdc_command,
+        cdc_length: report.cdc_length,
+        cdc_flags: report.cdc_flags,
+        cdc_id: report.cdc_id,
+        cdc_status: report.cdc_status,
+        value: report.value,
         ht_last_error: report.ht_last_error.map(wifi_sdio_command_error_report),
         send_last_error: report.send_last_error.map(wifi_sdio_command_error_report),
         response_last_error: report
