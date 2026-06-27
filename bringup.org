@@ -4061,6 +4061,71 @@ Observed shape:
     (country.code . "XX"))
 #+end_example
 
+* 2026-06-27 WLAN scan start
+
+Added =(wifi-start-scan)= for a WHD-compatible active =escan= start request.
+The payload is the =escan\0= iovar name followed by a 72-byte
+=wl_escan_params_t= fixed section:
+
+#+begin_example
+version 1
+action  1
+sync_id 0
+SSID    empty
+BSSID   ff:ff:ff:ff:ff:ff
+bss_type 2
+scan_type 0
+nprobes, active_time, passive_time, home_time = -1
+channel_num = 0
+#+end_example
+
+Validation:
+
+#+begin_example
+cargo fmt
+tools/build-lisp.scm --wifi-firmware
+tools/flash-lisp.scm
+tools/serial-console.scm
+tools/send-lisp.scm '(wifi-start-firmware)'
+tools/send-lisp.scm '(wifi-wlc-up)'
+tools/send-lisp.scm '(wifi-ack-interrupts)'
+tools/send-lisp.scm '(wifi-load-clm)'
+tools/send-lisp.scm '(wifi-set-country "XX" -1)'
+tools/send-lisp.scm '(wifi-enable-network-events)'
+tools/send-lisp.scm '(wifi-start-scan)'
+#+end_example
+
+Observed shape:
+
+#+begin_example
+(wifi-start-scan)
+=> ((status . ready)
+    (scan.payload-bytes . #x0000004e)
+    (scan.version . #x00000001)
+    (scan.action . #x00000001)
+    (scan.sync-id . #x00000000)
+    (scan.type . #x00000000)
+    (scan.bss-type . #x00000002)
+    (scan.bssid-filter-broadcast . #t)
+    (send.packet-length . #x0000006a)
+    (response.status . ready)
+    (response.length . #x0000006a)
+    (cdc.command . #x00000107)
+    (cdc.length . #x0000004e)
+    (cdc.status . #x00000000))
+#+end_example
+
+The previous one-shot =tools/send-lisp.scm= write could still corrupt command
+input even after the firmware-side RX drain change. A 100 ms byte pace reliably
+delivered test forms and the Wi-Fi bring-up forms. The script now opens the
+serial device once, sends bytes with configurable pacing, and reports only byte
+counts instead of printing the form content. This matters for future Wi-Fi join
+forms because forms may contain credentials.
+
+Serial output corruption still appears in long reports, usually as isolated bad
+characters. The SDIO control fields above were repeated enough to trust the
+scan-start result, but the UART link still needs a separate cleanup pass.
+
 * 2026-06-27 Network event mask
 
 Added =(wifi-enable-network-events)= to set the WHD scan and join event bits
@@ -4176,7 +4241,7 @@ Observed shape:
 3. Add a FAT/exFAT-aware storage layer after raw block reads/writes work.
 4. Test the newer Infineon target =infineon/cy8cxxa.cfg= as a replacement
    for obsolete =target/psoc6_2m.cfg=.
-5. Add generic CDC ioctl/iovar helpers for firmware version, scan, and join.
-6. Add a sanitized channel scan summary after event-mask setup.
+5. Add generic CDC ioctl/iovar helpers for firmware version, scan events, and join.
+6. Add a sanitized channel scan summary after scan-start setup.
 7. Start Wi-Fi from a known-good Infineon or Zephyr sample before trying
    to hand-port the full CYW4343W network stack.

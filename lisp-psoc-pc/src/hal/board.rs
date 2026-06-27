@@ -575,6 +575,13 @@ impl lisp::Board for PsocBoard<'_> {
         ))
     }
 
+    fn wifi_start_scan(&mut self) -> lisp::WifiSdioScanStartReport {
+        wifi_sdio_scan_start_report(wifi_sdio::start_scan(
+            self.p,
+            &mut self.state.wifi_control_state,
+        ))
+    }
+
     fn wifi_get_clm_version(&mut self) -> lisp::WifiSdioGetClmVersionReport {
         wifi_sdio_get_clm_version_report(wifi_sdio::get_clm_version(
             self.p,
@@ -1200,6 +1207,17 @@ fn wifi_sdio_event_mask_status(status: wifi_sdio::WifiSdioEventMaskStatus) -> &'
     }
 }
 
+fn wifi_sdio_scan_start_status(status: wifi_sdio::WifiSdioScanStartStatus) -> &'static [u8] {
+    match status {
+        wifi_sdio::WifiSdioScanStartStatus::Ready => b"ready",
+        wifi_sdio::WifiSdioScanStartStatus::HtRequestFailed => b"ht-request-failed",
+        wifi_sdio::WifiSdioScanStartStatus::SendFailed => b"send-failed",
+        wifi_sdio::WifiSdioScanStartStatus::ResponseFrameFailed => b"response-frame-failed",
+        wifi_sdio::WifiSdioScanStartStatus::UnexpectedResponseFrame => b"unexpected-response-frame",
+        wifi_sdio::WifiSdioScanStartStatus::CdcStatusError => b"cdc-status-error",
+    }
+}
+
 fn wifi_sdio_get_clm_version_status(
     status: wifi_sdio::WifiSdioGetClmVersionStatus,
 ) -> &'static [u8] {
@@ -1820,6 +1838,48 @@ fn wifi_sdio_event_mask_report(
         ht_available: report.ht_available,
         enabled_events: report.enabled_events,
         mask_words: report.mask_words,
+        send_status: wifi_sdio_f2_control_status(report.send_status),
+        send_packet_length: report.send_packet_length,
+        send_write_response: report.send_write_response,
+        response_status: wifi_sdio_f2_frame_status(report.response_status),
+        response_length: report.response_length,
+        response_sequence: report.response_sequence,
+        response_channel: report.response_channel,
+        response_bus_data_credit: report.response_bus_data_credit,
+        cdc_command: report.cdc_command,
+        cdc_length: report.cdc_length,
+        cdc_flags: report.cdc_flags,
+        cdc_id: report.cdc_id,
+        cdc_status: report.cdc_status,
+        ht_last_error: report.ht_last_error.map(wifi_sdio_command_error_report),
+        send_last_error: report.send_last_error.map(wifi_sdio_command_error_report),
+        response_last_error: report
+            .response_last_error
+            .map(wifi_sdio_command_error_report),
+        host_normal_int: report.host_normal_int,
+        host_error_int: report.host_error_int,
+        host: wifi_sdio_host_report(report.host),
+    }
+}
+
+fn wifi_sdio_scan_start_report(
+    report: wifi_sdio::WifiSdioScanStartReport,
+) -> lisp::WifiSdioScanStartReport {
+    lisp::WifiSdioScanStartReport {
+        status: wifi_sdio_scan_start_status(report.status),
+        ht_status: wifi_sdio_ht_request_status(report.ht_status),
+        ht_attempts: report.ht_attempts,
+        ht_write_response: report.ht_write_response,
+        ht_read_value: report.ht_read_value,
+        ht_read_response: report.ht_read_response,
+        ht_available: report.ht_available,
+        scan_payload_bytes: report.scan_payload_bytes,
+        scan_version: report.scan_version,
+        scan_action: report.scan_action,
+        scan_sync_id: report.scan_sync_id,
+        scan_type: report.scan_type,
+        bss_type: report.bss_type,
+        bssid_filter_broadcast: report.bssid_filter_broadcast,
         send_status: wifi_sdio_f2_control_status(report.send_status),
         send_packet_length: report.send_packet_length,
         send_write_response: report.send_write_response,

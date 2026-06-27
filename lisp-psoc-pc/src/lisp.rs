@@ -108,6 +108,7 @@ pub trait Board {
     fn wifi_get_country(&mut self) -> WifiSdioCountryReport;
     fn wifi_set_country(&mut self, country_code: [u8; 2], revision: i32) -> WifiSdioCountryReport;
     fn wifi_enable_network_events(&mut self) -> WifiSdioEventMaskReport;
+    fn wifi_start_scan(&mut self) -> WifiSdioScanStartReport;
     fn wifi_get_clm_version(&mut self) -> WifiSdioGetClmVersionReport;
     fn wifi_f2_read_frame_abort(&mut self) -> WifiSdioF2AbortProbeReport;
     fn wifi_poll_read_frame(&mut self) -> WifiSdioPollReadFrameReport;
@@ -864,6 +865,43 @@ pub struct WifiSdioEventMaskReport {
 }
 
 #[derive(Clone, Copy)]
+pub struct WifiSdioScanStartReport {
+    pub status: &'static [u8],
+    pub ht_status: &'static [u8],
+    pub ht_attempts: u16,
+    pub ht_write_response: u32,
+    pub ht_read_value: u8,
+    pub ht_read_response: u32,
+    pub ht_available: bool,
+    pub scan_payload_bytes: u16,
+    pub scan_version: u32,
+    pub scan_action: u16,
+    pub scan_sync_id: u16,
+    pub scan_type: u8,
+    pub bss_type: u8,
+    pub bssid_filter_broadcast: bool,
+    pub send_status: &'static [u8],
+    pub send_packet_length: u16,
+    pub send_write_response: u32,
+    pub response_status: &'static [u8],
+    pub response_length: u16,
+    pub response_sequence: u8,
+    pub response_channel: u8,
+    pub response_bus_data_credit: u8,
+    pub cdc_command: u32,
+    pub cdc_length: u32,
+    pub cdc_flags: u32,
+    pub cdc_id: u16,
+    pub cdc_status: u32,
+    pub ht_last_error: Option<WifiSdioCommandErrorReport>,
+    pub send_last_error: Option<WifiSdioCommandErrorReport>,
+    pub response_last_error: Option<WifiSdioCommandErrorReport>,
+    pub host_normal_int: u16,
+    pub host_error_int: u16,
+    pub host: WifiSdioHostReport,
+}
+
+#[derive(Clone, Copy)]
 pub struct WifiSdioGetClmVersionReport {
     pub status: &'static [u8],
     pub ht_status: &'static [u8],
@@ -1193,6 +1231,7 @@ pub enum Primitive {
     WifiGetCountry,
     WifiSetCountry,
     WifiEnableNetworkEvents,
+    WifiStartScan,
     WifiGetClmVersion,
     WifiF2ReadFrameAbort,
     WifiPollReadFrame,
@@ -1287,6 +1326,7 @@ impl Primitive {
             Self::WifiGetCountry => "wifi-get-country",
             Self::WifiSetCountry => "wifi-set-country",
             Self::WifiEnableNetworkEvents => "wifi-enable-network-events",
+            Self::WifiStartScan => "wifi-start-scan",
             Self::WifiGetClmVersion => "wifi-get-clm-version",
             Self::WifiF2ReadFrameAbort => "wifi-f2-read-frame-abort",
             Self::WifiPollReadFrame => "wifi-poll-read-frame",
@@ -1542,6 +1582,7 @@ impl Machine {
             b"wifi-enable-network-events",
             Primitive::WifiEnableNetworkEvents,
         )?;
+        self.install_primitive(b"wifi-start-scan", Primitive::WifiStartScan)?;
         self.install_primitive(b"wifi-get-clm-version", Primitive::WifiGetClmVersion)?;
         self.install_primitive(b"wifi-f2-read-frame-abort", Primitive::WifiF2ReadFrameAbort)?;
         self.install_primitive(b"wifi-poll-read-frame", Primitive::WifiPollReadFrame)?;
@@ -2412,6 +2453,10 @@ impl Machine {
                 self.expect_count(args, 0)?;
                 self.wifi_sdio_event_mask_report(board.wifi_enable_network_events())
             }
+            Primitive::WifiStartScan => {
+                self.expect_count(args, 0)?;
+                self.wifi_sdio_scan_start_report(board.wifi_start_scan())
+            }
             Primitive::WifiGetClmVersion => {
                 self.expect_count(args, 0)?;
                 self.wifi_sdio_get_clm_version_report(board.wifi_get_clm_version())
@@ -2856,6 +2901,7 @@ impl Machine {
             b"wifi-get-country",
             b"wifi-set-country",
             b"wifi-enable-network-events",
+            b"wifi-start-scan",
             b"wifi-get-clm-version",
             b"wifi-f2-read-frame-abort",
             b"wifi-poll-read-frame",
@@ -4241,6 +4287,95 @@ impl Machine {
             mask_word1,
             mask_word2,
             mask_word3,
+            send_status,
+            send_packet_length,
+            send_write_response,
+            response_status,
+            response_length,
+            response_sequence,
+            response_channel,
+            response_bus_data_credit,
+            cdc_command,
+            cdc_length,
+            cdc_flags,
+            cdc_id,
+            cdc_status,
+            host_normal_int,
+            host_error_int,
+            ht_last_error,
+            send_last_error,
+            response_last_error,
+            host,
+        ];
+        self.make_list_from_values(&entries)
+    }
+
+    fn wifi_sdio_scan_start_report(
+        &mut self,
+        report: WifiSdioScanStartReport,
+    ) -> LispResult<Value> {
+        let status = self.symbol_entry(b"status", report.status)?;
+        let ht_status = self.symbol_entry(b"ht.status", report.ht_status)?;
+        let ht_attempts = self.word_entry(b"ht.attempts", report.ht_attempts as u32)?;
+        let ht_write_response = self.word_entry(b"ht.write-response", report.ht_write_response)?;
+        let ht_read_value = self.word_entry(b"ht.read-value", report.ht_read_value as u32)?;
+        let ht_read_response = self.word_entry(b"ht.read-response", report.ht_read_response)?;
+        let ht_available = self.bool_entry(b"ht.available", report.ht_available)?;
+        let scan_payload_bytes =
+            self.word_entry(b"scan.payload-bytes", report.scan_payload_bytes as u32)?;
+        let scan_version = self.word_entry(b"scan.version", report.scan_version)?;
+        let scan_action = self.word_entry(b"scan.action", report.scan_action as u32)?;
+        let scan_sync_id = self.word_entry(b"scan.sync-id", report.scan_sync_id as u32)?;
+        let scan_type = self.word_entry(b"scan.type", report.scan_type as u32)?;
+        let bss_type = self.word_entry(b"scan.bss-type", report.bss_type as u32)?;
+        let bssid_filter_broadcast = self.bool_entry(
+            b"scan.bssid-filter-broadcast",
+            report.bssid_filter_broadcast,
+        )?;
+        let send_status = self.symbol_entry(b"send.status", report.send_status)?;
+        let send_packet_length =
+            self.word_entry(b"send.packet-length", report.send_packet_length as u32)?;
+        let send_write_response =
+            self.word_entry(b"send.write-response", report.send_write_response)?;
+        let response_status = self.symbol_entry(b"response.status", report.response_status)?;
+        let response_length = self.word_entry(b"response.length", report.response_length as u32)?;
+        let response_sequence =
+            self.word_entry(b"response.sequence", report.response_sequence as u32)?;
+        let response_channel =
+            self.word_entry(b"response.channel", report.response_channel as u32)?;
+        let response_bus_data_credit = self.word_entry(
+            b"response.bus-data-credit",
+            report.response_bus_data_credit as u32,
+        )?;
+        let cdc_command = self.word_entry(b"cdc.command", report.cdc_command)?;
+        let cdc_length = self.word_entry(b"cdc.length", report.cdc_length)?;
+        let cdc_flags = self.word_entry(b"cdc.flags", report.cdc_flags)?;
+        let cdc_id = self.word_entry(b"cdc.id", report.cdc_id as u32)?;
+        let cdc_status = self.word_entry(b"cdc.status", report.cdc_status)?;
+        let host_normal_int = self.word_entry(b"HOST.NORM_INT", report.host_normal_int as u32)?;
+        let host_error_int = self.word_entry(b"HOST.ERR_INT", report.host_error_int as u32)?;
+        let ht_last_error = self.wifi_sdio_error_entry(b"ht.last-error", report.ht_last_error)?;
+        let send_last_error =
+            self.wifi_sdio_error_entry(b"send.last-error", report.send_last_error)?;
+        let response_last_error =
+            self.wifi_sdio_error_entry(b"response.last-error", report.response_last_error)?;
+        let host = self.wifi_sdio_host_report(report.host)?;
+        let host = self.entry(b"SDHC0", host)?;
+        let entries = [
+            status,
+            ht_status,
+            ht_attempts,
+            ht_write_response,
+            ht_read_value,
+            ht_read_response,
+            ht_available,
+            scan_payload_bytes,
+            scan_version,
+            scan_action,
+            scan_sync_id,
+            scan_type,
+            bss_type,
+            bssid_filter_broadcast,
             send_status,
             send_packet_length,
             send_write_response,
