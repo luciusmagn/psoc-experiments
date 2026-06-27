@@ -4,11 +4,17 @@ static CYW4343W_FIRMWARE: &[u8] = include_bytes!("../../.local/wifi/resources/43
 #[cfg(feature = "wifi-firmware-blob")]
 static CYW4343W_NVRAM: &[u8] = include_bytes!("../../.local/wifi/resources/wifi_nvram.bin");
 
+#[cfg(feature = "wifi-firmware-blob")]
+static CYW4343W_CLM: &[u8] = include_bytes!("../../.local/wifi/resources/4343WA1.clm_blob");
+
 #[cfg(not(feature = "wifi-firmware-blob"))]
 static CYW4343W_FIRMWARE: &[u8] = &[];
 
 #[cfg(not(feature = "wifi-firmware-blob"))]
 static CYW4343W_NVRAM: &[u8] = &[];
+
+#[cfg(not(feature = "wifi-firmware-blob"))]
+static CYW4343W_CLM: &[u8] = &[];
 
 pub fn cyw4343w_firmware() -> &'static [u8] {
     CYW4343W_FIRMWARE
@@ -16,4 +22,8 @@ pub fn cyw4343w_firmware() -> &'static [u8] {
 
 pub fn cyw4343w_nvram() -> &'static [u8] {
     CYW4343W_NVRAM
+}
+
+pub fn cyw4343w_clm() -> &'static [u8] {
+    CYW4343W_CLM
 }

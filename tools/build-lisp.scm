@@ -16,7 +16,7 @@
   (say "Builds the CM4 Lisp firmware, packs it into the CM0+ bootloader,")
   (say "and rebuilds the bootloader image.")
   (say "")
-  (say "--wifi-firmware includes .local/wifi/resources/4343WA1.bin in the CM4 image."))
+  (say "--wifi-firmware includes local firmware, NVRAM, and CLM resources in the CM4 image."))
 
 (define (parse args wifi-firmware?)
   (cond

@@ -3769,6 +3769,79 @@ Interpretation: the board now handles at least one real iovar exchange after
 the iovar send/receive code and then extend the F2 write/read path for the
 larger payloads needed by CLM download, scan results, and join state.
 
+* 2026-06-27 Large control packet foundation
+
+Prepared the SDPCM/CDC control sender for larger ioctl/iovar payloads. Small
+control packets still use byte-mode CMD53 transfers. Packets of 64 bytes or
+larger now use 64-byte block-mode CMD53 transfers with zero padding while the
+SDPCM frame tag keeps the exact packet length. The control report packet-length
+fields were widened to =u16= so CLM-sized packets will not truncate in Lisp
+diagnostics.
+
+The =--wifi-firmware= build now also embeds the local CYW4343W CLM blob through
+=wifi_resources=. Current local resource sizes remain:
+
+#+begin_example
+firmware bytes=421421
+clm bytes=7222
+nvram bytes=646
+#+end_example
+
+Validation:
+
+#+begin_example
+cargo fmt
+tools/build-lisp.scm --wifi-firmware
+tools/flash-lisp.scm
+tools/serial-console.scm
+tools/send-lisp.scm '(+ 8 9)'
+tools/send-lisp.scm '(help)'
+tools/send-lisp.scm '(wifi-start-firmware)'
+tools/send-lisp.scm '(wifi-wlc-up)'
+tools/send-lisp.scm '(wifi-ack-interrupts)'
+tools/send-lisp.scm '(wifi-get-mpc)'
+tools/send-lisp.scm '(wifi-get-version)'
+#+end_example
+
+One early arithmetic send collided with a stray console byte and returned
+=error: trailing input=. A blank line cleared the prompt, and resending
+=(+ 8 9)= returned =17=. The subsequent Wi-Fi smoke after the same flash passed:
+
+#+begin_example
+(wifi-wlc-up)
+=> ((status . ready)
+    (send.packet-length . #x0000001c)
+    (response.sequence . #x00000001)
+    (response.bus-data-credit . #x00000011)
+    (cdc.command . #x00000002)
+    (cdc.id . #x00000001)
+    (cdc.status . #x00000000))
+
+(wifi-get-mpc)
+=> ((status . ready)
+    (send.packet-length . #x00000024)
+    (response.sequence . #x00000002)
+    (response.bus-data-credit . #x00000012)
+    (cdc.command . #x00000106)
+    (cdc.id . #x00000002)
+    (cdc.status . #x00000000)
+    (value . #x00000001))
+
+(wifi-get-version)
+=> ((status . ready)
+    (send.packet-length . #x00000020)
+    (response.sequence . #x00000003)
+    (response.bus-data-credit . #x00000013)
+    (cdc.command . #x00000001)
+    (cdc.id . #x00000003)
+    (cdc.status . #x00000000)
+    (version . #x00000002))
+#+end_example
+
+Interpretation: the new larger-packet sender has not regressed the known-good
+small byte-mode control path. The next hardware test should be a real
+block-mode =WLC_SET_VAR=, most likely the first =clmload= chunk.
+
 * Next actions
 
 1. Add REPL history and better editing across continuation lines.

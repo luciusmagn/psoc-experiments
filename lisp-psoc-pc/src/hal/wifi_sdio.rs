@@ -52,12 +52,16 @@ const SDIO_CMD53_MAX_READ_BYTES: u16 = 64;
 const SDIO_CMD53_WORD_BYTES: u16 = 4;
 const SDIO_CMD53_BLOCK_BYTES: u16 = 64;
 const SDIO_CMD53_BLOCK_WORDS: usize = 16;
+const SDIO_CMD53_MAX_CONTROL_PACKET_BYTES: usize = 1536;
+const SDIO_CMD53_MAX_CONTROL_PACKET_WORDS: usize =
+    SDIO_CMD53_MAX_CONTROL_PACKET_BYTES / SDIO_CMD53_WORD_BYTES as usize;
 const SDPCM_HEADER_BYTES: u8 = 12;
 const CDC_HEADER_BYTES: u8 = 16;
 const SDPCM_WLC_UP_PACKET_BYTES: u8 = 28;
 const SDPCM_CONTROL_CHANNEL: u8 = 0;
 const CDC_SET_FLAG: u32 = 0x02;
 const CDC_IOCTL_ID_SHIFT: u8 = 16;
+const WHD_IOCTL_MAX_TX_PACKET_BYTES: usize = 1500;
 const WLC_UP_IOCTL: u32 = 2;
 const WLC_GET_VERSION_IOCTL: u32 = 1;
 const WLC_GET_VAR_IOCTL: u32 = 262;
@@ -181,6 +185,8 @@ static mut CMD53_READ_ADMA_DESCRIPTOR: AdmaDescriptorTable = AdmaDescriptorTable
 static mut CMD53_WRITE_WORD: u32 = 0;
 static mut CMD53_WRITE_BLOCK_WORDS: [u32; SDIO_CMD53_BLOCK_WORDS] = [0; SDIO_CMD53_BLOCK_WORDS];
 static mut CMD53_READ_BLOCK_WORDS: [u32; SDIO_CMD53_BLOCK_WORDS] = [0; SDIO_CMD53_BLOCK_WORDS];
+static mut CMD53_WRITE_CONTROL_PACKET_WORDS: [u32; SDIO_CMD53_MAX_CONTROL_PACKET_WORDS] =
+    [0; SDIO_CMD53_MAX_CONTROL_PACKET_WORDS];
 
 #[derive(Clone, Copy)]
 pub enum WifiSdioStatus {
@@ -1079,7 +1085,7 @@ pub struct WifiSdioF2FrameReport {
 pub struct WifiSdioF2ControlReport {
     pub status: WifiSdioF2ControlStatus,
     pub initial_tx_credit: u8,
-    pub packet_length: u8,
+    pub packet_length: u16,
     pub write_response: u32,
     pub host_normal_int: u16,
     pub host_error_int: u16,
@@ -1096,7 +1102,7 @@ pub struct WifiSdioWlcUpReport {
     pub ht_read_response: u32,
     pub ht_available: bool,
     pub send_status: WifiSdioF2ControlStatus,
-    pub send_packet_length: u8,
+    pub send_packet_length: u16,
     pub send_write_response: u32,
     pub startup_status: WifiSdioF2FrameStatus,
     pub startup_length: u16,
@@ -1130,7 +1136,7 @@ pub struct WifiSdioGetVersionReport {
     pub ht_read_response: u32,
     pub ht_available: bool,
     pub send_status: WifiSdioF2ControlStatus,
-    pub send_packet_length: u8,
+    pub send_packet_length: u16,
     pub send_write_response: u32,
     pub response_status: WifiSdioF2FrameStatus,
     pub response_length: u16,
@@ -1160,7 +1166,7 @@ pub struct WifiSdioGetMpcReport {
     pub ht_read_response: u32,
     pub ht_available: bool,
     pub send_status: WifiSdioF2ControlStatus,
-    pub send_packet_length: u8,
+    pub send_packet_length: u16,
     pub send_write_response: u32,
     pub response_status: WifiSdioF2FrameStatus,
     pub response_length: u16,
@@ -4404,7 +4410,7 @@ pub fn send_wlc_up(p: &Peripherals) -> WifiSdioF2ControlReport {
             p,
             WifiSdioF2ControlStatus::DataSetupBusy,
             initial_tx_credit,
-            SDPCM_WLC_UP_PACKET_BYTES,
+            SDPCM_WLC_UP_PACKET_BYTES as u16,
             0,
             None,
         );
@@ -4436,7 +4442,7 @@ pub fn send_wlc_up(p: &Peripherals) -> WifiSdioF2ControlReport {
                 p,
                 WifiSdioF2ControlStatus::Cmd53Failed,
                 initial_tx_credit,
-                SDPCM_WLC_UP_PACKET_BYTES,
+                SDPCM_WLC_UP_PACKET_BYTES as u16,
                 0,
                 Some(error),
             );
@@ -4448,7 +4454,7 @@ pub fn send_wlc_up(p: &Peripherals) -> WifiSdioF2ControlReport {
             p,
             WifiSdioF2ControlStatus::Ready,
             initial_tx_credit,
-            SDPCM_WLC_UP_PACKET_BYTES,
+            SDPCM_WLC_UP_PACKET_BYTES as u16,
             write_response,
             None,
         ),
@@ -4456,7 +4462,7 @@ pub fn send_wlc_up(p: &Peripherals) -> WifiSdioF2ControlReport {
             p,
             WifiSdioF2ControlStatus::TransferTimeout,
             initial_tx_credit,
-            SDPCM_WLC_UP_PACKET_BYTES,
+            SDPCM_WLC_UP_PACKET_BYTES as u16,
             write_response,
             None,
         ),
@@ -4464,7 +4470,7 @@ pub fn send_wlc_up(p: &Peripherals) -> WifiSdioF2ControlReport {
             p,
             WifiSdioF2ControlStatus::DataLineBusy,
             initial_tx_credit,
-            SDPCM_WLC_UP_PACKET_BYTES,
+            SDPCM_WLC_UP_PACKET_BYTES as u16,
             write_response,
             None,
         ),
@@ -4472,11 +4478,57 @@ pub fn send_wlc_up(p: &Peripherals) -> WifiSdioF2ControlReport {
             p,
             WifiSdioF2ControlStatus::Cmd53Failed,
             initial_tx_credit,
-            SDPCM_WLC_UP_PACKET_BYTES,
+            SDPCM_WLC_UP_PACKET_BYTES as u16,
             write_response,
             None,
         ),
     }
+}
+
+struct SdioWritePlan {
+    block_mode: bool,
+    command_count: u16,
+    block_size: u16,
+    block_count: u16,
+    transfer_bytes: u16,
+}
+
+fn sdio_write_plan(packet_length: u16) -> Option<SdioWritePlan> {
+    if packet_length as usize > SDIO_CMD53_MAX_CONTROL_PACKET_BYTES {
+        return None;
+    }
+
+    if packet_length < SDIO_CMD53_BLOCK_BYTES {
+        return Some(SdioWritePlan {
+            block_mode: false,
+            command_count: packet_length,
+            block_size: packet_length,
+            block_count: 1,
+            transfer_bytes: packet_length,
+        });
+    }
+
+    let block_count = rounded_block_count(packet_length, SDIO_CMD53_BLOCK_BYTES);
+    if block_count == 0 || block_count > 0x01ff {
+        return None;
+    }
+
+    let transfer_bytes = block_count * SDIO_CMD53_BLOCK_BYTES;
+    if transfer_bytes as usize > SDIO_CMD53_MAX_CONTROL_PACKET_BYTES {
+        return None;
+    }
+
+    Some(SdioWritePlan {
+        block_mode: true,
+        command_count: block_count,
+        block_size: SDIO_CMD53_BLOCK_BYTES,
+        block_count,
+        transfer_bytes,
+    })
+}
+
+fn rounded_block_count(byte_count: u16, block_size: u16) -> u16 {
+    (byte_count + block_size - 1) / block_size
 }
 
 struct CdcControlSend {
@@ -4492,13 +4544,13 @@ fn send_control_ioctl(
     payload: &[u8],
 ) -> CdcControlSend {
     let packet_length = SDPCM_HEADER_BYTES as usize + CDC_HEADER_BYTES as usize + payload.len();
-    if packet_length > SDIO_CMD53_BLOCK_BYTES as usize {
+    if packet_length > WHD_IOCTL_MAX_TX_PACKET_BYTES {
         return CdcControlSend {
             report: f2_control_report(
                 p,
                 WifiSdioF2ControlStatus::PacketTooLarge,
                 state.available_tx_credits(),
-                SDIO_CMD53_BLOCK_BYTES as u8,
+                packet_length as u16,
                 0,
                 None,
             ),
@@ -4514,7 +4566,7 @@ fn send_control_ioctl(
                     p,
                     WifiSdioF2ControlStatus::NoTxCredit,
                     0,
-                    packet_length as u8,
+                    packet_length as u16,
                     0,
                     None,
                 ),
@@ -4523,16 +4575,44 @@ fn send_control_ioctl(
         }
     };
     let ioctl_id = state.allocate_ioctl_id();
-    let packet = control_ioctl_packet_words(sequence, command, flags, ioctl_id, payload);
+    let plan = match sdio_write_plan(packet_length as u16) {
+        Some(plan) => plan,
+        None => {
+            return CdcControlSend {
+                report: f2_control_report(
+                    p,
+                    WifiSdioF2ControlStatus::PacketTooLarge,
+                    initial_tx_credit,
+                    packet_length as u16,
+                    0,
+                    None,
+                ),
+                ioctl_id,
+            }
+        }
+    };
     let core = &p.SDHC0.core;
-    let descriptor_address = prepare_cmd53_write_words(&packet, packet_length as u16);
-    if !configure_cmd53_write_adma(core, packet_length as u8, false, descriptor_address) {
+    let descriptor_address = prepare_control_ioctl_packet(
+        sequence,
+        command,
+        flags,
+        ioctl_id,
+        payload,
+        packet_length as u16,
+        plan.transfer_bytes,
+    );
+    if !configure_cmd53_write_adma_transfer(
+        core,
+        plan.block_size,
+        plan.block_count,
+        descriptor_address,
+    ) {
         return CdcControlSend {
             report: f2_control_report(
                 p,
                 WifiSdioF2ControlStatus::DataSetupBusy,
                 initial_tx_credit,
-                packet_length as u8,
+                packet_length as u16,
                 0,
                 None,
             ),
@@ -4543,10 +4623,10 @@ fn send_control_ioctl(
     let argument = cmd53_argument(
         true,
         SDIO_WLAN_FUNCTION,
-        false,
+        plan.block_mode,
         true,
         0,
-        packet_length as u16,
+        plan.command_count,
     );
     let write_response = match send_command(
         core,
@@ -4567,7 +4647,7 @@ fn send_control_ioctl(
                     p,
                     WifiSdioF2ControlStatus::Cmd53Failed,
                     initial_tx_credit,
-                    packet_length as u8,
+                    packet_length as u16,
                     0,
                     Some(error),
                 ),
@@ -4590,7 +4670,7 @@ fn send_control_ioctl(
             p,
             status,
             initial_tx_credit,
-            packet_length as u8,
+            packet_length as u16,
             write_response,
             None,
         ),
@@ -7208,15 +7288,24 @@ fn configure_cmd53_write_adma(
     block_mode: bool,
     descriptor_address: u32,
 ) -> bool {
-    if !wait_command_and_data_lines_free(core) {
-        return false;
-    }
-
     let block_size = if block_mode {
         SDIO_CMD53_BLOCK_BYTES
     } else {
         count as u16
     };
+    configure_cmd53_write_adma_transfer(core, block_size, 1, descriptor_address)
+}
+
+fn configure_cmd53_write_adma_transfer(
+    core: &sdhc0::CORE,
+    block_size: u16,
+    block_count: u16,
+    descriptor_address: u32,
+) -> bool {
+    if !wait_command_and_data_lines_free(core) {
+        return false;
+    }
+
     select_adma2(core);
     core.blocksize_r.write(|w| unsafe { w.bits(0) });
     core.xfer_mode_r.write(|w| unsafe { w.bits(0) });
@@ -7224,7 +7313,7 @@ fn configure_cmd53_write_adma(
         .write(|w| unsafe { w.bits(descriptor_address) });
     core.sdmasa_r.write(|w| unsafe { w.bits(0) });
     core.blocksize_r.write(|w| unsafe { w.bits(block_size) });
-    core.blockcount_r.write(|w| unsafe { w.bits(1) });
+    core.blockcount_r.write(|w| unsafe { w.bits(block_count) });
     core.bgap_ctrl_r.write(|w| unsafe { w.bits(0) });
     core.mbiu_ctrl_r
         .write(|w| unsafe { w.bits(MBIU_CTRL_ALL_BURSTS) });
@@ -7957,6 +8046,73 @@ fn control_ioctl_packet_words(
     bytes_to_words(&bytes)
 }
 
+fn prepare_control_ioctl_packet(
+    sequence: u8,
+    command: u32,
+    flags: u32,
+    ioctl_id: u16,
+    payload: &[u8],
+    packet_length: u16,
+    transfer_bytes: u16,
+) -> u32 {
+    let descriptor = ADMA_ATTR_VALID
+        | ADMA_ATTR_END
+        | ADMA_ACT_TRAN
+        | ((transfer_bytes as u32) << ADMA_LEN_SHIFT);
+
+    unsafe {
+        let bytes = core::ptr::addr_of_mut!(CMD53_WRITE_CONTROL_PACKET_WORDS) as *mut u8;
+        zero_control_packet_bytes(bytes, transfer_bytes as usize);
+        write_packet_le_u16(bytes, 0, packet_length);
+        write_packet_le_u16(bytes, 2, !packet_length);
+        write_packet_byte(bytes, 4, sequence);
+        write_packet_byte(bytes, 5, SDPCM_CONTROL_CHANNEL);
+        write_packet_byte(bytes, 7, SDPCM_HEADER_BYTES);
+        write_packet_le_u32(bytes, 12, command);
+        write_packet_le_u32(bytes, 16, payload.len() as u32);
+        write_packet_le_u32(bytes, 20, ((ioctl_id as u32) << CDC_IOCTL_ID_SHIFT) | flags);
+        write_packet_le_u32(bytes, 24, 0);
+
+        let payload_offset = SDPCM_HEADER_BYTES as usize + CDC_HEADER_BYTES as usize;
+        let mut index = 0usize;
+        while index < payload.len() {
+            write_packet_byte(bytes, payload_offset + index, payload[index]);
+            index += 1;
+        }
+
+        let descriptor_table = core::ptr::addr_of_mut!(CMD53_WRITE_ADMA_DESCRIPTOR) as *mut u32;
+        core::ptr::write_volatile(descriptor_table, descriptor);
+        core::ptr::write_volatile(descriptor_table.add(1), bytes as u32);
+        cortex_m::asm::dsb();
+
+        descriptor_table as u32
+    }
+}
+
+unsafe fn zero_control_packet_bytes(bytes: *mut u8, count: usize) {
+    let mut index = 0usize;
+    while index < count {
+        core::ptr::write_volatile(bytes.add(index), 0);
+        index += 1;
+    }
+}
+
+unsafe fn write_packet_byte(bytes: *mut u8, offset: usize, value: u8) {
+    core::ptr::write_volatile(bytes.add(offset), value);
+}
+
+unsafe fn write_packet_le_u16(bytes: *mut u8, offset: usize, value: u16) {
+    write_packet_byte(bytes, offset, value as u8);
+    write_packet_byte(bytes, offset + 1, (value >> 8) as u8);
+}
+
+unsafe fn write_packet_le_u32(bytes: *mut u8, offset: usize, value: u32) {
+    write_packet_byte(bytes, offset, value as u8);
+    write_packet_byte(bytes, offset + 1, (value >> 8) as u8);
+    write_packet_byte(bytes, offset + 2, (value >> 16) as u8);
+    write_packet_byte(bytes, offset + 3, (value >> 24) as u8);
+}
+
 fn write_le_u16(bytes: &mut [u8; SDIO_CMD53_BLOCK_BYTES as usize], offset: usize, value: u16) {
     bytes[offset] = value as u8;
     bytes[offset + 1] = (value >> 8) as u8;
@@ -8055,7 +8211,7 @@ fn f2_control_report(
     p: &Peripherals,
     status: WifiSdioF2ControlStatus,
     initial_tx_credit: u8,
-    packet_length: u8,
+    packet_length: u16,
     write_response: u32,
     write_last_error: Option<CommandError>,
 ) -> WifiSdioF2ControlReport {
