@@ -4061,14 +4061,67 @@ Observed shape:
     (country.code . "XX"))
 #+end_example
 
+* 2026-06-27 Network event mask
+
+Added =(wifi-enable-network-events)= to set the WHD scan and join event bits
+through the =bsscfg:event_msgs= iovar. The primary STA =bsscfgidx= is zero, so
+the payload is:
+
+#+begin_example
+"bsscfg:event_msgs\0" u32-bsscfgidx u8-mask[16]
+#+end_example
+
+The enabled events currently match WHD's join and scan registration lists:
+=WLC_E_SET_SSID=, =WLC_E_AUTH=, =WLC_E_DEAUTH_IND=, =WLC_E_REASSOC=,
+=WLC_E_DISASSOC_IND=, =WLC_E_LINK=, =WLC_E_PSK_SUP=,
+=WLC_E_ESCAN_RESULT=, =WLC_E_PROBRESP_MSG=, and
+=WLC_E_CSA_COMPLETE_IND=.
+
+Validation:
+
+#+begin_example
+cargo fmt
+tools/build-lisp.scm --wifi-firmware
+tools/flash-lisp.scm
+tools/serial-console.scm
+tools/send-lisp.scm '(wifi-start-firmware)'
+tools/send-lisp.scm '(wifi-wlc-up)'
+tools/send-lisp.scm '(wifi-ack-interrupts)'
+tools/send-lisp.scm '(wifi-load-clm)'
+tools/send-lisp.scm '(wifi-set-country "XX" -1)'
+tools/send-lisp.scm '(wifi-enable-network-events)'
+#+end_example
+
+Observed shape:
+
+#+begin_example
+(wifi-enable-network-events)
+=> ((status . ready)
+    (events.enabled . #x0000000a)
+    (event-mask.word0 . #x00011249)
+    (event-mask.word1 . #x00004000)
+    (event-mask.word2 . #x000100a0)
+    (event-mask.word3 . #x00000000)
+    (send.packet-length . #x00000042)
+    (response.status . ready)
+    (response.length . #x00000042)
+    (cdc.command . #x00000107)
+    (cdc.length . #x00000026)
+    (cdc.status . #x00000000))
+#+end_example
+
+Serial input and output corruption is still recurring. It has not changed the
+successful SDIO control responses, but commands sometimes arrive as damaged
+symbols or partial forms and need to be retried from a clean prompt.
+
 * Next actions
 
-1. Add REPL history and better editing across continuation lines.
-2. Add a FAT/exFAT-aware storage layer after raw block reads/writes work.
-3. Test the newer Infineon target =infineon/cy8cxxa.cfg= as a replacement
+1. Investigate UART corruption before longer Wi-Fi association workflows.
+2. Add REPL history and better editing across continuation lines.
+3. Add a FAT/exFAT-aware storage layer after raw block reads/writes work.
+4. Test the newer Infineon target =infineon/cy8cxxa.cfg= as a replacement
    for obsolete =target/psoc6_2m.cfg=.
-4. Add generic CDC ioctl/iovar helpers for firmware version, MAC address, scan,
-   and join.
-5. Add channel scan and join after country setup.
-6. Start Wi-Fi from a known-good Infineon or Zephyr sample before trying
+5. Add generic CDC ioctl/iovar helpers for firmware version, scan, and join.
+6. Add a sanitized channel scan summary after event-mask setup.
+7. Start Wi-Fi from a known-good Infineon or Zephyr sample before trying
    to hand-port the full CYW4343W network stack.

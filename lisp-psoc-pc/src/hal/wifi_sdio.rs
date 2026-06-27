@@ -75,6 +75,34 @@ const COUNTRY_IOVAR_NAME: &[u8; 8] = b"country\0";
 const COUNTRY_FIELD_BYTES: usize = 4;
 const COUNTRY_STRUCT_BYTES: usize = 12;
 const COUNTRY_PAYLOAD_BYTES: usize = COUNTRY_IOVAR_NAME.len() + COUNTRY_STRUCT_BYTES;
+const BSSCFG_EVENT_MSGS_IOVAR_NAME: &[u8; 18] = b"bsscfg:event_msgs\0";
+const EVENT_MASK_BSSCFG_INDEX_BYTES: usize = 4;
+const EVENT_MASK_BYTES: usize = 16;
+const EVENT_MASK_WORDS: usize = 4;
+const EVENT_MASK_PAYLOAD_BYTES: usize =
+    BSSCFG_EVENT_MSGS_IOVAR_NAME.len() + EVENT_MASK_BSSCFG_INDEX_BYTES + EVENT_MASK_BYTES;
+const WLC_E_SET_SSID: u8 = 0;
+const WLC_E_AUTH: u8 = 3;
+const WLC_E_DEAUTH_IND: u8 = 6;
+const WLC_E_REASSOC: u8 = 9;
+const WLC_E_DISASSOC_IND: u8 = 12;
+const WLC_E_LINK: u8 = 16;
+const WLC_E_PSK_SUP: u8 = 46;
+const WLC_E_ESCAN_RESULT: u8 = 69;
+const WLC_E_PROBRESP_MSG: u8 = 71;
+const WLC_E_CSA_COMPLETE_IND: u8 = 80;
+const NETWORK_EVENT_NUMBERS: [u8; 10] = [
+    WLC_E_SET_SSID,
+    WLC_E_AUTH,
+    WLC_E_DEAUTH_IND,
+    WLC_E_REASSOC,
+    WLC_E_DISASSOC_IND,
+    WLC_E_LINK,
+    WLC_E_PSK_SUP,
+    WLC_E_ESCAN_RESULT,
+    WLC_E_PROBRESP_MSG,
+    WLC_E_CSA_COMPLETE_IND,
+];
 const CLMLOAD_IOVAR_NAME: &[u8; 8] = b"clmload\0";
 const CLMVER_IOVAR_NAME: &[u8; 7] = b"clmver\0";
 const CLMLOAD_DLOAD_HEADER_BYTES: usize = 12;
@@ -351,6 +379,16 @@ pub enum WifiSdioClmLoadStatus {
 
 #[derive(Clone, Copy)]
 pub enum WifiSdioCountryStatus {
+    Ready,
+    HtRequestFailed,
+    SendFailed,
+    ResponseFrameFailed,
+    UnexpectedResponseFrame,
+    CdcStatusError,
+}
+
+#[derive(Clone, Copy)]
+pub enum WifiSdioEventMaskStatus {
     Ready,
     HtRequestFailed,
     SendFailed,
@@ -1300,6 +1338,37 @@ pub struct WifiSdioCountryReport {
     pub country_abbrev: [u8; COUNTRY_FIELD_BYTES],
     pub revision: i32,
     pub country_code: [u8; COUNTRY_FIELD_BYTES],
+    pub ht_last_error: Option<CommandError>,
+    pub send_last_error: Option<CommandError>,
+    pub response_last_error: Option<CommandError>,
+    pub host_normal_int: u16,
+    pub host_error_int: u16,
+    pub host: WifiSdioHostSnapshot,
+}
+
+pub struct WifiSdioEventMaskReport {
+    pub status: WifiSdioEventMaskStatus,
+    pub ht_status: WifiSdioHtRequestStatus,
+    pub ht_attempts: u16,
+    pub ht_write_response: u32,
+    pub ht_read_value: u8,
+    pub ht_read_response: u32,
+    pub ht_available: bool,
+    pub enabled_events: u8,
+    pub mask_words: [u32; EVENT_MASK_WORDS],
+    pub send_status: WifiSdioF2ControlStatus,
+    pub send_packet_length: u16,
+    pub send_write_response: u32,
+    pub response_status: WifiSdioF2FrameStatus,
+    pub response_length: u16,
+    pub response_sequence: u8,
+    pub response_channel: u8,
+    pub response_bus_data_credit: u8,
+    pub cdc_command: u32,
+    pub cdc_length: u32,
+    pub cdc_flags: u32,
+    pub cdc_id: u16,
+    pub cdc_status: u32,
     pub ht_last_error: Option<CommandError>,
     pub send_last_error: Option<CommandError>,
     pub response_last_error: Option<CommandError>,
@@ -5297,6 +5366,75 @@ pub fn set_country(
     finish_country_report(p, report)
 }
 
+pub fn enable_network_events(
+    p: &Peripherals,
+    state: &mut WifiSdioControlState,
+) -> WifiSdioEventMaskReport {
+    let mut report = empty_event_mask_report(p);
+
+    let ht = request_ht(p);
+    report.ht_status = ht.status;
+    report.ht_attempts = ht.attempts;
+    report.ht_write_response = ht.write_response;
+    report.ht_read_value = ht.read_value;
+    report.ht_read_response = ht.read_response;
+    report.ht_available = ht.ht_available;
+    report.ht_last_error = ht.last_error;
+    if !matches!(ht.status, WifiSdioHtRequestStatus::Ready) {
+        report.status = WifiSdioEventMaskStatus::HtRequestFailed;
+        return finish_event_mask_report(p, report);
+    }
+
+    let payload = network_event_mask_payload();
+    copy_event_mask_words_to_report(&payload, &mut report);
+    let send = send_control_ioctl(p, state, WLC_SET_VAR_IOCTL, CDC_SET_FLAG, &payload);
+    let expected_ioctl_id = send.ioctl_id;
+    report.send_status = send.report.status;
+    report.send_packet_length = send.report.packet_length;
+    report.send_write_response = send.report.write_response;
+    report.send_last_error = send.report.write_last_error;
+    if !matches!(send.report.status, WifiSdioF2ControlStatus::Ready) {
+        report.status = WifiSdioEventMaskStatus::SendFailed;
+        return finish_event_mask_report(p, report);
+    }
+
+    let (response, _) = read_control_response_after_empty_frames(p);
+    report.response_status = response.status;
+    report.response_length = response.length;
+    report.response_sequence = response.sequence;
+    report.response_channel = response.channel;
+    report.response_bus_data_credit = response.bus_data_credit;
+    report.response_last_error = response.last_error;
+    if !matches!(response.status, WifiSdioF2FrameStatus::Ready) {
+        report.status = WifiSdioEventMaskStatus::ResponseFrameFailed;
+        return finish_event_mask_report(p, report);
+    }
+    state.update_credit(response.bus_data_credit);
+    if !response.valid
+        || response.length < (SDPCM_HEADER_BYTES as u16 + CDC_HEADER_BYTES as u16)
+        || response.header_length != SDPCM_HEADER_BYTES
+        || response.channel != SDPCM_CONTROL_CHANNEL
+    {
+        report.status = WifiSdioEventMaskStatus::UnexpectedResponseFrame;
+        return finish_event_mask_report(p, report);
+    }
+
+    report.cdc_command = read_le_u32(&response.bytes, 12);
+    report.cdc_length = read_le_u32(&response.bytes, 16);
+    report.cdc_flags = read_le_u32(&response.bytes, 20);
+    report.cdc_id = (report.cdc_flags >> CDC_IOCTL_ID_SHIFT) as u16;
+    report.cdc_status = read_le_u32(&response.bytes, 24);
+    if report.cdc_command != WLC_SET_VAR_IOCTL || report.cdc_id != expected_ioctl_id {
+        report.status = WifiSdioEventMaskStatus::UnexpectedResponseFrame;
+    } else if report.cdc_status != 0 {
+        report.status = WifiSdioEventMaskStatus::CdcStatusError;
+    } else {
+        report.status = WifiSdioEventMaskStatus::Ready;
+    }
+
+    finish_event_mask_report(p, report)
+}
+
 pub fn get_clm_version(
     p: &Peripherals,
     state: &mut WifiSdioControlState,
@@ -6421,6 +6559,54 @@ fn read_country_revision(source: &[u8], offset: usize) -> i32 {
         source[offset + 2],
         source[offset + 3],
     ]) as i32
+}
+
+fn network_event_mask_payload() -> [u8; EVENT_MASK_PAYLOAD_BYTES] {
+    let mut payload = [0u8; EVENT_MASK_PAYLOAD_BYTES];
+    let bsscfg_index_offset = BSSCFG_EVENT_MSGS_IOVAR_NAME.len();
+    let event_mask_offset = bsscfg_index_offset + EVENT_MASK_BSSCFG_INDEX_BYTES;
+
+    copy_bytes_to_slice(BSSCFG_EVENT_MSGS_IOVAR_NAME, &mut payload, 0);
+    write_slice_le_u32(&mut payload, bsscfg_index_offset, 0);
+
+    let mut index = 0usize;
+    while index < NETWORK_EVENT_NUMBERS.len() {
+        set_event_mask_bit(
+            &mut payload[event_mask_offset..EVENT_MASK_PAYLOAD_BYTES],
+            NETWORK_EVENT_NUMBERS[index],
+        );
+        index += 1;
+    }
+
+    payload
+}
+
+fn set_event_mask_bit(mask: &mut [u8], event_number: u8) {
+    let byte_index = (event_number / 8) as usize;
+    let bit_index = event_number % 8;
+    if byte_index < mask.len() {
+        mask[byte_index] |= 1 << bit_index;
+    }
+}
+
+fn copy_event_mask_words_to_report(
+    payload: &[u8; EVENT_MASK_PAYLOAD_BYTES],
+    report: &mut WifiSdioEventMaskReport,
+) {
+    report.enabled_events = NETWORK_EVENT_NUMBERS.len() as u8;
+
+    let mask_offset = BSSCFG_EVENT_MSGS_IOVAR_NAME.len() + EVENT_MASK_BSSCFG_INDEX_BYTES;
+    let mut index = 0usize;
+    while index < EVENT_MASK_WORDS {
+        let offset = mask_offset + index * 4;
+        report.mask_words[index] = u32::from_le_bytes([
+            payload[offset],
+            payload[offset + 1],
+            payload[offset + 2],
+            payload[offset + 3],
+        ]);
+        index += 1;
+    }
 }
 
 fn nul_terminated_len(bytes: &[u8], limit: usize) -> usize {
@@ -9284,6 +9470,50 @@ fn finish_country_report(
     p: &Peripherals,
     mut report: WifiSdioCountryReport,
 ) -> WifiSdioCountryReport {
+    let core = &p.SDHC0.core;
+    report.host_normal_int = core.normal_int_stat_r.read().bits();
+    report.host_error_int = core.error_int_stat_r.read().bits();
+    report.host = host_snapshot(p);
+    report
+}
+
+fn empty_event_mask_report(p: &Peripherals) -> WifiSdioEventMaskReport {
+    WifiSdioEventMaskReport {
+        status: WifiSdioEventMaskStatus::HtRequestFailed,
+        ht_status: WifiSdioHtRequestStatus::Timeout,
+        ht_attempts: 0,
+        ht_write_response: 0,
+        ht_read_value: 0,
+        ht_read_response: 0,
+        ht_available: false,
+        enabled_events: 0,
+        mask_words: [0; EVENT_MASK_WORDS],
+        send_status: WifiSdioF2ControlStatus::NotRun,
+        send_packet_length: 0,
+        send_write_response: 0,
+        response_status: WifiSdioF2FrameStatus::NotRun,
+        response_length: 0,
+        response_sequence: 0,
+        response_channel: 0,
+        response_bus_data_credit: 0,
+        cdc_command: 0,
+        cdc_length: 0,
+        cdc_flags: 0,
+        cdc_id: 0,
+        cdc_status: 0,
+        ht_last_error: None,
+        send_last_error: None,
+        response_last_error: None,
+        host_normal_int: 0,
+        host_error_int: 0,
+        host: host_snapshot(p),
+    }
+}
+
+fn finish_event_mask_report(
+    p: &Peripherals,
+    mut report: WifiSdioEventMaskReport,
+) -> WifiSdioEventMaskReport {
     let core = &p.SDHC0.core;
     report.host_normal_int = core.normal_int_stat_r.read().bits();
     report.host_error_int = core.error_int_stat_r.read().bits();

@@ -568,6 +568,13 @@ impl lisp::Board for PsocBoard<'_> {
         ))
     }
 
+    fn wifi_enable_network_events(&mut self) -> lisp::WifiSdioEventMaskReport {
+        wifi_sdio_event_mask_report(wifi_sdio::enable_network_events(
+            self.p,
+            &mut self.state.wifi_control_state,
+        ))
+    }
+
     fn wifi_get_clm_version(&mut self) -> lisp::WifiSdioGetClmVersionReport {
         wifi_sdio_get_clm_version_report(wifi_sdio::get_clm_version(
             self.p,
@@ -1182,6 +1189,17 @@ fn wifi_sdio_country_status(status: wifi_sdio::WifiSdioCountryStatus) -> &'stati
     }
 }
 
+fn wifi_sdio_event_mask_status(status: wifi_sdio::WifiSdioEventMaskStatus) -> &'static [u8] {
+    match status {
+        wifi_sdio::WifiSdioEventMaskStatus::Ready => b"ready",
+        wifi_sdio::WifiSdioEventMaskStatus::HtRequestFailed => b"ht-request-failed",
+        wifi_sdio::WifiSdioEventMaskStatus::SendFailed => b"send-failed",
+        wifi_sdio::WifiSdioEventMaskStatus::ResponseFrameFailed => b"response-frame-failed",
+        wifi_sdio::WifiSdioEventMaskStatus::UnexpectedResponseFrame => b"unexpected-response-frame",
+        wifi_sdio::WifiSdioEventMaskStatus::CdcStatusError => b"cdc-status-error",
+    }
+}
+
 fn wifi_sdio_get_clm_version_status(
     status: wifi_sdio::WifiSdioGetClmVersionStatus,
 ) -> &'static [u8] {
@@ -1778,6 +1796,43 @@ fn wifi_sdio_country_report(
             &report.country_code,
             country_field_len(&report.country_code),
         ),
+        ht_last_error: report.ht_last_error.map(wifi_sdio_command_error_report),
+        send_last_error: report.send_last_error.map(wifi_sdio_command_error_report),
+        response_last_error: report
+            .response_last_error
+            .map(wifi_sdio_command_error_report),
+        host_normal_int: report.host_normal_int,
+        host_error_int: report.host_error_int,
+        host: wifi_sdio_host_report(report.host),
+    }
+}
+
+fn wifi_sdio_event_mask_report(
+    report: wifi_sdio::WifiSdioEventMaskReport,
+) -> lisp::WifiSdioEventMaskReport {
+    lisp::WifiSdioEventMaskReport {
+        status: wifi_sdio_event_mask_status(report.status),
+        ht_status: wifi_sdio_ht_request_status(report.ht_status),
+        ht_attempts: report.ht_attempts,
+        ht_write_response: report.ht_write_response,
+        ht_read_value: report.ht_read_value,
+        ht_read_response: report.ht_read_response,
+        ht_available: report.ht_available,
+        enabled_events: report.enabled_events,
+        mask_words: report.mask_words,
+        send_status: wifi_sdio_f2_control_status(report.send_status),
+        send_packet_length: report.send_packet_length,
+        send_write_response: report.send_write_response,
+        response_status: wifi_sdio_f2_frame_status(report.response_status),
+        response_length: report.response_length,
+        response_sequence: report.response_sequence,
+        response_channel: report.response_channel,
+        response_bus_data_credit: report.response_bus_data_credit,
+        cdc_command: report.cdc_command,
+        cdc_length: report.cdc_length,
+        cdc_flags: report.cdc_flags,
+        cdc_id: report.cdc_id,
+        cdc_status: report.cdc_status,
         ht_last_error: report.ht_last_error.map(wifi_sdio_command_error_report),
         send_last_error: report.send_last_error.map(wifi_sdio_command_error_report),
         response_last_error: report
