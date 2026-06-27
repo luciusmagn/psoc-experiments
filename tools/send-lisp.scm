@@ -37,6 +37,8 @@
   (usage)
   (exit 1))
 
+(configure-serial-device device)
+
 (define (join-form parts)
   (let loop ((items parts) (out ""))
     (cond

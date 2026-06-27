@@ -28,8 +28,5 @@
     ((env "PSOC_SERIAL") (env "PSOC_SERIAL"))
     (else "/dev/ttyACM0")))
 
-(run (string-append
-      "stty -F "
-      (shell-quote device)
-      " 115200 raw -echo -echoe -echok -echoctl -echoke -icanon min 1 time 0"))
+(configure-serial-device device)
 (run (string-append "cat " (shell-quote device)))

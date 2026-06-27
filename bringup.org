@@ -4114,9 +4114,64 @@ Serial input and output corruption is still recurring. It has not changed the
 successful SDIO control responses, but commands sometimes arrive as damaged
 symbols or partial forms and need to be retried from a clean prompt.
 
+* 2026-06-27 Console RX drain and tty no-hup
+
+The REPL main loop used to read at most one UART byte per millisecond. At
+115200 baud, a normal Lisp form can arrive much faster than that, so bursts
+from =tools/send-lisp.scm= could overflow the SCB5 RX FIFO and leave partial
+forms such as =(wifi-w= or damaged symbols at the prompt.
+
+The firmware now drains all currently pending console bytes before sleeping for
+the next millisecond tick. The host scripts also force a complete 115200 8N1
+mode with no software flow control, no hardware flow control, and =-hupcl= so
+one-shot writes do not inherit a fragile tty state.
+
+Validation:
+
+#+begin_example
+cargo fmt
+tools/build-lisp.scm --wifi-firmware
+tools/flash-lisp.scm
+tools/serial-console.scm
+tools/send-lisp.scm '(+ 1 2 3 4 5 6 7 8 9 10)'
+tools/send-lisp.scm '(list "abcdefghijklmnopqrstuvwxyz" 1 2 3)'
+tools/send-lisp.scm '(regs)'
+tools/send-lisp.scm '(+ 100 23)'
+tools/send-lisp.scm '(help)'
+#+end_example
+
+Observed shape:
+
+#+begin_example
+(+ 1 2 3 4 5 6 7 8 9 10)
+=> 55
+
+(list "abcdefghijklmnopqrstuvwxyz" 1 2 3)
+=> ("abcdefghijklmnopqrstuvwxyz" 1 2 3)
+
+(regs)
+=> ((SCB5.CTRL . #x8200080b)
+    (SCB5.UART_CTRL . #x00000000)
+    (SCB5.RX_STATUS . #x5b5b0000)
+    (SCB5.TX_STATUS . #x06060000)
+    (PERI.CLOCK5 . #x00000000)
+    (PERI.DIV8.0 . #x00002301)
+    (HSIOM.PRT5.SEL0 . #x00001212)
+    (GPIO.PRT5.CFG . #x00000068)
+    (GPIO.PRT13.OUT . #x0000008f)
+    (GPIO.PRT13.CFG . #x6080eeee))
+
+(+ 100 23)
+=> 123
+
+(help)
+=> (help ... wifi-enable-network-events ... reboot)
+#+end_example
+
 * Next actions
 
-1. Investigate UART corruption before longer Wi-Fi association workflows.
+1. Watch for any remaining UART corruption during longer Wi-Fi association
+   workflows.
 2. Add REPL history and better editing across continuation lines.
 3. Add a FAT/exFAT-aware storage layer after raw block reads/writes work.
 4. Test the newer Infineon target =infineon/cy8cxxa.cfg= as a replacement

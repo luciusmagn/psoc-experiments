@@ -117,6 +117,12 @@
 (define (ensure-local-dir)
   (run (string-append "mkdir -p " (shell-quote (repo-path ".local")))))
 
+(define (configure-serial-device device)
+  (run (string-append
+        "stty -F "
+        (shell-quote device)
+        " 115200 cs8 -cstopb -parenb -ixon -ixoff -crtscts -hupcl clocal raw -echo -echoe -echok -echoctl -echoke -icanon min 1 time 0")))
+
 (define (capture-first-line command)
   (ensure-local-dir)
   (let ((path (repo-path ".local/psoc-tools-capture.txt")))

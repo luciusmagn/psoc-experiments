@@ -59,7 +59,7 @@ fn main() -> ! {
     let mut line_len = 0usize;
 
     loop {
-        if let Some(byte) = console.read_byte() {
+        while let Some(byte) = console.read_byte() {
             match byte {
                 b'\r' | b'\n' => {
                     console.write_bytes(b"\n");
