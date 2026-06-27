@@ -8,6 +8,8 @@ pub const MAX_STRING_BYTES: usize = 96;
 pub const MAX_STORE_FILES: usize = 5;
 const MAX_CALL_ARGS: usize = 16;
 const MAX_EVAL_DEPTH: u8 = 128;
+const PRETTY_INDENT: usize = 4;
+const PRETTY_INLINE_LIST_LIMIT: u8 = 6;
 
 type ObjectId = u16;
 type SymbolId = u16;
@@ -1464,7 +1466,7 @@ impl Machine {
         match result {
             Ok(value) => {
                 write!(output, "=> ")?;
-                self.write_value(value, output)?;
+                self.write_repl_value(value, output)?;
                 writeln!(output)?;
             }
             Err(error) => {
@@ -4787,6 +4789,105 @@ impl Machine {
         }
     }
 
+    fn write_repl_value<W: Write>(&self, value: Value, output: &mut W) -> fmt::Result {
+        if self.should_pretty_print(value) {
+            self.write_pretty_value(value, output, 0)
+        } else {
+            self.write_value(value, output)
+        }
+    }
+
+    fn should_pretty_print(&self, value: Value) -> bool {
+        match value {
+            Value::Object(id) if self.is_pair(Value::Object(id)) => self.list_needs_pretty(value),
+            _ => false,
+        }
+    }
+
+    fn list_needs_pretty(&self, mut cursor: Value) -> bool {
+        let mut count = 0u8;
+        loop {
+            match cursor {
+                Value::Nil => return false,
+                Value::Object(id) => match self.object_kind_by_id(id) {
+                    Ok(ObjectKind::Pair { car, cdr }) => {
+                        count = count.saturating_add(1);
+                        if count > PRETTY_INLINE_LIST_LIMIT || self.is_pair(car) {
+                            return true;
+                        }
+                        cursor = cdr;
+                    }
+                    _ => return false,
+                },
+                _ => return count > 0,
+            }
+        }
+    }
+
+    fn write_pretty_value<W: Write>(
+        &self,
+        value: Value,
+        output: &mut W,
+        indent: usize,
+    ) -> fmt::Result {
+        match value {
+            Value::Object(id) => match self.object_kind_by_id(id) {
+                Ok(ObjectKind::Pair { .. }) => self.write_pretty_pair(id, output, indent),
+                _ => self.write_value(value, output),
+            },
+            _ => self.write_value(value, output),
+        }
+    }
+
+    fn write_pretty_pair<W: Write>(
+        &self,
+        id: ObjectId,
+        output: &mut W,
+        indent: usize,
+    ) -> fmt::Result {
+        output.write_char('(')?;
+        let mut cursor = Value::Object(id);
+        let mut first = true;
+
+        loop {
+            match self.object_kind(cursor) {
+                Ok(ObjectKind::Pair { car, cdr }) => {
+                    if !first {
+                        output.write_char('\n')?;
+                        write_indent(output, indent + PRETTY_INDENT)?;
+                    }
+                    self.write_pretty_value(car, output, indent + PRETTY_INDENT)?;
+                    first = false;
+
+                    match cdr {
+                        Value::Nil => {
+                            output.write_char(')')?;
+                            return Ok(());
+                        }
+                        Value::Object(next_id)
+                            if matches!(
+                                self.object_kind_by_id(next_id),
+                                Ok(ObjectKind::Pair { .. })
+                            ) =>
+                        {
+                            cursor = cdr;
+                        }
+                        value => {
+                            output.write_str(" . ")?;
+                            self.write_pretty_value(value, output, indent + PRETTY_INDENT)?;
+                            output.write_char(')')?;
+                            return Ok(());
+                        }
+                    }
+                }
+                _ => {
+                    output.write_str("<bad-list>)")?;
+                    return Ok(());
+                }
+            }
+        }
+    }
+
     fn write_pair<W: Write>(&self, id: ObjectId, output: &mut W) -> fmt::Result {
         output.write_char('(')?;
         let mut cursor = Value::Object(id);
@@ -4873,6 +4974,15 @@ fn write_ascii_bytes<W: Write>(output: &mut W, bytes: &[u8]) -> fmt::Result {
     let mut index = 0usize;
     while index < bytes.len() {
         output.write_char(bytes[index] as char)?;
+        index += 1;
+    }
+    Ok(())
+}
+
+fn write_indent<W: Write>(output: &mut W, count: usize) -> fmt::Result {
+    let mut index = 0usize;
+    while index < count {
+        output.write_char(' ')?;
         index += 1;
     }
     Ok(())

@@ -3922,6 +3922,35 @@ Post-CLM control smoke still passed:
     (version . #x00000002))
 #+end_example
 
+* 2026-06-27 REPL diagnostic pretty printing
+
+The REPL now pretty-prints long lists and nested report/alist values with one
+entry per line. Short flat lists stay inline.
+
+Validation:
+
+#+begin_example
+cargo fmt
+tools/build-lisp.scm --wifi-firmware
+tools/flash-lisp.scm
+tools/serial-console.scm
+tools/send-lisp.scm '(list 1 2 3)'
+tools/send-lisp.scm '(sd-status)'
+#+end_example
+
+Observed shape:
+
+#+begin_example
+(list 1 2 3)
+=> (1 2 3)
+
+(sd-status)
+=> ((CD_L . low)
+    (inserted . #t)
+    (GPIO.PRT13.IN . #x0000010f)
+    (GPIO.PRT13.CFG . #x6080eeee))
+#+end_example
+
 * Next actions
 
 1. Add REPL history and better editing across continuation lines.
