@@ -3838,9 +3838,89 @@ One early arithmetic send collided with a stray console byte and returned
     (version . #x00000002))
 #+end_example
 
-Interpretation: the new larger-packet sender has not regressed the known-good
-small byte-mode control path. The next hardware test should be a real
-block-mode =WLC_SET_VAR=, most likely the first =clmload= chunk.
+Interpretation: the new larger-packet sender did not regress the known-good
+small byte-mode control path. The next dated entry records the first real
+block-mode =clmload= test.
+
+* 2026-06-27 CLM download reaches ready
+
+Implemented =(wifi-load-clm)= as a CLM-specific =WLC_SET_VAR= downloader for
+the embedded CYW4343W CLM blob. The command sends =clmload= chunks with a
+=wl_dload_data_t= header, waits for each CDC response, and reports the final
+chunk and SDHC state through Lisp.
+
+Two hardware details were found while testing the first chunk:
+
+1. The first 1076-byte control write initially failed at SDHC0 with
+   =ERR_INT #x0200= and =ADMA_ERR_STAT #x07=. The CMD53 argument showed a
+   17-block function-2 write. Setting SDHC0 transfer-mode bit 5
+   (=MULTI_BLK_SEL=) whenever =block_count > 1= fixed the ADMA failure.
+2. The first firmware response was larger than the 64-byte diagnostic preview:
+   =response.length #x0434=. The CLM response path now retries the empty
+   length-tag case, accepts large control frames up to the IOCTL packet limit,
+   copies the first diagnostic bytes, and drains the remaining F2 data before
+   parsing the CDC header.
+
+Validation:
+
+#+begin_example
+cargo fmt
+tools/build-lisp.scm --wifi-firmware
+tools/flash-lisp.scm
+tools/serial-console.scm
+tools/send-lisp.scm '(wifi-start-firmware)'
+tools/send-lisp.scm '(wifi-wlc-up)'
+tools/send-lisp.scm '(wifi-ack-interrupts)'
+tools/send-lisp.scm '(wifi-load-clm)'
+tools/send-lisp.scm '(wifi-get-mpc)'
+tools/send-lisp.scm '(wifi-get-version)'
+#+end_example
+
+Observed CLM result:
+
+#+begin_example
+(wifi-load-clm)
+=> ((status . ready)
+    (clm.bytes . #x00001c36)
+    (processed.bytes . #x00001c36)
+    (chunk.count . #x00000008)
+    (chunk.index . #x00000008)
+    (chunk.bytes . #x00000036)
+    (chunk.flags . #x00000004)
+    (payload.bytes . #x00000050)
+    (send.packet-length . #x0000006c)
+    (response.attempts . #x00000002)
+    (response.status . ready)
+    (response.length . #x0000006c)
+    (response.sequence . #x00000009)
+    (response.bus-data-credit . #x00000019)
+    (cdc.command . #x00000107)
+    (cdc.id . #x00000009)
+    (cdc.status . #x00000000)
+    (HOST.ERR_INT . #x00000000))
+#+end_example
+
+Post-CLM control smoke still passed:
+
+#+begin_example
+(wifi-get-mpc)
+=> ((status . ready)
+    (response.sequence . #x0000000a)
+    (response.bus-data-credit . #x0000001a)
+    (cdc.command . #x00000106)
+    (cdc.id . #x0000000a)
+    (cdc.status . #x00000000)
+    (value . #x00000001))
+
+(wifi-get-version)
+=> ((status . ready)
+    (response.sequence . #x0000000b)
+    (response.bus-data-credit . #x0000001b)
+    (cdc.command . #x00000001)
+    (cdc.id . #x0000000b)
+    (cdc.status . #x00000000)
+    (version . #x00000002))
+#+end_example
 
 * Next actions
 
@@ -3850,6 +3930,6 @@ block-mode =WLC_SET_VAR=, most likely the first =clmload= chunk.
    for obsolete =target/psoc6_2m.cfg=.
 4. Add generic CDC ioctl/iovar helpers for firmware version, MAC address, scan,
    and join.
-5. Add CLM download and country/channel setup before scan and join.
+5. Add country/channel setup after CLM before scan and join.
 6. Start Wi-Fi from a known-good Infineon or Zephyr sample before trying
    to hand-port the full CYW4343W network stack.

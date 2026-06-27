@@ -540,6 +540,14 @@ impl lisp::Board for PsocBoard<'_> {
         ))
     }
 
+    fn wifi_load_clm(&mut self) -> lisp::WifiSdioClmLoadReport {
+        wifi_sdio_clm_load_report(wifi_sdio::load_clm(
+            self.p,
+            &mut self.state.wifi_control_state,
+            wifi_resources::cyw4343w_clm(),
+        ))
+    }
+
     fn wifi_f2_read_frame_abort(&mut self) -> lisp::WifiSdioF2AbortProbeReport {
         let frame = wifi_sdio::f2_read_frame(self.p);
         let abort = wifi_sdio::abort_read(self.p);
@@ -1124,6 +1132,18 @@ fn wifi_sdio_get_mpc_status(status: wifi_sdio::WifiSdioGetMpcStatus) -> &'static
     }
 }
 
+fn wifi_sdio_clm_load_status(status: wifi_sdio::WifiSdioClmLoadStatus) -> &'static [u8] {
+    match status {
+        wifi_sdio::WifiSdioClmLoadStatus::Ready => b"ready",
+        wifi_sdio::WifiSdioClmLoadStatus::BlobMissing => b"blob-missing",
+        wifi_sdio::WifiSdioClmLoadStatus::HtRequestFailed => b"ht-request-failed",
+        wifi_sdio::WifiSdioClmLoadStatus::SendFailed => b"send-failed",
+        wifi_sdio::WifiSdioClmLoadStatus::ResponseFrameFailed => b"response-frame-failed",
+        wifi_sdio::WifiSdioClmLoadStatus::UnexpectedResponseFrame => b"unexpected-response-frame",
+        wifi_sdio::WifiSdioClmLoadStatus::CdcStatusError => b"cdc-status-error",
+    }
+}
+
 fn wifi_sdio_interrupt_ack_status(status: wifi_sdio::WifiSdioInterruptAckStatus) -> &'static [u8] {
     match status {
         wifi_sdio::WifiSdioInterruptAckStatus::Ready => b"ready",
@@ -1617,6 +1637,49 @@ fn wifi_sdio_get_mpc_report(report: wifi_sdio::WifiSdioGetMpcReport) -> lisp::Wi
         cdc_id: report.cdc_id,
         cdc_status: report.cdc_status,
         value: report.value,
+        ht_last_error: report.ht_last_error.map(wifi_sdio_command_error_report),
+        send_last_error: report.send_last_error.map(wifi_sdio_command_error_report),
+        response_last_error: report
+            .response_last_error
+            .map(wifi_sdio_command_error_report),
+        host_normal_int: report.host_normal_int,
+        host_error_int: report.host_error_int,
+        host: wifi_sdio_host_report(report.host),
+    }
+}
+
+fn wifi_sdio_clm_load_report(
+    report: wifi_sdio::WifiSdioClmLoadReport,
+) -> lisp::WifiSdioClmLoadReport {
+    lisp::WifiSdioClmLoadReport {
+        status: wifi_sdio_clm_load_status(report.status),
+        ht_status: wifi_sdio_ht_request_status(report.ht_status),
+        ht_attempts: report.ht_attempts,
+        ht_write_response: report.ht_write_response,
+        ht_read_value: report.ht_read_value,
+        ht_read_response: report.ht_read_response,
+        ht_available: report.ht_available,
+        clm_bytes: report.clm_bytes,
+        processed_bytes: report.processed_bytes,
+        chunk_count: report.chunk_count,
+        chunk_index: report.chunk_index,
+        chunk_bytes: report.chunk_bytes,
+        chunk_flags: report.chunk_flags,
+        payload_bytes: report.payload_bytes,
+        send_status: wifi_sdio_f2_control_status(report.send_status),
+        send_packet_length: report.send_packet_length,
+        send_write_response: report.send_write_response,
+        response_attempts: report.response_attempts,
+        response_status: wifi_sdio_f2_frame_status(report.response_status),
+        response_length: report.response_length,
+        response_sequence: report.response_sequence,
+        response_channel: report.response_channel,
+        response_bus_data_credit: report.response_bus_data_credit,
+        cdc_command: report.cdc_command,
+        cdc_length: report.cdc_length,
+        cdc_flags: report.cdc_flags,
+        cdc_id: report.cdc_id,
+        cdc_status: report.cdc_status,
         ht_last_error: report.ht_last_error.map(wifi_sdio_command_error_report),
         send_last_error: report.send_last_error.map(wifi_sdio_command_error_report),
         response_last_error: report
