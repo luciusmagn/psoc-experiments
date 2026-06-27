@@ -105,6 +105,8 @@ pub trait Board {
     fn wifi_get_version(&mut self) -> WifiSdioGetVersionReport;
     fn wifi_get_mpc(&mut self) -> WifiSdioGetMpcReport;
     fn wifi_load_clm(&mut self) -> WifiSdioClmLoadReport;
+    fn wifi_get_country(&mut self) -> WifiSdioCountryReport;
+    fn wifi_set_country(&mut self, country_code: [u8; 2], revision: i32) -> WifiSdioCountryReport;
     fn wifi_get_clm_version(&mut self) -> WifiSdioGetClmVersionReport;
     fn wifi_f2_read_frame_abort(&mut self) -> WifiSdioF2AbortProbeReport;
     fn wifi_poll_read_frame(&mut self) -> WifiSdioPollReadFrameReport;
@@ -795,6 +797,40 @@ pub struct WifiSdioClmLoadReport {
 }
 
 #[derive(Clone, Copy)]
+pub struct WifiSdioCountryReport {
+    pub status: &'static [u8],
+    pub ht_status: &'static [u8],
+    pub ht_attempts: u16,
+    pub ht_write_response: u32,
+    pub ht_read_value: u8,
+    pub ht_read_response: u32,
+    pub ht_available: bool,
+    pub send_status: &'static [u8],
+    pub send_packet_length: u16,
+    pub send_write_response: u32,
+    pub response_status: &'static [u8],
+    pub response_length: u16,
+    pub response_sequence: u8,
+    pub response_channel: u8,
+    pub response_bus_data_credit: u8,
+    pub cdc_command: u32,
+    pub cdc_length: u32,
+    pub cdc_flags: u32,
+    pub cdc_id: u16,
+    pub cdc_status: u32,
+    pub copied_bytes: u8,
+    pub country_abbrev: StringBytes,
+    pub revision: i32,
+    pub country_code: StringBytes,
+    pub ht_last_error: Option<WifiSdioCommandErrorReport>,
+    pub send_last_error: Option<WifiSdioCommandErrorReport>,
+    pub response_last_error: Option<WifiSdioCommandErrorReport>,
+    pub host_normal_int: u16,
+    pub host_error_int: u16,
+    pub host: WifiSdioHostReport,
+}
+
+#[derive(Clone, Copy)]
 pub struct WifiSdioGetClmVersionReport {
     pub status: &'static [u8],
     pub ht_status: &'static [u8],
@@ -1121,6 +1157,8 @@ pub enum Primitive {
     WifiGetVersion,
     WifiGetMpc,
     WifiLoadClm,
+    WifiGetCountry,
+    WifiSetCountry,
     WifiGetClmVersion,
     WifiF2ReadFrameAbort,
     WifiPollReadFrame,
@@ -1212,6 +1250,8 @@ impl Primitive {
             Self::WifiGetVersion => "wifi-get-version",
             Self::WifiGetMpc => "wifi-get-mpc",
             Self::WifiLoadClm => "wifi-load-clm",
+            Self::WifiGetCountry => "wifi-get-country",
+            Self::WifiSetCountry => "wifi-set-country",
             Self::WifiGetClmVersion => "wifi-get-clm-version",
             Self::WifiF2ReadFrameAbort => "wifi-f2-read-frame-abort",
             Self::WifiPollReadFrame => "wifi-poll-read-frame",
@@ -1461,6 +1501,8 @@ impl Machine {
         self.install_primitive(b"wifi-get-version", Primitive::WifiGetVersion)?;
         self.install_primitive(b"wifi-get-mpc", Primitive::WifiGetMpc)?;
         self.install_primitive(b"wifi-load-clm", Primitive::WifiLoadClm)?;
+        self.install_primitive(b"wifi-get-country", Primitive::WifiGetCountry)?;
+        self.install_primitive(b"wifi-set-country", Primitive::WifiSetCountry)?;
         self.install_primitive(b"wifi-get-clm-version", Primitive::WifiGetClmVersion)?;
         self.install_primitive(b"wifi-f2-read-frame-abort", Primitive::WifiF2ReadFrameAbort)?;
         self.install_primitive(b"wifi-poll-read-frame", Primitive::WifiPollReadFrame)?;
@@ -2317,6 +2359,16 @@ impl Machine {
                 self.expect_count(args, 0)?;
                 self.wifi_sdio_clm_load_report(board.wifi_load_clm())
             }
+            Primitive::WifiGetCountry => {
+                self.expect_count(args, 0)?;
+                self.wifi_sdio_country_report(board.wifi_get_country())
+            }
+            Primitive::WifiSetCountry => {
+                self.expect_count(args, 2)?;
+                let country_code = self.expect_country_code(args[0])?;
+                let revision = self.expect_int(args[1])?;
+                self.wifi_sdio_country_report(board.wifi_set_country(country_code, revision))
+            }
             Primitive::WifiGetClmVersion => {
                 self.expect_count(args, 0)?;
                 self.wifi_sdio_get_clm_version_report(board.wifi_get_clm_version())
@@ -2540,6 +2592,19 @@ impl Machine {
         }
     }
 
+    fn expect_country_code(&self, value: Value) -> LispResult<[u8; 2]> {
+        let value = self.expect_string(value)?;
+        if value.len != 2 {
+            return Err(Error::new("expected two-byte country code"));
+        }
+        let code = [value.bytes[0], value.bytes[1]];
+        if is_country_code_byte(code[0]) && is_country_code_byte(code[1]) {
+            Ok(code)
+        } else {
+            Err(Error::new("expected uppercase country code"))
+        }
+    }
+
     fn expect_word_address(&self, value: Value) -> LispResult<u32> {
         let address = self.expect_u32(value)?;
         if address & 0x03 != 0 {
@@ -2745,6 +2810,8 @@ impl Machine {
             b"wifi-get-version",
             b"wifi-get-mpc",
             b"wifi-load-clm",
+            b"wifi-get-country",
+            b"wifi-set-country",
             b"wifi-get-clm-version",
             b"wifi-f2-read-frame-abort",
             b"wifi-poll-read-frame",
@@ -3984,6 +4051,84 @@ impl Machine {
             cdc_flags,
             cdc_id,
             cdc_status,
+            host_normal_int,
+            host_error_int,
+            ht_last_error,
+            send_last_error,
+            response_last_error,
+            host,
+        ];
+        self.make_list_from_values(&entries)
+    }
+
+    fn wifi_sdio_country_report(&mut self, report: WifiSdioCountryReport) -> LispResult<Value> {
+        let status = self.symbol_entry(b"status", report.status)?;
+        let ht_status = self.symbol_entry(b"ht.status", report.ht_status)?;
+        let ht_attempts = self.word_entry(b"ht.attempts", report.ht_attempts as u32)?;
+        let ht_write_response = self.word_entry(b"ht.write-response", report.ht_write_response)?;
+        let ht_read_value = self.word_entry(b"ht.read-value", report.ht_read_value as u32)?;
+        let ht_read_response = self.word_entry(b"ht.read-response", report.ht_read_response)?;
+        let ht_available = self.bool_entry(b"ht.available", report.ht_available)?;
+        let send_status = self.symbol_entry(b"send.status", report.send_status)?;
+        let send_packet_length =
+            self.word_entry(b"send.packet-length", report.send_packet_length as u32)?;
+        let send_write_response =
+            self.word_entry(b"send.write-response", report.send_write_response)?;
+        let response_status = self.symbol_entry(b"response.status", report.response_status)?;
+        let response_length = self.word_entry(b"response.length", report.response_length as u32)?;
+        let response_sequence =
+            self.word_entry(b"response.sequence", report.response_sequence as u32)?;
+        let response_channel =
+            self.word_entry(b"response.channel", report.response_channel as u32)?;
+        let response_bus_data_credit = self.word_entry(
+            b"response.bus-data-credit",
+            report.response_bus_data_credit as u32,
+        )?;
+        let cdc_command = self.word_entry(b"cdc.command", report.cdc_command)?;
+        let cdc_length = self.word_entry(b"cdc.length", report.cdc_length)?;
+        let cdc_flags = self.word_entry(b"cdc.flags", report.cdc_flags)?;
+        let cdc_id = self.word_entry(b"cdc.id", report.cdc_id as u32)?;
+        let cdc_status = self.word_entry(b"cdc.status", report.cdc_status)?;
+        let copied_bytes = self.word_entry(b"copied.bytes", report.copied_bytes as u32)?;
+        let country_abbrev = self.string_value(report.country_abbrev)?;
+        let country_abbrev = self.entry(b"country.abbrev", country_abbrev)?;
+        let revision = self.int_entry(b"country.revision", report.revision)?;
+        let country_code = self.string_value(report.country_code)?;
+        let country_code = self.entry(b"country.code", country_code)?;
+        let host_normal_int = self.word_entry(b"HOST.NORM_INT", report.host_normal_int as u32)?;
+        let host_error_int = self.word_entry(b"HOST.ERR_INT", report.host_error_int as u32)?;
+        let ht_last_error = self.wifi_sdio_error_entry(b"ht.last-error", report.ht_last_error)?;
+        let send_last_error =
+            self.wifi_sdio_error_entry(b"send.last-error", report.send_last_error)?;
+        let response_last_error =
+            self.wifi_sdio_error_entry(b"response.last-error", report.response_last_error)?;
+        let host = self.wifi_sdio_host_report(report.host)?;
+        let host = self.entry(b"SDHC0", host)?;
+        let entries = [
+            status,
+            ht_status,
+            ht_attempts,
+            ht_write_response,
+            ht_read_value,
+            ht_read_response,
+            ht_available,
+            send_status,
+            send_packet_length,
+            send_write_response,
+            response_status,
+            response_length,
+            response_sequence,
+            response_channel,
+            response_bus_data_credit,
+            cdc_command,
+            cdc_length,
+            cdc_flags,
+            cdc_id,
+            cdc_status,
+            copied_bytes,
+            country_abbrev,
+            revision,
+            country_code,
             host_normal_int,
             host_error_int,
             ht_last_error,
@@ -5298,6 +5443,10 @@ fn is_delimiter(byte: u8) -> bool {
         byte,
         b' ' | b'\t' | b'\r' | b'\n' | b'(' | b')' | b'\'' | b';'
     )
+}
+
+fn is_country_code_byte(byte: u8) -> bool {
+    byte.is_ascii_uppercase() || byte.is_ascii_digit()
 }
 
 fn parse_decimal(token: &[u8]) -> LispResult<Option<i32>> {

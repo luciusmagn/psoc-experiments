@@ -548,6 +548,26 @@ impl lisp::Board for PsocBoard<'_> {
         ))
     }
 
+    fn wifi_get_country(&mut self) -> lisp::WifiSdioCountryReport {
+        wifi_sdio_country_report(wifi_sdio::get_country(
+            self.p,
+            &mut self.state.wifi_control_state,
+        ))
+    }
+
+    fn wifi_set_country(
+        &mut self,
+        country_code: [u8; 2],
+        revision: i32,
+    ) -> lisp::WifiSdioCountryReport {
+        wifi_sdio_country_report(wifi_sdio::set_country(
+            self.p,
+            &mut self.state.wifi_control_state,
+            country_code,
+            revision,
+        ))
+    }
+
     fn wifi_get_clm_version(&mut self) -> lisp::WifiSdioGetClmVersionReport {
         wifi_sdio_get_clm_version_report(wifi_sdio::get_clm_version(
             self.p,
@@ -1151,6 +1171,17 @@ fn wifi_sdio_clm_load_status(status: wifi_sdio::WifiSdioClmLoadStatus) -> &'stat
     }
 }
 
+fn wifi_sdio_country_status(status: wifi_sdio::WifiSdioCountryStatus) -> &'static [u8] {
+    match status {
+        wifi_sdio::WifiSdioCountryStatus::Ready => b"ready",
+        wifi_sdio::WifiSdioCountryStatus::HtRequestFailed => b"ht-request-failed",
+        wifi_sdio::WifiSdioCountryStatus::SendFailed => b"send-failed",
+        wifi_sdio::WifiSdioCountryStatus::ResponseFrameFailed => b"response-frame-failed",
+        wifi_sdio::WifiSdioCountryStatus::UnexpectedResponseFrame => b"unexpected-response-frame",
+        wifi_sdio::WifiSdioCountryStatus::CdcStatusError => b"cdc-status-error",
+    }
+}
+
 fn wifi_sdio_get_clm_version_status(
     status: wifi_sdio::WifiSdioGetClmVersionStatus,
 ) -> &'static [u8] {
@@ -1713,6 +1744,51 @@ fn wifi_sdio_clm_load_report(
     }
 }
 
+fn wifi_sdio_country_report(
+    report: wifi_sdio::WifiSdioCountryReport,
+) -> lisp::WifiSdioCountryReport {
+    lisp::WifiSdioCountryReport {
+        status: wifi_sdio_country_status(report.status),
+        ht_status: wifi_sdio_ht_request_status(report.ht_status),
+        ht_attempts: report.ht_attempts,
+        ht_write_response: report.ht_write_response,
+        ht_read_value: report.ht_read_value,
+        ht_read_response: report.ht_read_response,
+        ht_available: report.ht_available,
+        send_status: wifi_sdio_f2_control_status(report.send_status),
+        send_packet_length: report.send_packet_length,
+        send_write_response: report.send_write_response,
+        response_status: wifi_sdio_f2_frame_status(report.response_status),
+        response_length: report.response_length,
+        response_sequence: report.response_sequence,
+        response_channel: report.response_channel,
+        response_bus_data_credit: report.response_bus_data_credit,
+        cdc_command: report.cdc_command,
+        cdc_length: report.cdc_length,
+        cdc_flags: report.cdc_flags,
+        cdc_id: report.cdc_id,
+        cdc_status: report.cdc_status,
+        copied_bytes: report.copied_bytes,
+        country_abbrev: lisp_string_bytes(
+            &report.country_abbrev,
+            country_field_len(&report.country_abbrev),
+        ),
+        revision: report.revision,
+        country_code: lisp_string_bytes(
+            &report.country_code,
+            country_field_len(&report.country_code),
+        ),
+        ht_last_error: report.ht_last_error.map(wifi_sdio_command_error_report),
+        send_last_error: report.send_last_error.map(wifi_sdio_command_error_report),
+        response_last_error: report
+            .response_last_error
+            .map(wifi_sdio_command_error_report),
+        host_normal_int: report.host_normal_int,
+        host_error_int: report.host_error_int,
+        host: wifi_sdio_host_report(report.host),
+    }
+}
+
 fn wifi_sdio_get_clm_version_report(
     report: wifi_sdio::WifiSdioGetClmVersionReport,
 ) -> lisp::WifiSdioGetClmVersionReport {
@@ -1998,6 +2074,17 @@ fn sd_command_error_report(error: micro_sd::CommandError) -> lisp::SdCommandErro
         normal_int_after_write: error.normal_int_after_write,
         error_int_after_write: error.error_int_after_write,
     }
+}
+
+fn country_field_len(bytes: &[u8]) -> u8 {
+    let mut index = 0usize;
+    while index < bytes.len() {
+        if bytes[index] == 0 {
+            break;
+        }
+        index += 1;
+    }
+    index as u8
 }
 
 fn lisp_string_bytes(bytes: &[u8], len: u8) -> lisp::StringBytes {

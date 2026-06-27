@@ -3998,6 +3998,69 @@ Observed shape:
     (version . "API: 12.2\nData: 9.10.39\nCompiler: 1.29.4\nClmImport: 1.36.3\nCreation: 2021-07-18 19:03:20\n"))
 #+end_example
 
+* 2026-06-27 Country iovar
+
+Added =(wifi-get-country)= and =(wifi-set-country "XX" -1)= for the
+CYW4343W =country= iovar. WHD represents this iovar as a =wl_country_t=
+payload with four byte abbreviation, little-endian revision, and four byte
+country code. When a requested revision is zero, WHD sends =-1= so the
+firmware chooses the aggregate revision; the Lisp primitive accepts both
+=0= and =-1= for that behavior.
+
+The setter can receive an empty F2 frame before the real control response,
+just like =clmload=. Reusing the empty-frame retry path made the setter return
+CDC status zero and update the runtime country value.
+
+Validation:
+
+#+begin_example
+cargo fmt
+tools/build-lisp.scm --wifi-firmware
+tools/flash-lisp.scm
+tools/serial-console.scm
+tools/send-lisp.scm '(wifi-start-firmware)'
+tools/send-lisp.scm '(wifi-wlc-up)'
+tools/send-lisp.scm '(wifi-ack-interrupts)'
+tools/send-lisp.scm '(wifi-load-clm)'
+tools/send-lisp.scm '(wifi-get-country)'
+tools/send-lisp.scm '(wifi-set-country "XX" -1)'
+tools/send-lisp.scm '(wifi-get-country)'
+#+end_example
+
+Observed shape:
+
+#+begin_example
+(wifi-get-country)
+=> ((status . ready)
+    (cdc.command . #x00000106)
+    (cdc.length . #x00000014)
+    (cdc.status . #x00000000)
+    (copied.bytes . #x0000000c)
+    (country.abbrev . "US")
+    (country.revision . 0)
+    (country.code . "US"))
+
+(wifi-set-country "XX" -1)
+=> ((status . ready)
+    (cdc.command . #x00000107)
+    (cdc.length . #x00000014)
+    (cdc.status . #x00000000)
+    (copied.bytes . #x00000000)
+    (country.abbrev . "XX")
+    (country.revision . -1)
+    (country.code . "XX"))
+
+(wifi-get-country)
+=> ((status . ready)
+    (cdc.command . #x00000106)
+    (cdc.length . #x00000014)
+    (cdc.status . #x00000000)
+    (copied.bytes . #x0000000c)
+    (country.abbrev . "XX")
+    (country.revision . 0)
+    (country.code . "XX"))
+#+end_example
+
 * Next actions
 
 1. Add REPL history and better editing across continuation lines.
@@ -4006,6 +4069,6 @@ Observed shape:
    for obsolete =target/psoc6_2m.cfg=.
 4. Add generic CDC ioctl/iovar helpers for firmware version, MAC address, scan,
    and join.
-5. Add country/channel setup after CLM before scan and join.
+5. Add channel scan and join after country setup.
 6. Start Wi-Fi from a known-good Infineon or Zephyr sample before trying
    to hand-port the full CYW4343W network stack.

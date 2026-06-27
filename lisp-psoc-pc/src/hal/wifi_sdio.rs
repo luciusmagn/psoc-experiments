@@ -71,13 +71,17 @@ const DLOAD_FLAG_VER_SHIFT: u8 = 12;
 const DL_BEGIN: u16 = 0x0002;
 const DL_END: u16 = 0x0004;
 const DL_TYPE_CLM: u16 = 2;
+const COUNTRY_IOVAR_NAME: &[u8; 8] = b"country\0";
+const COUNTRY_FIELD_BYTES: usize = 4;
+const COUNTRY_STRUCT_BYTES: usize = 12;
+const COUNTRY_PAYLOAD_BYTES: usize = COUNTRY_IOVAR_NAME.len() + COUNTRY_STRUCT_BYTES;
 const CLMLOAD_IOVAR_NAME: &[u8; 8] = b"clmload\0";
 const CLMVER_IOVAR_NAME: &[u8; 7] = b"clmver\0";
 const CLMLOAD_DLOAD_HEADER_BYTES: usize = 12;
 const CLMLOAD_CHUNK_BYTES: usize = 1024;
 const CLMLOAD_MAX_PAYLOAD_BYTES: usize = 1048;
-const CLMLOAD_RESPONSE_MAX_ATTEMPTS: u16 = 1000;
-const CLMLOAD_RESPONSE_RETRY_US: u32 = 1000;
+const CONTROL_RESPONSE_MAX_ATTEMPTS: u16 = 1000;
+const CONTROL_RESPONSE_RETRY_US: u32 = 1000;
 const CLMVER_BUFFER_BYTES: usize = 200;
 const CLMVER_PAYLOAD_BYTES: usize = CLMVER_IOVAR_NAME.len() + CLMVER_BUFFER_BYTES;
 const SOCSRAM_BLOCK_PROBE_NO_MISMATCH: u32 = 0xffff_ffff;
@@ -338,6 +342,16 @@ pub enum WifiSdioGetMpcStatus {
 pub enum WifiSdioClmLoadStatus {
     Ready,
     BlobMissing,
+    HtRequestFailed,
+    SendFailed,
+    ResponseFrameFailed,
+    UnexpectedResponseFrame,
+    CdcStatusError,
+}
+
+#[derive(Clone, Copy)]
+pub enum WifiSdioCountryStatus {
+    Ready,
     HtRequestFailed,
     SendFailed,
     ResponseFrameFailed,
@@ -1253,6 +1267,39 @@ pub struct WifiSdioClmLoadReport {
     pub cdc_flags: u32,
     pub cdc_id: u16,
     pub cdc_status: u32,
+    pub ht_last_error: Option<CommandError>,
+    pub send_last_error: Option<CommandError>,
+    pub response_last_error: Option<CommandError>,
+    pub host_normal_int: u16,
+    pub host_error_int: u16,
+    pub host: WifiSdioHostSnapshot,
+}
+
+pub struct WifiSdioCountryReport {
+    pub status: WifiSdioCountryStatus,
+    pub ht_status: WifiSdioHtRequestStatus,
+    pub ht_attempts: u16,
+    pub ht_write_response: u32,
+    pub ht_read_value: u8,
+    pub ht_read_response: u32,
+    pub ht_available: bool,
+    pub send_status: WifiSdioF2ControlStatus,
+    pub send_packet_length: u16,
+    pub send_write_response: u32,
+    pub response_status: WifiSdioF2FrameStatus,
+    pub response_length: u16,
+    pub response_sequence: u8,
+    pub response_channel: u8,
+    pub response_bus_data_credit: u8,
+    pub cdc_command: u32,
+    pub cdc_length: u32,
+    pub cdc_flags: u32,
+    pub cdc_id: u16,
+    pub cdc_status: u32,
+    pub copied_bytes: u8,
+    pub country_abbrev: [u8; COUNTRY_FIELD_BYTES],
+    pub revision: i32,
+    pub country_code: [u8; COUNTRY_FIELD_BYTES],
     pub ht_last_error: Option<CommandError>,
     pub send_last_error: Option<CommandError>,
     pub response_last_error: Option<CommandError>,
@@ -5061,7 +5108,7 @@ pub fn load_clm(
             return finish_clm_load_report(p, report);
         }
 
-        let (response, response_attempts) = read_clm_control_response(p);
+        let (response, response_attempts) = read_control_response_after_empty_frames(p);
         report.response_attempts = response_attempts;
         report.response_status = response.status;
         report.response_length = response.length;
@@ -5103,6 +5150,151 @@ pub fn load_clm(
 
     report.status = WifiSdioClmLoadStatus::Ready;
     finish_clm_load_report(p, report)
+}
+
+pub fn get_country(p: &Peripherals, state: &mut WifiSdioControlState) -> WifiSdioCountryReport {
+    let mut report = empty_country_report(p);
+
+    let ht = request_ht(p);
+    report.ht_status = ht.status;
+    report.ht_attempts = ht.attempts;
+    report.ht_write_response = ht.write_response;
+    report.ht_read_value = ht.read_value;
+    report.ht_read_response = ht.read_response;
+    report.ht_available = ht.ht_available;
+    report.ht_last_error = ht.last_error;
+    if !matches!(ht.status, WifiSdioHtRequestStatus::Ready) {
+        report.status = WifiSdioCountryStatus::HtRequestFailed;
+        return finish_country_report(p, report);
+    }
+
+    let mut payload = [0u8; COUNTRY_PAYLOAD_BYTES];
+    copy_bytes_to_slice(COUNTRY_IOVAR_NAME, &mut payload, 0);
+    let send = send_control_ioctl(p, state, WLC_GET_VAR_IOCTL, 0, &payload);
+    let expected_ioctl_id = send.ioctl_id;
+    report.send_status = send.report.status;
+    report.send_packet_length = send.report.packet_length;
+    report.send_write_response = send.report.write_response;
+    report.send_last_error = send.report.write_last_error;
+    if !matches!(send.report.status, WifiSdioF2ControlStatus::Ready) {
+        report.status = WifiSdioCountryStatus::SendFailed;
+        return finish_country_report(p, report);
+    }
+
+    let mut country = [0u8; COUNTRY_STRUCT_BYTES];
+    let (response, copied_bytes) =
+        f2_read_frame_copy_payload(p, WHD_IOCTL_MAX_TX_PACKET_BYTES as u16, &mut country);
+    report.copied_bytes = copied_bytes as u8;
+    report.response_status = response.status;
+    report.response_length = response.length;
+    report.response_sequence = response.sequence;
+    report.response_channel = response.channel;
+    report.response_bus_data_credit = response.bus_data_credit;
+    report.response_last_error = response.last_error;
+    if !matches!(response.status, WifiSdioF2FrameStatus::Ready) {
+        report.status = WifiSdioCountryStatus::ResponseFrameFailed;
+        return finish_country_report(p, report);
+    }
+    state.update_credit(response.bus_data_credit);
+    if !response.valid
+        || response.length < (SDPCM_HEADER_BYTES as u16 + CDC_HEADER_BYTES as u16)
+        || response.header_length != SDPCM_HEADER_BYTES
+        || response.channel != SDPCM_CONTROL_CHANNEL
+    {
+        report.status = WifiSdioCountryStatus::UnexpectedResponseFrame;
+        return finish_country_report(p, report);
+    }
+
+    report.cdc_command = read_le_u32(&response.bytes, 12);
+    report.cdc_length = read_le_u32(&response.bytes, 16);
+    report.cdc_flags = read_le_u32(&response.bytes, 20);
+    report.cdc_id = (report.cdc_flags >> CDC_IOCTL_ID_SHIFT) as u16;
+    report.cdc_status = read_le_u32(&response.bytes, 24);
+    copy_country_struct_to_report(&country, &mut report);
+
+    if report.cdc_command != WLC_GET_VAR_IOCTL || report.cdc_id != expected_ioctl_id {
+        report.status = WifiSdioCountryStatus::UnexpectedResponseFrame;
+    } else if report.cdc_status != 0 {
+        report.status = WifiSdioCountryStatus::CdcStatusError;
+    } else {
+        report.status = WifiSdioCountryStatus::Ready;
+    }
+
+    finish_country_report(p, report)
+}
+
+pub fn set_country(
+    p: &Peripherals,
+    state: &mut WifiSdioControlState,
+    country_code: [u8; 2],
+    revision: i32,
+) -> WifiSdioCountryReport {
+    let mut report = empty_country_report(p);
+
+    let ht = request_ht(p);
+    report.ht_status = ht.status;
+    report.ht_attempts = ht.attempts;
+    report.ht_write_response = ht.write_response;
+    report.ht_read_value = ht.read_value;
+    report.ht_read_response = ht.read_response;
+    report.ht_available = ht.ht_available;
+    report.ht_last_error = ht.last_error;
+    if !matches!(ht.status, WifiSdioHtRequestStatus::Ready) {
+        report.status = WifiSdioCountryStatus::HtRequestFailed;
+        return finish_country_report(p, report);
+    }
+
+    let payload = country_payload(country_code, revision);
+    copy_country_struct_to_report(
+        &payload[COUNTRY_IOVAR_NAME.len()..COUNTRY_PAYLOAD_BYTES],
+        &mut report,
+    );
+    let send = send_control_ioctl(p, state, WLC_SET_VAR_IOCTL, CDC_SET_FLAG, &payload);
+    let expected_ioctl_id = send.ioctl_id;
+    report.send_status = send.report.status;
+    report.send_packet_length = send.report.packet_length;
+    report.send_write_response = send.report.write_response;
+    report.send_last_error = send.report.write_last_error;
+    if !matches!(send.report.status, WifiSdioF2ControlStatus::Ready) {
+        report.status = WifiSdioCountryStatus::SendFailed;
+        return finish_country_report(p, report);
+    }
+
+    let (response, _) = read_control_response_after_empty_frames(p);
+    report.response_status = response.status;
+    report.response_length = response.length;
+    report.response_sequence = response.sequence;
+    report.response_channel = response.channel;
+    report.response_bus_data_credit = response.bus_data_credit;
+    report.response_last_error = response.last_error;
+    if !matches!(response.status, WifiSdioF2FrameStatus::Ready) {
+        report.status = WifiSdioCountryStatus::ResponseFrameFailed;
+        return finish_country_report(p, report);
+    }
+    state.update_credit(response.bus_data_credit);
+    if !response.valid
+        || response.length < (SDPCM_HEADER_BYTES as u16 + CDC_HEADER_BYTES as u16)
+        || response.header_length != SDPCM_HEADER_BYTES
+        || response.channel != SDPCM_CONTROL_CHANNEL
+    {
+        report.status = WifiSdioCountryStatus::UnexpectedResponseFrame;
+        return finish_country_report(p, report);
+    }
+
+    report.cdc_command = read_le_u32(&response.bytes, 12);
+    report.cdc_length = read_le_u32(&response.bytes, 16);
+    report.cdc_flags = read_le_u32(&response.bytes, 20);
+    report.cdc_id = (report.cdc_flags >> CDC_IOCTL_ID_SHIFT) as u16;
+    report.cdc_status = read_le_u32(&response.bytes, 24);
+    if report.cdc_command != WLC_SET_VAR_IOCTL || report.cdc_id != expected_ioctl_id {
+        report.status = WifiSdioCountryStatus::UnexpectedResponseFrame;
+    } else if report.cdc_status != 0 {
+        report.status = WifiSdioCountryStatus::CdcStatusError;
+    } else {
+        report.status = WifiSdioCountryStatus::Ready;
+    }
+
+    finish_country_report(p, report)
 }
 
 pub fn get_clm_version(
@@ -6190,6 +6382,47 @@ fn copy_bytes_to_slice(source: &[u8], destination: &mut [u8], offset: usize) {
     }
 }
 
+fn country_payload(country_code: [u8; 2], revision: i32) -> [u8; COUNTRY_PAYLOAD_BYTES] {
+    let mut payload = [0u8; COUNTRY_PAYLOAD_BYTES];
+    let country_offset = COUNTRY_IOVAR_NAME.len();
+    let firmware_revision = if revision == 0 { -1 } else { revision };
+
+    copy_bytes_to_slice(COUNTRY_IOVAR_NAME, &mut payload, 0);
+    payload[country_offset] = country_code[0];
+    payload[country_offset + 1] = country_code[1];
+    write_slice_le_u32(&mut payload, country_offset + 4, firmware_revision as u32);
+    payload[country_offset + 8] = country_code[0];
+    payload[country_offset + 9] = country_code[1];
+
+    payload
+}
+
+fn copy_country_struct_to_report(country: &[u8], report: &mut WifiSdioCountryReport) {
+    copy_country_field(country, 0, &mut report.country_abbrev);
+    report.revision = read_country_revision(country, 4);
+    copy_country_field(country, 8, &mut report.country_code);
+}
+
+fn copy_country_field(source: &[u8], offset: usize, destination: &mut [u8; COUNTRY_FIELD_BYTES]) {
+    let mut index = 0usize;
+    while index < COUNTRY_FIELD_BYTES && offset + index < source.len() {
+        destination[index] = source[offset + index];
+        index += 1;
+    }
+}
+
+fn read_country_revision(source: &[u8], offset: usize) -> i32 {
+    if offset + 3 >= source.len() {
+        return 0;
+    }
+    u32::from_le_bytes([
+        source[offset],
+        source[offset + 1],
+        source[offset + 2],
+        source[offset + 3],
+    ]) as i32
+}
+
 fn nul_terminated_len(bytes: &[u8], limit: usize) -> usize {
     let mut index = 0usize;
     while index < limit && index < bytes.len() {
@@ -6201,15 +6434,15 @@ fn nul_terminated_len(bytes: &[u8], limit: usize) -> usize {
     index
 }
 
-fn read_clm_control_response(p: &Peripherals) -> (WifiSdioF2FrameReport, u16) {
+fn read_control_response_after_empty_frames(p: &Peripherals) -> (WifiSdioF2FrameReport, u16) {
     let mut attempts = 0u16;
     loop {
         attempts += 1;
         let response = f2_read_frame_with_drain(p, WHD_IOCTL_MAX_TX_PACKET_BYTES as u16);
-        if !is_empty_frame_response(&response) || attempts >= CLMLOAD_RESPONSE_MAX_ATTEMPTS {
+        if !is_empty_frame_response(&response) || attempts >= CONTROL_RESPONSE_MAX_ATTEMPTS {
             return (response, attempts);
         }
-        delay_us(CLMLOAD_RESPONSE_RETRY_US);
+        delay_us(CONTROL_RESPONSE_RETRY_US);
     }
 }
 
@@ -9005,6 +9238,52 @@ fn finish_clm_load_report(
     p: &Peripherals,
     mut report: WifiSdioClmLoadReport,
 ) -> WifiSdioClmLoadReport {
+    let core = &p.SDHC0.core;
+    report.host_normal_int = core.normal_int_stat_r.read().bits();
+    report.host_error_int = core.error_int_stat_r.read().bits();
+    report.host = host_snapshot(p);
+    report
+}
+
+fn empty_country_report(p: &Peripherals) -> WifiSdioCountryReport {
+    WifiSdioCountryReport {
+        status: WifiSdioCountryStatus::HtRequestFailed,
+        ht_status: WifiSdioHtRequestStatus::Timeout,
+        ht_attempts: 0,
+        ht_write_response: 0,
+        ht_read_value: 0,
+        ht_read_response: 0,
+        ht_available: false,
+        send_status: WifiSdioF2ControlStatus::NotRun,
+        send_packet_length: 0,
+        send_write_response: 0,
+        response_status: WifiSdioF2FrameStatus::NotRun,
+        response_length: 0,
+        response_sequence: 0,
+        response_channel: 0,
+        response_bus_data_credit: 0,
+        cdc_command: 0,
+        cdc_length: 0,
+        cdc_flags: 0,
+        cdc_id: 0,
+        cdc_status: 0,
+        copied_bytes: 0,
+        country_abbrev: [0; COUNTRY_FIELD_BYTES],
+        revision: 0,
+        country_code: [0; COUNTRY_FIELD_BYTES],
+        ht_last_error: None,
+        send_last_error: None,
+        response_last_error: None,
+        host_normal_int: 0,
+        host_error_int: 0,
+        host: host_snapshot(p),
+    }
+}
+
+fn finish_country_report(
+    p: &Peripherals,
+    mut report: WifiSdioCountryReport,
+) -> WifiSdioCountryReport {
     let core = &p.SDHC0.core;
     report.host_normal_int = core.normal_int_stat_r.read().bits();
     report.host_error_int = core.error_int_stat_r.read().bits();
