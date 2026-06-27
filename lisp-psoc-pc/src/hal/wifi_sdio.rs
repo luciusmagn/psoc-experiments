@@ -72,11 +72,14 @@ const DL_BEGIN: u16 = 0x0002;
 const DL_END: u16 = 0x0004;
 const DL_TYPE_CLM: u16 = 2;
 const CLMLOAD_IOVAR_NAME: &[u8; 8] = b"clmload\0";
+const CLMVER_IOVAR_NAME: &[u8; 7] = b"clmver\0";
 const CLMLOAD_DLOAD_HEADER_BYTES: usize = 12;
 const CLMLOAD_CHUNK_BYTES: usize = 1024;
 const CLMLOAD_MAX_PAYLOAD_BYTES: usize = 1048;
 const CLMLOAD_RESPONSE_MAX_ATTEMPTS: u16 = 1000;
 const CLMLOAD_RESPONSE_RETRY_US: u32 = 1000;
+const CLMVER_BUFFER_BYTES: usize = 200;
+const CLMVER_PAYLOAD_BYTES: usize = CLMVER_IOVAR_NAME.len() + CLMVER_BUFFER_BYTES;
 const SOCSRAM_BLOCK_PROBE_NO_MISMATCH: u32 = 0xffff_ffff;
 const SDIO_CCCR_IO_ENABLE: u32 = 0x02;
 const SDIO_CCCR_IO_READY: u32 = 0x03;
@@ -335,6 +338,16 @@ pub enum WifiSdioGetMpcStatus {
 pub enum WifiSdioClmLoadStatus {
     Ready,
     BlobMissing,
+    HtRequestFailed,
+    SendFailed,
+    ResponseFrameFailed,
+    UnexpectedResponseFrame,
+    CdcStatusError,
+}
+
+#[derive(Clone, Copy)]
+pub enum WifiSdioGetClmVersionStatus {
+    Ready,
     HtRequestFailed,
     SendFailed,
     ResponseFrameFailed,
@@ -1240,6 +1253,39 @@ pub struct WifiSdioClmLoadReport {
     pub cdc_flags: u32,
     pub cdc_id: u16,
     pub cdc_status: u32,
+    pub ht_last_error: Option<CommandError>,
+    pub send_last_error: Option<CommandError>,
+    pub response_last_error: Option<CommandError>,
+    pub host_normal_int: u16,
+    pub host_error_int: u16,
+    pub host: WifiSdioHostSnapshot,
+}
+
+pub struct WifiSdioGetClmVersionReport {
+    pub status: WifiSdioGetClmVersionStatus,
+    pub ht_status: WifiSdioHtRequestStatus,
+    pub ht_attempts: u16,
+    pub ht_write_response: u32,
+    pub ht_read_value: u8,
+    pub ht_read_response: u32,
+    pub ht_available: bool,
+    pub send_status: WifiSdioF2ControlStatus,
+    pub send_packet_length: u16,
+    pub send_write_response: u32,
+    pub response_status: WifiSdioF2FrameStatus,
+    pub response_length: u16,
+    pub response_sequence: u8,
+    pub response_channel: u8,
+    pub response_bus_data_credit: u8,
+    pub cdc_command: u32,
+    pub cdc_length: u32,
+    pub cdc_flags: u32,
+    pub cdc_id: u16,
+    pub cdc_status: u32,
+    pub copied_bytes: u8,
+    pub version_len: u8,
+    pub version_truncated: bool,
+    pub version: [u8; CLMVER_BUFFER_BYTES],
     pub ht_last_error: Option<CommandError>,
     pub send_last_error: Option<CommandError>,
     pub response_last_error: Option<CommandError>,
@@ -5059,6 +5105,87 @@ pub fn load_clm(
     finish_clm_load_report(p, report)
 }
 
+pub fn get_clm_version(
+    p: &Peripherals,
+    state: &mut WifiSdioControlState,
+) -> WifiSdioGetClmVersionReport {
+    let mut report = empty_get_clm_version_report(p);
+
+    let ht = request_ht(p);
+    report.ht_status = ht.status;
+    report.ht_attempts = ht.attempts;
+    report.ht_write_response = ht.write_response;
+    report.ht_read_value = ht.read_value;
+    report.ht_read_response = ht.read_response;
+    report.ht_available = ht.ht_available;
+    report.ht_last_error = ht.last_error;
+    if !matches!(ht.status, WifiSdioHtRequestStatus::Ready) {
+        report.status = WifiSdioGetClmVersionStatus::HtRequestFailed;
+        return finish_get_clm_version_report(p, report);
+    }
+
+    let mut payload = [0u8; CLMVER_PAYLOAD_BYTES];
+    copy_bytes_to_slice(CLMVER_IOVAR_NAME, &mut payload, 0);
+    let send = send_control_ioctl(p, state, WLC_GET_VAR_IOCTL, 0, &payload);
+    let expected_ioctl_id = send.ioctl_id;
+    report.send_status = send.report.status;
+    report.send_packet_length = send.report.packet_length;
+    report.send_write_response = send.report.write_response;
+    report.send_last_error = send.report.write_last_error;
+    if !matches!(send.report.status, WifiSdioF2ControlStatus::Ready) {
+        report.status = WifiSdioGetClmVersionStatus::SendFailed;
+        return finish_get_clm_version_report(p, report);
+    }
+
+    let (response, copied_bytes) =
+        f2_read_frame_copy_payload(p, WHD_IOCTL_MAX_TX_PACKET_BYTES as u16, &mut report.version);
+    report.copied_bytes = copied_bytes as u8;
+    report.response_status = response.status;
+    report.response_length = response.length;
+    report.response_sequence = response.sequence;
+    report.response_channel = response.channel;
+    report.response_bus_data_credit = response.bus_data_credit;
+    report.response_last_error = response.last_error;
+    if !matches!(response.status, WifiSdioF2FrameStatus::Ready) {
+        report.status = WifiSdioGetClmVersionStatus::ResponseFrameFailed;
+        return finish_get_clm_version_report(p, report);
+    }
+    state.update_credit(response.bus_data_credit);
+    if !response.valid
+        || response.length < (SDPCM_HEADER_BYTES as u16 + CDC_HEADER_BYTES as u16)
+        || response.header_length != SDPCM_HEADER_BYTES
+        || response.channel != SDPCM_CONTROL_CHANNEL
+    {
+        report.status = WifiSdioGetClmVersionStatus::UnexpectedResponseFrame;
+        return finish_get_clm_version_report(p, report);
+    }
+
+    report.cdc_command = read_le_u32(&response.bytes, 12);
+    report.cdc_length = read_le_u32(&response.bytes, 16);
+    report.cdc_flags = read_le_u32(&response.bytes, 20);
+    report.cdc_id = (report.cdc_flags >> CDC_IOCTL_ID_SHIFT) as u16;
+    report.cdc_status = read_le_u32(&response.bytes, 24);
+    let cdc_payload_limit = if report.cdc_length > CLMVER_BUFFER_BYTES as u32 {
+        CLMVER_BUFFER_BYTES as u16
+    } else {
+        report.cdc_length as u16
+    };
+    let version_limit = min_u16(copied_bytes, cdc_payload_limit) as usize;
+    report.version_len = nul_terminated_len(&report.version, version_limit) as u8;
+    report.version_truncated =
+        version_limit == CLMVER_BUFFER_BYTES && report.version_len as usize == version_limit;
+
+    if report.cdc_command != WLC_GET_VAR_IOCTL || report.cdc_id != expected_ioctl_id {
+        report.status = WifiSdioGetClmVersionStatus::UnexpectedResponseFrame;
+    } else if report.cdc_status != 0 {
+        report.status = WifiSdioGetClmVersionStatus::CdcStatusError;
+    } else {
+        report.status = WifiSdioGetClmVersionStatus::Ready;
+    }
+
+    finish_get_clm_version_report(p, report)
+}
+
 pub fn ack_interrupts(p: &Peripherals) -> WifiSdioInterruptAckReport {
     let core = &p.SDHC0.core;
     let host_normal_int_before = core.normal_int_stat_r.read().bits();
@@ -6055,6 +6182,25 @@ fn clmload_padded_dload_len(dload_len: usize) -> usize {
     dload_len + 8 - (dload_len % 8)
 }
 
+fn copy_bytes_to_slice(source: &[u8], destination: &mut [u8], offset: usize) {
+    let mut index = 0usize;
+    while index < source.len() && offset + index < destination.len() {
+        destination[offset + index] = source[index];
+        index += 1;
+    }
+}
+
+fn nul_terminated_len(bytes: &[u8], limit: usize) -> usize {
+    let mut index = 0usize;
+    while index < limit && index < bytes.len() {
+        if bytes[index] == 0 {
+            return index;
+        }
+        index += 1;
+    }
+    index
+}
+
 fn read_clm_control_response(p: &Peripherals) -> (WifiSdioF2FrameReport, u16) {
     let mut attempts = 0u16;
     loop {
@@ -6075,6 +6221,16 @@ fn is_empty_frame_response(response: &WifiSdioF2FrameReport) -> bool {
 }
 
 fn f2_read_frame_with_drain(p: &Peripherals, max_length: u16) -> WifiSdioF2FrameReport {
+    let mut ignored_payload = [0u8; 0];
+    let (report, _) = f2_read_frame_copy_payload(p, max_length, &mut ignored_payload);
+    report
+}
+
+fn f2_read_frame_copy_payload(
+    p: &Peripherals,
+    max_length: u16,
+    payload: &mut [u8],
+) -> (WifiSdioF2FrameReport, u16) {
     let header = f2_read_bytes(p, 4);
     let mut bytes = [0; SDIO_CMD53_PREVIEW_BYTES];
     copy_bytes(&mut bytes, 0, &header.bytes, 4);
@@ -6083,130 +6239,168 @@ fn f2_read_frame_with_drain(p: &Peripherals, max_length: u16) -> WifiSdioF2Frame
     let valid = length != 0 && (length ^ checksum) == 0xffff;
 
     if !matches!(header.status, WifiSdioCmd53ReadStatus::Ready) {
-        return f2_frame_report(
-            p,
-            WifiSdioF2FrameStatus::HeaderReadFailed,
-            header.status,
-            WifiSdioCmd53ReadStatus::Ready,
-            header.response,
+        return (
+            f2_frame_report(
+                p,
+                WifiSdioF2FrameStatus::HeaderReadFailed,
+                header.status,
+                WifiSdioCmd53ReadStatus::Ready,
+                header.response,
+                0,
+                bytes,
+                4,
+                header.last_error,
+            ),
             0,
-            bytes,
-            4,
-            header.last_error,
         );
     }
 
     if !valid {
-        return f2_frame_report(
-            p,
-            WifiSdioF2FrameStatus::InvalidHeader,
-            header.status,
-            WifiSdioCmd53ReadStatus::Ready,
-            header.response,
+        return (
+            f2_frame_report(
+                p,
+                WifiSdioF2FrameStatus::InvalidHeader,
+                header.status,
+                WifiSdioCmd53ReadStatus::Ready,
+                header.response,
+                0,
+                bytes,
+                4,
+                None,
+            ),
             0,
-            bytes,
-            4,
-            None,
         );
     }
 
     if length < SDPCM_HEADER_BYTES as u16 {
-        return f2_frame_report(
-            p,
-            WifiSdioF2FrameStatus::FrameTooShort,
-            header.status,
-            WifiSdioCmd53ReadStatus::Ready,
-            header.response,
+        return (
+            f2_frame_report(
+                p,
+                WifiSdioF2FrameStatus::FrameTooShort,
+                header.status,
+                WifiSdioCmd53ReadStatus::Ready,
+                header.response,
+                0,
+                bytes,
+                4,
+                None,
+            ),
             0,
-            bytes,
-            4,
-            None,
         );
     }
 
     if length > max_length {
-        return f2_frame_report(
-            p,
-            WifiSdioF2FrameStatus::FrameTooLarge,
-            header.status,
-            WifiSdioCmd53ReadStatus::Ready,
-            header.response,
-            0,
-            bytes,
-            4,
-            None,
-        );
-    }
-
-    let body_count = length - 4;
-    if body_count % SDIO_CMD53_WORD_BYTES as u16 != 0 {
-        return f2_frame_report(
-            p,
-            WifiSdioF2FrameStatus::UnsupportedLength,
-            header.status,
-            WifiSdioCmd53ReadStatus::Ready,
-            header.response,
-            0,
-            bytes,
-            4,
-            None,
-        );
-    }
-
-    let preview_body_count = min_u16(body_count, (SDIO_CMD53_PREVIEW_BYTES - 4) as u16);
-    let mut body_response = 0;
-    let mut body_remaining = body_count;
-    if preview_body_count > 0 {
-        let body = f2_read_bytes(p, preview_body_count as u8);
-        body_response = body.response;
-        if !matches!(body.status, WifiSdioCmd53ReadStatus::Ready) {
-            return f2_frame_report(
+        return (
+            f2_frame_report(
                 p,
-                WifiSdioF2FrameStatus::BodyReadFailed,
+                WifiSdioF2FrameStatus::FrameTooLarge,
                 header.status,
-                body.status,
+                WifiSdioCmd53ReadStatus::Ready,
                 header.response,
-                body.response,
+                0,
                 bytes,
                 4,
-                body.last_error,
-            );
-        }
-        copy_bytes(&mut bytes, 4, &body.bytes, preview_body_count as u8);
-        body_remaining -= preview_body_count;
+                None,
+            ),
+            0,
+        );
     }
 
-    while body_remaining > 0 {
-        let chunk_count = min_u16(body_remaining, SDIO_CMD53_BLOCK_BYTES) as u8;
-        let body = f2_read_bytes(p, chunk_count);
+    let mut copied_payload = 0u16;
+    let mut frame_offset = 4u16;
+    let mut body_response = 0;
+    let mut logical_body_remaining = length - 4;
+    while logical_body_remaining > 0 {
+        let logical_chunk_count = min_u16(logical_body_remaining, SDIO_CMD53_BLOCK_BYTES);
+        let transfer_chunk_count = round_up_u16(logical_chunk_count, SDIO_CMD53_WORD_BYTES);
+        let body = f2_read_bytes(p, transfer_chunk_count as u8);
         body_response = body.response;
         if !matches!(body.status, WifiSdioCmd53ReadStatus::Ready) {
-            return f2_frame_report(
-                p,
-                WifiSdioF2FrameStatus::BodyReadFailed,
-                header.status,
-                body.status,
-                header.response,
-                body.response,
-                bytes,
-                SDIO_CMD53_PREVIEW_BYTES as u8,
-                body.last_error,
+            return (
+                f2_frame_report(
+                    p,
+                    WifiSdioF2FrameStatus::BodyReadFailed,
+                    header.status,
+                    body.status,
+                    header.response,
+                    body.response,
+                    bytes,
+                    min_u16(frame_offset, SDIO_CMD53_PREVIEW_BYTES as u16) as u8,
+                    body.last_error,
+                ),
+                copied_payload,
             );
         }
-        body_remaining -= chunk_count as u16;
+
+        copy_frame_chunk(
+            &mut bytes,
+            &body.bytes,
+            frame_offset,
+            logical_chunk_count as u8,
+        );
+        copied_payload += copy_payload_chunk(
+            payload,
+            copied_payload,
+            &body.bytes,
+            frame_offset,
+            logical_chunk_count as u8,
+        );
+        frame_offset += logical_chunk_count;
+        logical_body_remaining -= logical_chunk_count;
     }
 
-    f2_frame_report(
-        p,
-        WifiSdioF2FrameStatus::Ready,
-        header.status,
-        WifiSdioCmd53ReadStatus::Ready,
-        header.response,
-        body_response,
-        bytes,
-        min_u16(length, SDIO_CMD53_PREVIEW_BYTES as u16) as u8,
-        None,
+    (
+        f2_frame_report(
+            p,
+            WifiSdioF2FrameStatus::Ready,
+            header.status,
+            WifiSdioCmd53ReadStatus::Ready,
+            header.response,
+            body_response,
+            bytes,
+            min_u16(length, SDIO_CMD53_PREVIEW_BYTES as u16) as u8,
+            None,
+        ),
+        copied_payload,
     )
+}
+
+fn copy_frame_chunk(
+    frame: &mut [u8; SDIO_CMD53_PREVIEW_BYTES],
+    chunk: &[u8; SDIO_CMD53_PREVIEW_BYTES],
+    frame_offset: u16,
+    chunk_count: u8,
+) {
+    let mut index = 0u16;
+    while index < chunk_count as u16 {
+        let destination = frame_offset + index;
+        if destination < SDIO_CMD53_PREVIEW_BYTES as u16 {
+            frame[destination as usize] = chunk[index as usize];
+        }
+        index += 1;
+    }
+}
+
+fn copy_payload_chunk(
+    payload: &mut [u8],
+    payload_offset: u16,
+    chunk: &[u8; SDIO_CMD53_PREVIEW_BYTES],
+    frame_offset: u16,
+    chunk_count: u8,
+) -> u16 {
+    let mut copied = 0u16;
+    let mut index = 0u16;
+    while index < chunk_count as u16 {
+        let source_offset = frame_offset + index;
+        if source_offset >= (SDPCM_HEADER_BYTES as u16 + CDC_HEADER_BYTES as u16)
+            && payload_offset + copied < payload.len() as u16
+        {
+            payload[(payload_offset + copied) as usize] = chunk[index as usize];
+            copied += 1;
+        }
+        index += 1;
+    }
+    copied
 }
 
 fn min_u16(left: u16, right: u16) -> u16 {
@@ -6214,6 +6408,15 @@ fn min_u16(left: u16, right: u16) -> u16 {
         left
     } else {
         right
+    }
+}
+
+fn round_up_u16(value: u16, alignment: u16) -> u16 {
+    let remainder = value % alignment;
+    if remainder == 0 {
+        value
+    } else {
+        value + alignment - remainder
     }
 }
 
@@ -8802,6 +9005,52 @@ fn finish_clm_load_report(
     p: &Peripherals,
     mut report: WifiSdioClmLoadReport,
 ) -> WifiSdioClmLoadReport {
+    let core = &p.SDHC0.core;
+    report.host_normal_int = core.normal_int_stat_r.read().bits();
+    report.host_error_int = core.error_int_stat_r.read().bits();
+    report.host = host_snapshot(p);
+    report
+}
+
+fn empty_get_clm_version_report(p: &Peripherals) -> WifiSdioGetClmVersionReport {
+    WifiSdioGetClmVersionReport {
+        status: WifiSdioGetClmVersionStatus::HtRequestFailed,
+        ht_status: WifiSdioHtRequestStatus::Timeout,
+        ht_attempts: 0,
+        ht_write_response: 0,
+        ht_read_value: 0,
+        ht_read_response: 0,
+        ht_available: false,
+        send_status: WifiSdioF2ControlStatus::NotRun,
+        send_packet_length: 0,
+        send_write_response: 0,
+        response_status: WifiSdioF2FrameStatus::NotRun,
+        response_length: 0,
+        response_sequence: 0,
+        response_channel: 0,
+        response_bus_data_credit: 0,
+        cdc_command: 0,
+        cdc_length: 0,
+        cdc_flags: 0,
+        cdc_id: 0,
+        cdc_status: 0,
+        copied_bytes: 0,
+        version_len: 0,
+        version_truncated: false,
+        version: [0; CLMVER_BUFFER_BYTES],
+        ht_last_error: None,
+        send_last_error: None,
+        response_last_error: None,
+        host_normal_int: 0,
+        host_error_int: 0,
+        host: host_snapshot(p),
+    }
+}
+
+fn finish_get_clm_version_report(
+    p: &Peripherals,
+    mut report: WifiSdioGetClmVersionReport,
+) -> WifiSdioGetClmVersionReport {
     let core = &p.SDHC0.core;
     report.host_normal_int = core.normal_int_stat_r.read().bits();
     report.host_error_int = core.error_int_stat_r.read().bits();

@@ -3951,6 +3951,53 @@ Observed shape:
     (GPIO.PRT13.CFG . #x6080eeee))
 #+end_example
 
+* 2026-06-27 CLM version iovar
+
+Added =(wifi-get-clm-version)= to query the CYW4343W =clmver= iovar after
+=wifi-load-clm=. Infineon's WHD source uses a 200 byte output buffer for this
+iovar; a 96 byte request reached the firmware but returned CDC status
+=#xfffffff2=.
+
+The F2 SDPCM response reader now handles logical frame lengths that are not
+word aligned by rounding only the underlying CMD53 transfer length and copying
+only the logical frame bytes. The first failing =clmver= response had logical
+length =#x83=, which made the old reader report =unsupported-length= before it
+could parse the CDC status.
+
+Validation:
+
+#+begin_example
+cargo fmt
+tools/build-lisp.scm --wifi-firmware
+tools/flash-lisp.scm
+tools/serial-console.scm
+tools/send-lisp.scm '(wifi-start-firmware)'
+tools/send-lisp.scm '(wifi-wlc-up)'
+tools/send-lisp.scm '(wifi-ack-interrupts)'
+tools/send-lisp.scm '(wifi-load-clm)'
+tools/send-lisp.scm '(wifi-get-clm-version)'
+#+end_example
+
+Observed shape:
+
+#+begin_example
+(wifi-get-clm-version)
+=> ((status . ready)
+    (send.packet-length . #x000000eb)
+    (response.status . ready)
+    (response.length . #x000000eb)
+    (response.sequence . #x0000000a)
+    (response.bus-data-credit . #x0000001a)
+    (cdc.command . #x00000106)
+    (cdc.length . #x000000cf)
+    (cdc.id . #x0000000a)
+    (cdc.status . #x00000000)
+    (copied.bytes . #x000000c8)
+    (version.length . #x00000059)
+    (version.truncated . #f)
+    (version . "API: 12.2\nData: 9.10.39\nCompiler: 1.29.4\nClmImport: 1.36.3\nCreation: 2021-07-18 19:03:20\n"))
+#+end_example
+
 * Next actions
 
 1. Add REPL history and better editing across continuation lines.

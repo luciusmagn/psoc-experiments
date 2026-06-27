@@ -548,6 +548,13 @@ impl lisp::Board for PsocBoard<'_> {
         ))
     }
 
+    fn wifi_get_clm_version(&mut self) -> lisp::WifiSdioGetClmVersionReport {
+        wifi_sdio_get_clm_version_report(wifi_sdio::get_clm_version(
+            self.p,
+            &mut self.state.wifi_control_state,
+        ))
+    }
+
     fn wifi_f2_read_frame_abort(&mut self) -> lisp::WifiSdioF2AbortProbeReport {
         let frame = wifi_sdio::f2_read_frame(self.p);
         let abort = wifi_sdio::abort_read(self.p);
@@ -1144,6 +1151,21 @@ fn wifi_sdio_clm_load_status(status: wifi_sdio::WifiSdioClmLoadStatus) -> &'stat
     }
 }
 
+fn wifi_sdio_get_clm_version_status(
+    status: wifi_sdio::WifiSdioGetClmVersionStatus,
+) -> &'static [u8] {
+    match status {
+        wifi_sdio::WifiSdioGetClmVersionStatus::Ready => b"ready",
+        wifi_sdio::WifiSdioGetClmVersionStatus::HtRequestFailed => b"ht-request-failed",
+        wifi_sdio::WifiSdioGetClmVersionStatus::SendFailed => b"send-failed",
+        wifi_sdio::WifiSdioGetClmVersionStatus::ResponseFrameFailed => b"response-frame-failed",
+        wifi_sdio::WifiSdioGetClmVersionStatus::UnexpectedResponseFrame => {
+            b"unexpected-response-frame"
+        }
+        wifi_sdio::WifiSdioGetClmVersionStatus::CdcStatusError => b"cdc-status-error",
+    }
+}
+
 fn wifi_sdio_interrupt_ack_status(status: wifi_sdio::WifiSdioInterruptAckStatus) -> &'static [u8] {
     match status {
         wifi_sdio::WifiSdioInterruptAckStatus::Ready => b"ready",
@@ -1691,6 +1713,45 @@ fn wifi_sdio_clm_load_report(
     }
 }
 
+fn wifi_sdio_get_clm_version_report(
+    report: wifi_sdio::WifiSdioGetClmVersionReport,
+) -> lisp::WifiSdioGetClmVersionReport {
+    lisp::WifiSdioGetClmVersionReport {
+        status: wifi_sdio_get_clm_version_status(report.status),
+        ht_status: wifi_sdio_ht_request_status(report.ht_status),
+        ht_attempts: report.ht_attempts,
+        ht_write_response: report.ht_write_response,
+        ht_read_value: report.ht_read_value,
+        ht_read_response: report.ht_read_response,
+        ht_available: report.ht_available,
+        send_status: wifi_sdio_f2_control_status(report.send_status),
+        send_packet_length: report.send_packet_length,
+        send_write_response: report.send_write_response,
+        response_status: wifi_sdio_f2_frame_status(report.response_status),
+        response_length: report.response_length,
+        response_sequence: report.response_sequence,
+        response_channel: report.response_channel,
+        response_bus_data_credit: report.response_bus_data_credit,
+        cdc_command: report.cdc_command,
+        cdc_length: report.cdc_length,
+        cdc_flags: report.cdc_flags,
+        cdc_id: report.cdc_id,
+        cdc_status: report.cdc_status,
+        copied_bytes: report.copied_bytes,
+        version_len: report.version_len,
+        version_truncated: report.version_truncated,
+        version: lisp_string_bytes(&report.version, report.version_len),
+        ht_last_error: report.ht_last_error.map(wifi_sdio_command_error_report),
+        send_last_error: report.send_last_error.map(wifi_sdio_command_error_report),
+        response_last_error: report
+            .response_last_error
+            .map(wifi_sdio_command_error_report),
+        host_normal_int: report.host_normal_int,
+        host_error_int: report.host_error_int,
+        host: wifi_sdio_host_report(report.host),
+    }
+}
+
 fn wifi_sdio_interrupt_ack_report(
     report: wifi_sdio::WifiSdioInterruptAckReport,
 ) -> lisp::WifiSdioInterruptAckReport {
@@ -1937,4 +1998,19 @@ fn sd_command_error_report(error: micro_sd::CommandError) -> lisp::SdCommandErro
         normal_int_after_write: error.normal_int_after_write,
         error_int_after_write: error.error_int_after_write,
     }
+}
+
+fn lisp_string_bytes(bytes: &[u8], len: u8) -> lisp::StringBytes {
+    let mut value = lisp::StringBytes {
+        len: 0,
+        bytes: [0; lisp::MAX_STRING_BYTES],
+    };
+    let mut index = 0usize;
+    let limit = core::cmp::min(len as usize, lisp::MAX_STRING_BYTES);
+    while index < limit && index < bytes.len() {
+        value.bytes[index] = bytes[index];
+        index += 1;
+    }
+    value.len = index as u8;
+    value
 }
