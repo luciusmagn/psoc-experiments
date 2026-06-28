@@ -20,6 +20,11 @@ pub struct StringBytes {
     pub bytes: [u8; MAX_STRING_BYTES],
 }
 
+const EMPTY_STRING_BYTES: StringBytes = StringBytes {
+    len: 0,
+    bytes: [0; MAX_STRING_BYTES],
+};
+
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub enum LedAction {
     On,
@@ -46,6 +51,11 @@ impl Error {
 pub trait FatFormatProgress {
     fn report(&mut self, phase: &'static [u8], written_sector_count: u32, total_sectors: u32);
 }
+
+const STATUS_READY: &[u8] = b"ready";
+const STATUS_NOT_RUN: &[u8] = b"not-run";
+const STATUS_STEP_FAILED: &[u8] = b"step-failed";
+const STEP_DONE: &[u8] = b"done";
 
 pub trait Board {
     fn led(&mut self, action: LedAction) -> bool;
@@ -110,6 +120,62 @@ pub trait Board {
     fn wifi_disable_tx_glomming(&mut self) -> WifiSdioTxGlommingReport;
     fn wifi_enable_network_events(&mut self) -> WifiSdioEventMaskReport;
     fn wifi_start_scan(&mut self) -> WifiSdioScanStartReport;
+    fn wifi_prepare_join(&mut self) -> WifiPrepareJoinReport {
+        let mut report = WifiPrepareJoinReport::new();
+
+        let sdio = self.wifi_sdio_init();
+        report.sdio_status = sdio.status;
+        if !status_ready(sdio.status) {
+            report.mark_failed(b"wifi-sdio-init");
+            return report;
+        }
+
+        let firmware = self.wifi_start_firmware();
+        report.firmware_status = firmware.status;
+        if !status_ready(firmware.status) {
+            report.mark_failed(b"wifi-start-firmware");
+            return report;
+        }
+
+        let wlc_up = self.wifi_wlc_up();
+        report.wlc_up_status = wlc_up.status;
+        if !status_ready(wlc_up.status) {
+            report.mark_failed(b"wifi-wlc-up");
+            return report;
+        }
+
+        let ack = self.wifi_ack_interrupts();
+        report.ack_status = ack.status;
+        if !status_ready(ack.status) {
+            report.mark_failed(b"wifi-ack-interrupts");
+            return report;
+        }
+
+        let clm = self.wifi_load_clm();
+        report.clm_status = clm.status;
+        if !status_ready(clm.status) {
+            report.mark_failed(b"wifi-load-clm");
+            return report;
+        }
+
+        let tx_glomming = self.wifi_disable_tx_glomming();
+        report.tx_glomming_status = tx_glomming.status;
+        if !status_ready(tx_glomming.status) {
+            report.mark_failed(b"wifi-disable-tx-glomming");
+            return report;
+        }
+
+        let country = self.wifi_set_country(*b"XX", -1);
+        report.country_status = country.status;
+        if !status_ready(country.status) {
+            report.mark_failed(b"wifi-set-country");
+            return report;
+        }
+
+        report.status = STATUS_READY;
+        report.step = STEP_DONE;
+        report
+    }
     fn wifi_join_wpa2(&mut self, ssid: StringBytes, passphrase: StringBytes) -> WifiSdioJoinReport;
     fn wifi_drain_scan_events(&mut self) -> WifiSdioScanEventDrainReport;
     fn wifi_get_clm_version(&mut self) -> WifiSdioGetClmVersionReport;
@@ -125,6 +191,20 @@ pub trait Board {
     fn wifi_reset_core(&mut self, base: u32) -> WifiSdioCoreResetReport;
     fn sdhc_registers(&mut self) -> SdhcReport;
     fn reboot(&mut self) -> !;
+}
+
+fn status_ready(status: &[u8]) -> bool {
+    status == STATUS_READY
+}
+
+fn append_string_byte(target: &mut StringBytes, byte: u8) -> LispResult<()> {
+    let index = target.len as usize;
+    if index >= MAX_STRING_BYTES {
+        return Err(Error::new("string too long"));
+    }
+    target.bytes[index] = byte;
+    target.len += 1;
+    Ok(())
 }
 
 #[derive(Clone, Copy)]
@@ -937,6 +1017,40 @@ pub struct WifiSdioScanStartReport {
 }
 
 #[derive(Clone, Copy)]
+pub struct WifiPrepareJoinReport {
+    pub status: &'static [u8],
+    pub step: &'static [u8],
+    pub sdio_status: &'static [u8],
+    pub firmware_status: &'static [u8],
+    pub wlc_up_status: &'static [u8],
+    pub ack_status: &'static [u8],
+    pub clm_status: &'static [u8],
+    pub tx_glomming_status: &'static [u8],
+    pub country_status: &'static [u8],
+}
+
+impl WifiPrepareJoinReport {
+    fn new() -> Self {
+        Self {
+            status: STATUS_NOT_RUN,
+            step: b"start",
+            sdio_status: STATUS_NOT_RUN,
+            firmware_status: STATUS_NOT_RUN,
+            wlc_up_status: STATUS_NOT_RUN,
+            ack_status: STATUS_NOT_RUN,
+            clm_status: STATUS_NOT_RUN,
+            tx_glomming_status: STATUS_NOT_RUN,
+            country_status: STATUS_NOT_RUN,
+        }
+    }
+
+    fn mark_failed(&mut self, step: &'static [u8]) {
+        self.status = STATUS_STEP_FAILED;
+        self.step = step;
+    }
+}
+
+#[derive(Clone, Copy)]
 pub struct WifiSdioJoinReport {
     pub status: &'static [u8],
     pub step: &'static [u8],
@@ -1364,7 +1478,16 @@ pub enum Primitive {
     WifiDisableTxGlomming,
     WifiEnableNetworkEvents,
     WifiStartScan,
+    WifiPrepareJoin,
     WifiJoinWpa2,
+    WifiConnectWpa2,
+    WifiSsid,
+    WifiPassphrase,
+    WifiSsidClear,
+    WifiSsidByte,
+    WifiPassphraseClear,
+    WifiPassphraseByte,
+    WifiConnect,
     WifiDrainScanEvents,
     WifiGetClmVersion,
     WifiF2ReadFrameAbort,
@@ -1463,7 +1586,16 @@ impl Primitive {
             Self::WifiDisableTxGlomming => "wifi-disable-tx-glomming",
             Self::WifiEnableNetworkEvents => "wifi-enable-network-events",
             Self::WifiStartScan => "wifi-start-scan",
+            Self::WifiPrepareJoin => "wifi-prepare-join",
             Self::WifiJoinWpa2 => "wifi-join-wpa2",
+            Self::WifiConnectWpa2 => "wifi-connect-wpa2",
+            Self::WifiSsid => "wifi-ssid",
+            Self::WifiPassphrase => "wifi-passphrase",
+            Self::WifiSsidClear => "wifi-ssid-clear",
+            Self::WifiSsidByte => "wifi-ssid-byte",
+            Self::WifiPassphraseClear => "wifi-pass-clear",
+            Self::WifiPassphraseByte => "wifi-pass-byte",
+            Self::WifiConnect => "wifi-connect",
             Self::WifiDrainScanEvents => "wifi-drain-scan-events",
             Self::WifiGetClmVersion => "wifi-get-clm-version",
             Self::WifiF2ReadFrameAbort => "wifi-f2-read-frame-abort",
@@ -1585,6 +1717,10 @@ pub struct Machine {
     active_expression: Value,
     collections: u32,
     console_echo: bool,
+    wifi_ssid: StringBytes,
+    wifi_ssid_set: bool,
+    wifi_passphrase: StringBytes,
+    wifi_passphrase_set: bool,
 }
 
 #[derive(Clone, Copy)]
@@ -1608,6 +1744,10 @@ impl Machine {
             active_expression: Value::Nil,
             collections: 0,
             console_echo: true,
+            wifi_ssid: EMPTY_STRING_BYTES,
+            wifi_ssid_set: false,
+            wifi_passphrase: EMPTY_STRING_BYTES,
+            wifi_passphrase_set: false,
         }
     }
 
@@ -1728,7 +1868,16 @@ impl Machine {
             Primitive::WifiEnableNetworkEvents,
         )?;
         self.install_primitive(b"wifi-start-scan", Primitive::WifiStartScan)?;
+        self.install_primitive(b"wifi-prepare-join", Primitive::WifiPrepareJoin)?;
         self.install_primitive(b"wifi-join-wpa2", Primitive::WifiJoinWpa2)?;
+        self.install_primitive(b"wifi-connect-wpa2", Primitive::WifiConnectWpa2)?;
+        self.install_primitive(b"wifi-ssid", Primitive::WifiSsid)?;
+        self.install_primitive(b"wifi-passphrase", Primitive::WifiPassphrase)?;
+        self.install_primitive(b"wifi-ssid-clear", Primitive::WifiSsidClear)?;
+        self.install_primitive(b"wifi-ssid-byte", Primitive::WifiSsidByte)?;
+        self.install_primitive(b"wifi-pass-clear", Primitive::WifiPassphraseClear)?;
+        self.install_primitive(b"wifi-pass-byte", Primitive::WifiPassphraseByte)?;
+        self.install_primitive(b"wifi-connect", Primitive::WifiConnect)?;
         self.install_primitive(b"wifi-drain-scan-events", Primitive::WifiDrainScanEvents)?;
         self.install_primitive(b"wifi-get-clm-version", Primitive::WifiGetClmVersion)?;
         self.install_primitive(b"wifi-f2-read-frame-abort", Primitive::WifiF2ReadFrameAbort)?;
@@ -1803,6 +1952,11 @@ impl Machine {
 
     pub fn console_echo_enabled(&self) -> bool {
         self.console_echo
+    }
+
+    fn clear_wifi_passphrase(&mut self) {
+        self.wifi_passphrase = EMPTY_STRING_BYTES;
+        self.wifi_passphrase_set = false;
     }
 
     fn reset_heap(&mut self) {
@@ -2625,11 +2779,85 @@ impl Machine {
                 self.expect_count(args, 0)?;
                 self.wifi_sdio_scan_start_report(board.wifi_start_scan())
             }
+            Primitive::WifiPrepareJoin => {
+                self.expect_count(args, 0)?;
+                self.wifi_prepare_join_report(board.wifi_prepare_join())
+            }
             Primitive::WifiJoinWpa2 => {
                 self.expect_count(args, 2)?;
                 let ssid = self.expect_string(args[0])?;
                 let passphrase = self.expect_string(args[1])?;
                 self.wifi_sdio_join_report(board.wifi_join_wpa2(ssid, passphrase))
+            }
+            Primitive::WifiConnectWpa2 => {
+                self.expect_count(args, 2)?;
+                let ssid = self.expect_string(args[0])?;
+                let passphrase = self.expect_string(args[1])?;
+                let prepare = board.wifi_prepare_join();
+                if !status_ready(prepare.status) {
+                    self.wifi_prepare_join_report(prepare)
+                } else {
+                    self.wifi_sdio_join_report(board.wifi_join_wpa2(ssid, passphrase))
+                }
+            }
+            Primitive::WifiSsid => {
+                self.expect_count(args, 1)?;
+                let ssid = self.expect_string(args[0])?;
+                self.wifi_ssid = ssid;
+                self.wifi_ssid_set = true;
+                self.wifi_credential_report(b"ssid", ssid.len)
+            }
+            Primitive::WifiPassphrase => {
+                self.expect_count(args, 1)?;
+                let passphrase = self.expect_string(args[0])?;
+                self.wifi_passphrase = passphrase;
+                self.wifi_passphrase_set = true;
+                self.wifi_credential_report(b"passphrase", passphrase.len)
+            }
+            Primitive::WifiSsidClear => {
+                self.expect_count(args, 0)?;
+                self.wifi_ssid = EMPTY_STRING_BYTES;
+                self.wifi_ssid_set = false;
+                self.wifi_credential_report(b"ssid", 0)
+            }
+            Primitive::WifiSsidByte => {
+                self.expect_count(args, 1)?;
+                let byte = self.expect_u8(args[0])?;
+                append_string_byte(&mut self.wifi_ssid, byte)?;
+                self.wifi_ssid_set = true;
+                self.wifi_credential_report(b"ssid", self.wifi_ssid.len)
+            }
+            Primitive::WifiPassphraseClear => {
+                self.expect_count(args, 0)?;
+                self.clear_wifi_passphrase();
+                self.wifi_credential_report(b"passphrase", 0)
+            }
+            Primitive::WifiPassphraseByte => {
+                self.expect_count(args, 1)?;
+                let byte = self.expect_u8(args[0])?;
+                append_string_byte(&mut self.wifi_passphrase, byte)?;
+                self.wifi_passphrase_set = true;
+                self.wifi_credential_report(b"passphrase", self.wifi_passphrase.len)
+            }
+            Primitive::WifiConnect => {
+                self.expect_count(args, 0)?;
+                if !self.wifi_ssid_set {
+                    return Err(Error::new("wifi ssid not set"));
+                }
+                if !self.wifi_passphrase_set {
+                    return Err(Error::new("wifi passphrase not set"));
+                }
+                let ssid = self.wifi_ssid;
+                let passphrase = self.wifi_passphrase;
+                let prepare = board.wifi_prepare_join();
+                if !status_ready(prepare.status) {
+                    self.clear_wifi_passphrase();
+                    self.wifi_prepare_join_report(prepare)
+                } else {
+                    let report = board.wifi_join_wpa2(ssid, passphrase);
+                    self.clear_wifi_passphrase();
+                    self.wifi_sdio_join_report(report)
+                }
             }
             Primitive::WifiDrainScanEvents => {
                 self.expect_count(args, 0)?;
@@ -4653,6 +4881,39 @@ impl Machine {
             response_last_error,
             host,
         ];
+        self.make_list_from_values(&entries)
+    }
+
+    fn wifi_prepare_join_report(&mut self, report: WifiPrepareJoinReport) -> LispResult<Value> {
+        let status = self.symbol_entry(b"status", report.status)?;
+        let step = self.symbol_entry(b"step", report.step)?;
+        let sdio_status = self.symbol_entry(b"sdio.status", report.sdio_status)?;
+        let firmware_status = self.symbol_entry(b"firmware.status", report.firmware_status)?;
+        let wlc_up_status = self.symbol_entry(b"wlc-up.status", report.wlc_up_status)?;
+        let ack_status = self.symbol_entry(b"ack.status", report.ack_status)?;
+        let clm_status = self.symbol_entry(b"clm.status", report.clm_status)?;
+        let tx_glomming_status =
+            self.symbol_entry(b"tx-glomming.status", report.tx_glomming_status)?;
+        let country_status = self.symbol_entry(b"country.status", report.country_status)?;
+        let entries = [
+            status,
+            step,
+            sdio_status,
+            firmware_status,
+            wlc_up_status,
+            ack_status,
+            clm_status,
+            tx_glomming_status,
+            country_status,
+        ];
+        self.make_list_from_values(&entries)
+    }
+
+    fn wifi_credential_report(&mut self, field: &'static [u8], length: u8) -> LispResult<Value> {
+        let status = self.symbol_entry(b"status", STATUS_READY)?;
+        let field = self.symbol_entry(b"field", field)?;
+        let length = self.word_entry(b"length", length as u32)?;
+        let entries = [status, field, length];
         self.make_list_from_values(&entries)
     }
 

@@ -19,6 +19,7 @@
 
 (define default-character-delay-ms 500)
 (define open-settle-delay-ms 1000)
+(define burst-buffer ".local/serial/send-buffer.lisp")
 
 (load-shared-object "libc.so.6")
 (define usleep (foreign-procedure "usleep" (unsigned-int) int))
@@ -78,6 +79,22 @@
       (die "form contains a non-byte character"))
     (put-u8 port byte)))
 
+(define (write-burst-buffer path form final-cr?)
+  (run (string-append "mkdir -p " (shell-quote (dirname path))))
+  (call-with-output-file path
+    (lambda (port)
+      (display form port)
+      (when final-cr?
+        (put-char port #\return)))
+    'replace)
+  (run (string-append "chmod 600 " (shell-quote path))))
+
+(define (send-burst-text device form final-cr?)
+  (let ((path (repo-path burst-buffer)))
+    (write-burst-buffer path form final-cr?)
+    (run (string-append "cat " (shell-quote path) " > " (shell-quote device)))
+    (run (string-append "rm -f " (shell-quote path)))))
+
 (define (send-paced-form device form delay-ms)
   (say (string-append
         "+ send "
@@ -87,19 +104,21 @@
         " with "
         (number->string delay-ms)
         " ms pacing"))
-  (let ((port (open-file-output-port
-               device
-               (file-options no-fail)
-               (buffer-mode none))))
-    (sleep-ms (max-left open-settle-delay-ms delay-ms))
-    (let loop ((index 0))
-      (when (< index (string-length form))
-        (put-char-byte port (string-ref form index))
+  (sleep-ms (max-left open-settle-delay-ms delay-ms))
+  (if (= delay-ms 0)
+      (send-burst-text device form #t)
+      (let ((port (open-file-output-port
+                   device
+                   (file-options no-fail)
+                   (buffer-mode none))))
+        (let loop ((index 0))
+          (when (< index (string-length form))
+            (put-char-byte port (string-ref form index))
+            (flush-output-port port)
+            (sleep-ms delay-ms)
+            (loop (+ index 1))))
+        (put-u8 port 13)
         (flush-output-port port)
-        (sleep-ms delay-ms)
-        (loop (+ index 1))))
-    (put-u8 port 13)
-    (flush-output-port port)
-    (close-output-port port)))
+        (close-output-port port))))
 
 (send-paced-form device (join-form parts) delay-ms)

@@ -140,12 +140,12 @@ const WLC_E_STATUS_NEWSCAN: u32 = 9;
 const WLC_E_STATUS_NEWASSOC: u32 = 10;
 const WLC_EVENT_MSG_LINK: u32 = 0x01;
 const WLC_SUP_STATUS_OFFSET: u32 = 256;
-const WLC_SUP_KEYED: u32 = 6 + WLC_SUP_STATUS_OFFSET;
-const WLC_SUP_KEYXCHANGE_WAIT_M1: u32 = 4 + WLC_SUP_STATUS_OFFSET;
-const WLC_SUP_KEYXCHANGE_WAIT_M3: u32 = 8 + WLC_SUP_STATUS_OFFSET;
-const WLC_SUP_KEYXCHANGE_WAIT_G1: u32 = 10 + WLC_SUP_STATUS_OFFSET;
+const WLC_SUP_KEYED_RAW: u32 = 6;
+const WLC_SUP_KEYXCHANGE_WAIT_M1_RAW: u32 = 4;
+const WLC_SUP_KEYXCHANGE_WAIT_M3_RAW: u32 = 8;
+const WLC_SUP_KEYXCHANGE_WAIT_G1_RAW: u32 = 10;
 const WLC_E_SUP_REASON_OFFSET: u32 = 512;
-const WLC_E_SUP_WPA_PSK_TMO: u32 = 15 + WLC_E_SUP_REASON_OFFSET;
+const WLC_E_SUP_WPA_PSK_TMO_RAW: u32 = 15;
 const JOIN_ASSOCIATED: u32 = 1 << 0;
 const JOIN_AUTHENTICATED: u32 = 1 << 1;
 const JOIN_LINK_READY: u32 = 1 << 2;
@@ -7696,26 +7696,26 @@ fn update_join_supplicant_status(
         return None;
     }
 
-    if parsed.event_status == WLC_SUP_KEYED {
+    if psk_supplicant_status_matches(parsed.event_status, WLC_SUP_KEYED_RAW) {
         report.join_flags &= !JOIN_SECURITY_FLAGS_MASK;
         report.join_flags |= JOIN_SECURITY_COMPLETE;
         return None;
     }
 
-    if parsed.event_status == WLC_SUP_KEYXCHANGE_WAIT_M1
-        && parsed.event_reason == WLC_E_SUP_WPA_PSK_TMO
+    if psk_supplicant_status_matches(parsed.event_status, WLC_SUP_KEYXCHANGE_WAIT_M1_RAW)
+        && psk_supplicant_reason_matches(parsed.event_reason, WLC_E_SUP_WPA_PSK_TMO_RAW)
     {
         report.join_flags |= JOIN_EAPOL_KEY_M1_TIMEOUT;
         return Some(WifiSdioJoinStatus::EapolKeyM1Timeout);
     }
-    if parsed.event_status == WLC_SUP_KEYXCHANGE_WAIT_M3
-        && parsed.event_reason == WLC_E_SUP_WPA_PSK_TMO
+    if psk_supplicant_status_matches(parsed.event_status, WLC_SUP_KEYXCHANGE_WAIT_M3_RAW)
+        && psk_supplicant_reason_matches(parsed.event_reason, WLC_E_SUP_WPA_PSK_TMO_RAW)
     {
         report.join_flags |= JOIN_EAPOL_KEY_M3_TIMEOUT;
         return Some(WifiSdioJoinStatus::EapolKeyM3Timeout);
     }
-    if parsed.event_status == WLC_SUP_KEYXCHANGE_WAIT_G1
-        && parsed.event_reason == WLC_E_SUP_WPA_PSK_TMO
+    if psk_supplicant_status_matches(parsed.event_status, WLC_SUP_KEYXCHANGE_WAIT_G1_RAW)
+        && psk_supplicant_reason_matches(parsed.event_reason, WLC_E_SUP_WPA_PSK_TMO_RAW)
     {
         report.join_flags |= JOIN_EAPOL_KEY_G1_TIMEOUT;
         return Some(WifiSdioJoinStatus::EapolKeyG1Timeout);
@@ -7723,6 +7723,14 @@ fn update_join_supplicant_status(
 
     report.join_flags |= JOIN_EAPOL_KEY_FAILURE;
     Some(WifiSdioJoinStatus::EapolKeyFailure)
+}
+
+fn psk_supplicant_status_matches(value: u32, raw_status: u32) -> bool {
+    value == raw_status || value == raw_status + WLC_SUP_STATUS_OFFSET
+}
+
+fn psk_supplicant_reason_matches(value: u32, raw_reason: u32) -> bool {
+    value == raw_reason || value == raw_reason + WLC_E_SUP_REASON_OFFSET
 }
 
 struct ParsedScanEvent {

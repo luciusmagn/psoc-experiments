@@ -15,12 +15,13 @@
 (define open-settle-delay-ms 1000)
 (define default-restore-delay-ms 25000)
 (define default-hold-before-join-cr-ms 0)
+(define burst-buffer ".local/wifi/send-buffer.lisp")
 
 (load-shared-object "libc.so.6")
 (define usleep (foreign-procedure "usleep" (unsigned-int) int))
 
 (define (usage)
-  (say "usage: tools/send-wifi-join.scm [--check] [--device DEVICE] [--credentials FILE] [--delay-ms MS] [--restore-delay-ms MS] [--hold-before-join-cr-ms MS]")
+  (say "usage: tools/send-wifi-join.scm [--check] [--connect] [--staged] [--byte-staged] [--no-echo-control] [--device DEVICE] [--credentials FILE] [--delay-ms MS] [--restore-delay-ms MS] [--hold-before-join-cr-ms MS]")
   (say "")
   (say "Sends selected local Wi-Fi credentials to (wifi-join-wpa2 ...) with console echo disabled.")
   (say "Credential values and SSIDs are not printed."))
@@ -31,34 +32,42 @@
         value
         (die (string-append name " needs a non-negative integer")))))
 
-(define (parse args device credentials delay-ms restore-delay-ms hold-before-join-cr-ms check-only)
+(define (parse args device credentials delay-ms restore-delay-ms hold-before-join-cr-ms command-name staged? byte-staged? echo-control? check-only)
   (cond
-    ((null? args) (values device credentials delay-ms restore-delay-ms hold-before-join-cr-ms check-only))
+    ((null? args) (values device credentials delay-ms restore-delay-ms hold-before-join-cr-ms command-name staged? byte-staged? echo-control? check-only))
     ((string=? (car args) "--help")
      (usage)
      (exit 0))
     ((string=? (car args) "--check")
-     (parse (cdr args) device credentials delay-ms restore-delay-ms hold-before-join-cr-ms #t))
+     (parse (cdr args) device credentials delay-ms restore-delay-ms hold-before-join-cr-ms command-name staged? byte-staged? echo-control? #t))
+    ((string=? (car args) "--connect")
+     (parse (cdr args) device credentials delay-ms restore-delay-ms hold-before-join-cr-ms "wifi-connect-wpa2" staged? byte-staged? echo-control? check-only))
+    ((string=? (car args) "--staged")
+     (parse (cdr args) device credentials delay-ms restore-delay-ms hold-before-join-cr-ms command-name #t byte-staged? echo-control? check-only))
+    ((string=? (car args) "--byte-staged")
+     (parse (cdr args) device credentials delay-ms restore-delay-ms hold-before-join-cr-ms command-name staged? #t echo-control? check-only))
+    ((string=? (car args) "--no-echo-control")
+     (parse (cdr args) device credentials delay-ms restore-delay-ms hold-before-join-cr-ms command-name staged? byte-staged? #f check-only))
     ((string=? (car args) "--device")
      (if (null? (cdr args))
          (die "--device needs a path")
-         (parse (cddr args) (cadr args) credentials delay-ms restore-delay-ms hold-before-join-cr-ms check-only)))
+         (parse (cddr args) (cadr args) credentials delay-ms restore-delay-ms hold-before-join-cr-ms command-name staged? byte-staged? echo-control? check-only)))
     ((string=? (car args) "--credentials")
      (if (null? (cdr args))
          (die "--credentials needs a path")
-         (parse (cddr args) device (cadr args) delay-ms restore-delay-ms hold-before-join-cr-ms check-only)))
+         (parse (cddr args) device (cadr args) delay-ms restore-delay-ms hold-before-join-cr-ms command-name staged? byte-staged? echo-control? check-only)))
     ((string=? (car args) "--delay-ms")
      (if (null? (cdr args))
          (die "--delay-ms needs a value")
-         (parse (cddr args) device credentials (parse-ms "--delay-ms" (cadr args)) restore-delay-ms hold-before-join-cr-ms check-only)))
+         (parse (cddr args) device credentials (parse-ms "--delay-ms" (cadr args)) restore-delay-ms hold-before-join-cr-ms command-name staged? byte-staged? echo-control? check-only)))
     ((string=? (car args) "--restore-delay-ms")
      (if (null? (cdr args))
          (die "--restore-delay-ms needs a value")
-         (parse (cddr args) device credentials delay-ms (parse-ms "--restore-delay-ms" (cadr args)) hold-before-join-cr-ms check-only)))
+         (parse (cddr args) device credentials delay-ms (parse-ms "--restore-delay-ms" (cadr args)) hold-before-join-cr-ms command-name staged? byte-staged? echo-control? check-only)))
     ((string=? (car args) "--hold-before-join-cr-ms")
      (if (null? (cdr args))
          (die "--hold-before-join-cr-ms needs a value")
-         (parse (cddr args) device credentials delay-ms restore-delay-ms (parse-ms "--hold-before-join-cr-ms" (cadr args)) check-only)))
+         (parse (cddr args) device credentials delay-ms restore-delay-ms (parse-ms "--hold-before-join-cr-ms" (cadr args)) command-name staged? byte-staged? echo-control? check-only)))
     (else
      (die (string-append "unknown argument " (car args))))))
 
@@ -133,6 +142,22 @@
       (die "form contains a non-byte character"))
     (put-u8 port byte)))
 
+(define (write-burst-buffer path form final-cr?)
+  (run (string-append "mkdir -p " (shell-quote (dirname path))))
+  (call-with-output-file path
+    (lambda (port)
+      (display form port)
+      (when final-cr?
+        (put-char port #\return)))
+    'replace)
+  (run (string-append "chmod 600 " (shell-quote path))))
+
+(define (send-burst-text device form final-cr?)
+  (let ((path (repo-path burst-buffer)))
+    (write-burst-buffer path form final-cr?)
+    (run (string-append "cat " (shell-quote path) " > " (shell-quote device)))
+    (run (string-append "rm -f " (shell-quote path)))))
+
 (define (send-paced-text device form delay-ms final-cr?)
   (say (string-append
         "+ send "
@@ -142,34 +167,30 @@
         " with "
         (number->string delay-ms)
         " ms pacing"))
-  (let ((port (open-file-output-port
-               device
-               (file-options no-fail)
-               (buffer-mode none))))
-    (sleep-ms (max-left open-settle-delay-ms delay-ms))
-    (let loop ((index 0))
-      (when (< index (string-length form))
-        (put-char-byte port (string-ref form index))
+  (sleep-ms (max-left open-settle-delay-ms delay-ms))
+  (if (= delay-ms 0)
+      (send-burst-text device form final-cr?)
+      (let ((port (open-file-output-port
+                   device
+                   (file-options no-fail)
+                   (buffer-mode none))))
+        (let loop ((index 0))
+          (when (< index (string-length form))
+            (put-char-byte port (string-ref form index))
+            (flush-output-port port)
+            (sleep-ms delay-ms)
+            (loop (+ index 1))))
+        (when final-cr?
+          (put-u8 port 13))
         (flush-output-port port)
-        (sleep-ms delay-ms)
-        (loop (+ index 1))))
-    (when final-cr?
-      (put-u8 port 13))
-    (flush-output-port port)
-    (close-output-port port)))
+        (close-output-port port))))
 
 (define (send-paced-form device form delay-ms)
   (send-paced-text device form delay-ms #t))
 
 (define (send-carriage-return device)
   (say (string-append "+ send carriage return to " device))
-  (let ((port (open-file-output-port
-               device
-               (file-options no-fail)
-               (buffer-mode none))))
-    (put-u8 port 13)
-    (flush-output-port port)
-    (close-output-port port)))
+  (run (string-append "printf '\\r' > " (shell-quote device))))
 
 (define (lisp-string text)
   (let ((port (open-output-string)))
@@ -190,13 +211,17 @@
     (put-char port #\")
     (get-output-string port)))
 
-(define-values (device credentials delay-ms restore-delay-ms hold-before-join-cr-ms check-only)
+(define-values (device credentials delay-ms restore-delay-ms hold-before-join-cr-ms command-name staged? byte-staged? echo-control? check-only)
   (parse (command-line-tail)
          (or (env "PSOC_SERIAL") "/dev/ttyACM0")
          default-credentials
          default-character-delay-ms
          default-restore-delay-ms
          default-hold-before-join-cr-ms
+         "wifi-join-wpa2"
+         #f
+         #f
+         #t
          #f))
 
 (define credentials-path (repo-path credentials))
@@ -217,6 +242,10 @@
 (say (string-append "passphrase.length=" (number->string (string-length passphrase))))
 (say (string-append "restore-delay-ms=" (number->string restore-delay-ms)))
 (say (string-append "hold-before-join-cr-ms=" (number->string hold-before-join-cr-ms)))
+(say (string-append "command=" command-name))
+(say (string-append "staged=" (if staged? "on" "off")))
+(say (string-append "byte-staged=" (if byte-staged? "on" "off")))
+(say (string-append "echo-control=" (if echo-control? "on" "off")))
 
 (when check-only
   (exit 0))
@@ -224,17 +253,44 @@
 (configure-serial-device device)
 
 (define join-form
-  (string-append "(wifi-join-wpa2 " (lisp-string ssid) " " (lisp-string passphrase) ")"))
+  (string-append "(" command-name " " (lisp-string ssid) " " (lisp-string passphrase) ")"))
+(define ssid-form
+  (string-append "(wifi-ssid " (lisp-string ssid) ")"))
+(define passphrase-form
+  (string-append "(wifi-passphrase " (lisp-string passphrase) ")"))
 
-(send-paced-form device "(console-echo off)" delay-ms)
-(if (> hold-before-join-cr-ms 0)
+(define (send-byte-forms clear-form byte-command text)
+  (send-paced-form device clear-form delay-ms)
+  (let loop ((index 0))
+    (when (< index (string-length text))
+      (send-paced-form
+       device
+       (string-append
+        "(" byte-command " " (number->string (char->integer (string-ref text index))) ")")
+       delay-ms)
+      (loop (+ index 1)))))
+
+(when echo-control?
+  (send-paced-form device "(console-echo off)" delay-ms))
+(if byte-staged?
     (begin
-      (send-paced-text device join-form delay-ms #f)
-      (say (string-append "+ hold before join carriage return "
-                          (number->string hold-before-join-cr-ms)
-                          " ms"))
-      (sleep-ms hold-before-join-cr-ms)
-      (send-carriage-return device))
-    (send-paced-form device join-form delay-ms))
-(sleep-ms restore-delay-ms)
-(send-paced-form device "(console-echo on)" delay-ms)
+      (send-byte-forms "(wifi-ssid-clear)" "wifi-ssid-byte" ssid)
+      (send-byte-forms "(wifi-pass-clear)" "wifi-pass-byte" passphrase)
+      (send-paced-form device "(wifi-connect)" delay-ms))
+    (if staged?
+    (begin
+      (send-paced-form device ssid-form delay-ms)
+      (send-paced-form device passphrase-form delay-ms)
+      (send-paced-form device "(wifi-connect)" delay-ms))
+    (if (> hold-before-join-cr-ms 0)
+        (begin
+          (send-paced-text device join-form delay-ms #f)
+          (say (string-append "+ hold before join carriage return "
+                              (number->string hold-before-join-cr-ms)
+                              " ms"))
+          (sleep-ms hold-before-join-cr-ms)
+          (send-carriage-return device))
+        (send-paced-form device join-form delay-ms))))
+(when echo-control?
+  (sleep-ms restore-delay-ms)
+  (send-paced-form device "(console-echo on)" delay-ms))

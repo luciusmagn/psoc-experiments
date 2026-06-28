@@ -4480,6 +4480,45 @@ This is not a successful association yet. The next debugging target is WPA2
 security configuration and EAPOL event interpretation, not basic SDIO
 transport, firmware loading, CLM loading, or ioctl response matching.
 
+* 2026-06-28 Wi-Fi connect staging
+
+WHD headers define PSK supplicant statuses with =WLC_SUP_STATUS_OFFSET=, but
+the live 4343W event stream returned raw status =#x00000006= for the
+=WLC_E_PSK_SUP= event. The join-event interpreter now accepts both raw and
+offset PSK supplicant status/reason values while preserving the raw event
+fields in the printed report.
+
+Added =(wifi-prepare-join)= to run the non-secret station setup inside
+firmware:
+
+#+begin_example
+(wifi-prepare-join)
+=> ((status . ready)
+    (step . done)
+    (sdio.status . ready)
+    (firmware.status . ready)
+    (wlc-up.status . ready)
+    (ack.status . ready)
+    (clm.status . ready)
+    (tx-glomming.status . ready)
+    (country.status . ready))
+#+end_example
+
+Added =(wifi-connect-wpa2 ssid passphrase)=, =(wifi-ssid ...)=,
+=(wifi-passphrase ...)=, =(wifi-ssid-byte n)=, =(wifi-pass-byte n)=, and
+=(wifi-connect)= so host tooling can try shorter credential-bearing forms.
+=tools/send-lisp.scm --delay-ms 0= and =tools/send-wifi-join.scm --delay-ms 0=
+now write through an ignored temporary buffer and =cat=, matching the shell
+write path that worked for short forms. =tools/send-wifi-join.scm= also has
+=--connect=, =--staged=, =--byte-staged=, and =--no-echo-control= modes.
+
+Live UART behavior is now the blocker. Short probes around 21 bytes such as
+=(console-echo status)= are reliable from a clean prompt, but string-bearing
+forms around 26 bytes and some 19-20 byte byte-staging forms still corrupt the
+reader or leave it in continuation state. A full byte-staged credential send
+did not produce a join report before the board was reset. This points at
+console transport/repl input robustness rather than the Wi-Fi setup sequence.
+
 * Next actions
 
 1. Watch for any remaining UART corruption during longer Wi-Fi association
@@ -4488,8 +4527,9 @@ transport, firmware loading, CLM loading, or ioctl response matching.
 3. Add a FAT/exFAT-aware storage layer after raw block reads/writes work.
 4. Test the newer Infineon target =infineon/cy8cxxa.cfg= as a replacement
    for obsolete =target/psoc6_2m.cfg=.
-5. Fix WPA2 security setup or credential validation for the current
-   =eapol-key-failure= join result.
-6. Add generic CDC ioctl/iovar helpers for firmware version and join.
-7. Start Wi-Fi from a known-good Infineon or Zephyr sample before trying
+5. Fix UART/REPL input reliability for credential-bearing forms, or add a
+   non-console credential injection path for Wi-Fi connect tests.
+6. Re-run =(wifi-connect)= once credentials can be staged reliably.
+7. Add generic CDC ioctl/iovar helpers for firmware version and join.
+8. Start Wi-Fi from a known-good Infineon or Zephyr sample before trying
    to hand-port the full CYW4343W network stack.
