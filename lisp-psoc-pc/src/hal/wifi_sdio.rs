@@ -76,8 +76,24 @@ const WHD_EVENT_FIXED_BYTES: usize = WHD_EVENT_DATA_OFFSET;
 const WL_ESCAN_RESULT_FIXED_BYTES: usize = 12;
 const WLC_UP_IOCTL: u32 = 2;
 const WLC_GET_VERSION_IOCTL: u32 = 1;
+const WLC_SET_INFRA_IOCTL: u32 = 20;
+const WLC_SET_AUTH_IOCTL: u32 = 22;
+const WLC_SET_SSID_IOCTL: u32 = 26;
+const WLC_SET_WSEC_IOCTL: u32 = 134;
+const WLC_SET_WPA_AUTH_IOCTL: u32 = 165;
 const WLC_GET_VAR_IOCTL: u32 = 262;
 const WLC_SET_VAR_IOCTL: u32 = 263;
+const WLC_SET_WSEC_PMK_IOCTL: u32 = 268;
+const WL_AUTH_OPEN_SYSTEM: u32 = 0;
+const WPA2_SECURITY: u32 = 0x0040_0000;
+const AES_ENABLED: u32 = 0x0004;
+const WHD_SECURITY_WPA2_AES_PSK: u32 = WPA2_SECURITY | AES_ENABLED;
+const WPA2_AUTH_PSK: u32 = 0x0080;
+const WSEC_PASSPHRASE: u16 = 1 << 0;
+const WSEC_MIN_PSK_LEN: u8 = 8;
+const WSEC_MAX_PSK_LEN: u8 = 64;
+const SSID_NAME_SIZE: u8 = 32;
+const DEFAULT_EAPOL_KEY_PACKET_TIMEOUT_MS: u32 = 3000;
 const DLOAD_HANDLER_VER: u16 = 1;
 const DLOAD_FLAG_VER_SHIFT: u8 = 12;
 const DL_BEGIN: u16 = 0x0002;
@@ -89,6 +105,16 @@ const COUNTRY_STRUCT_BYTES: usize = 12;
 const COUNTRY_PAYLOAD_BYTES: usize = COUNTRY_IOVAR_NAME.len() + COUNTRY_STRUCT_BYTES;
 const TX_GLOMMING_IOVAR_NAME: &[u8; 11] = b"bus:txglom\0";
 const TX_GLOMMING_PAYLOAD_BYTES: usize = TX_GLOMMING_IOVAR_NAME.len() + 4;
+const ROAM_OFF_IOVAR_NAME: &[u8; 9] = b"roam_off\0";
+const ROAM_OFF_PAYLOAD_BYTES: usize = ROAM_OFF_IOVAR_NAME.len() + 4;
+const BSSCFG_SUP_WPA_IOVAR_NAME: &[u8; 15] = b"bsscfg:sup_wpa\0";
+const BSSCFG_SUP_WPA_PAYLOAD_BYTES: usize = BSSCFG_SUP_WPA_IOVAR_NAME.len() + 8;
+const BSSCFG_SUP_WPA2_EAPVER_IOVAR_NAME: &[u8; 23] = b"bsscfg:sup_wpa2_eapver\0";
+const BSSCFG_SUP_WPA2_EAPVER_PAYLOAD_BYTES: usize = BSSCFG_SUP_WPA2_EAPVER_IOVAR_NAME.len() + 8;
+const BSSCFG_SUP_WPA_TMO_IOVAR_NAME: &[u8; 19] = b"bsscfg:sup_wpa_tmo\0";
+const BSSCFG_SUP_WPA_TMO_PAYLOAD_BYTES: usize = BSSCFG_SUP_WPA_TMO_IOVAR_NAME.len() + 8;
+const WSEC_PMK_PAYLOAD_BYTES: usize = 2 + 2 + 65;
+const WLC_SSID_PAYLOAD_BYTES: usize = 4 + SSID_NAME_SIZE as usize;
 const BSSCFG_EVENT_MSGS_IOVAR_NAME: &[u8; 18] = b"bsscfg:event_msgs\0";
 const EVENT_MASK_BSSCFG_INDEX_BYTES: usize = 4;
 const EVENT_MASK_BYTES: usize = 16;
@@ -106,10 +132,43 @@ const WLC_E_ESCAN_RESULT: u8 = 69;
 const WLC_E_PROBRESP_MSG: u8 = 71;
 const WLC_E_CSA_COMPLETE_IND: u8 = 80;
 const WLC_E_STATUS_SUCCESS: u32 = 0;
+const WLC_E_STATUS_NO_NETWORKS: u32 = 3;
 const WLC_E_STATUS_ABORT: u32 = 4;
+const WLC_E_STATUS_UNSOLICITED: u32 = 6;
 const WLC_E_STATUS_PARTIAL: u32 = 8;
 const WLC_E_STATUS_NEWSCAN: u32 = 9;
 const WLC_E_STATUS_NEWASSOC: u32 = 10;
+const WLC_EVENT_MSG_LINK: u32 = 0x01;
+const WLC_SUP_STATUS_OFFSET: u32 = 256;
+const WLC_SUP_KEYED: u32 = 6 + WLC_SUP_STATUS_OFFSET;
+const WLC_SUP_KEYXCHANGE_WAIT_M1: u32 = 4 + WLC_SUP_STATUS_OFFSET;
+const WLC_SUP_KEYXCHANGE_WAIT_M3: u32 = 8 + WLC_SUP_STATUS_OFFSET;
+const WLC_SUP_KEYXCHANGE_WAIT_G1: u32 = 10 + WLC_SUP_STATUS_OFFSET;
+const WLC_E_SUP_REASON_OFFSET: u32 = 512;
+const WLC_E_SUP_WPA_PSK_TMO: u32 = 15 + WLC_E_SUP_REASON_OFFSET;
+const JOIN_ASSOCIATED: u32 = 1 << 0;
+const JOIN_AUTHENTICATED: u32 = 1 << 1;
+const JOIN_LINK_READY: u32 = 1 << 2;
+const JOIN_SECURITY_COMPLETE: u32 = 1 << 3;
+const JOIN_SSID_SET: u32 = 1 << 4;
+const JOIN_NO_NETWORKS: u32 = 1 << 5;
+const JOIN_EAPOL_KEY_M1_TIMEOUT: u32 = 1 << 6;
+const JOIN_EAPOL_KEY_M3_TIMEOUT: u32 = 1 << 7;
+const JOIN_EAPOL_KEY_G1_TIMEOUT: u32 = 1 << 8;
+const JOIN_EAPOL_KEY_FAILURE: u32 = 1 << 9;
+const JOIN_PROBE_RESPONSE: u32 = 1 << 10;
+const JOIN_SECURITY_FLAGS_MASK: u32 = JOIN_SECURITY_COMPLETE
+    | JOIN_EAPOL_KEY_M1_TIMEOUT
+    | JOIN_EAPOL_KEY_M3_TIMEOUT
+    | JOIN_EAPOL_KEY_G1_TIMEOUT
+    | JOIN_EAPOL_KEY_FAILURE;
+const JOIN_SUCCESS_FLAGS: u32 = JOIN_PROBE_RESPONSE
+    | JOIN_AUTHENTICATED
+    | JOIN_LINK_READY
+    | JOIN_SSID_SET
+    | JOIN_SECURITY_COMPLETE;
+const JOIN_EVENT_DRAIN_POLLS: u8 = 64;
+const JOIN_EVENT_POLL_DELAY_MS: u32 = 200;
 const NETWORK_EVENT_NUMBERS: [u8; 10] = [
     WLC_E_SET_SSID,
     WLC_E_AUTH,
@@ -442,6 +501,28 @@ pub enum WifiSdioScanStartStatus {
     ResponseFrameFailed,
     UnexpectedResponseFrame,
     CdcStatusError,
+}
+
+#[derive(Clone, Copy)]
+pub enum WifiSdioJoinStatus {
+    Ready,
+    InvalidSsidLength,
+    InvalidPassphraseLength,
+    HtRequestFailed,
+    SendFailed,
+    ResponseFrameFailed,
+    UnexpectedResponseFrame,
+    CdcStatusError,
+    AckFailed,
+    EventFrameReadFailed,
+    EventFrameInvalid,
+    NoNetworks,
+    AuthFailed,
+    EapolKeyM1Timeout,
+    EapolKeyM3Timeout,
+    EapolKeyG1Timeout,
+    EapolKeyFailure,
+    Timeout,
 }
 
 #[derive(Clone, Copy)]
@@ -1508,6 +1589,63 @@ pub struct WifiSdioScanStartReport {
     pub ht_last_error: Option<CommandError>,
     pub send_last_error: Option<CommandError>,
     pub response_last_error: Option<CommandError>,
+    pub host_normal_int: u16,
+    pub host_error_int: u16,
+    pub host: WifiSdioHostSnapshot,
+}
+
+pub struct WifiSdioJoinReport {
+    pub status: WifiSdioJoinStatus,
+    pub step: &'static [u8],
+    pub ssid_len: u8,
+    pub passphrase_len: u8,
+    pub optional_cdc_errors: u8,
+    pub ht_status: WifiSdioHtRequestStatus,
+    pub ht_attempts: u16,
+    pub ht_write_response: u32,
+    pub ht_read_value: u8,
+    pub ht_read_response: u32,
+    pub ht_available: bool,
+    pub send_status: WifiSdioF2ControlStatus,
+    pub send_packet_length: u16,
+    pub send_write_response: u32,
+    pub response_status: WifiSdioF2FrameStatus,
+    pub response_length: u16,
+    pub response_sequence: u8,
+    pub response_channel: u8,
+    pub response_bus_data_credit: u8,
+    pub cdc_command: u32,
+    pub cdc_length: u32,
+    pub cdc_flags: u32,
+    pub cdc_id: u16,
+    pub cdc_status: u32,
+    pub requested_polls: u8,
+    pub polls: u8,
+    pub frames_read: u8,
+    pub non_event_frames: u8,
+    pub events_seen: u8,
+    pub join_flags: u32,
+    pub last_frame_status: WifiSdioF2FrameStatus,
+    pub last_frame_length: u16,
+    pub last_frame_channel: u8,
+    pub last_frame_bus_data_credit: u8,
+    pub last_event_type: u32,
+    pub last_event_status: u32,
+    pub last_event_reason: u32,
+    pub last_event_flags: u32,
+    pub last_event_datalen: u32,
+    pub last_event_ifidx: u8,
+    pub last_event_bsscfgidx: u8,
+    pub ack_status: WifiSdioInterruptAckStatus,
+    pub ack_int_status_before: u32,
+    pub ack_clear_value: u32,
+    pub ack_int_status_after: u32,
+    pub ack_final_response: u32,
+    pub ht_last_error: Option<CommandError>,
+    pub send_last_error: Option<CommandError>,
+    pub response_last_error: Option<CommandError>,
+    pub frame_last_error: Option<CommandError>,
+    pub ack_last_error: Option<CommandError>,
     pub host_normal_int: u16,
     pub host_error_int: u16,
     pub host: WifiSdioHostSnapshot,
@@ -5743,6 +5881,204 @@ pub fn start_scan(p: &Peripherals, state: &mut WifiSdioControlState) -> WifiSdio
     finish_scan_start_report(p, report)
 }
 
+pub fn join_wpa2(
+    p: &Peripherals,
+    state: &mut WifiSdioControlState,
+    ssid: &[u8],
+    passphrase: &[u8],
+) -> WifiSdioJoinReport {
+    let mut report = empty_join_report(p);
+    report.ssid_len = ssid.len() as u8;
+    report.passphrase_len = passphrase.len() as u8;
+
+    if ssid.is_empty() || ssid.len() > SSID_NAME_SIZE as usize {
+        report.status = WifiSdioJoinStatus::InvalidSsidLength;
+        report.step = b"validate-ssid";
+        return report;
+    }
+    if passphrase.len() < WSEC_MIN_PSK_LEN as usize || passphrase.len() > WSEC_MAX_PSK_LEN as usize
+    {
+        report.status = WifiSdioJoinStatus::InvalidPassphraseLength;
+        report.step = b"validate-passphrase";
+        return report;
+    }
+
+    report.step = b"request-ht";
+    let ht = request_ht(p);
+    report.ht_status = ht.status;
+    report.ht_attempts = ht.attempts;
+    report.ht_write_response = ht.write_response;
+    report.ht_read_value = ht.read_value;
+    report.ht_read_response = ht.read_response;
+    report.ht_available = ht.ht_available;
+    report.ht_last_error = ht.last_error;
+    if !matches!(ht.status, WifiSdioHtRequestStatus::Ready) {
+        report.status = WifiSdioJoinStatus::HtRequestFailed;
+        return finish_join_report(p, report);
+    }
+
+    if !join_control_value_step(
+        p,
+        state,
+        &mut report,
+        b"set-wsec",
+        WLC_SET_WSEC_IOCTL,
+        CDC_SET_FLAG,
+        WHD_SECURITY_WPA2_AES_PSK & 0xff,
+        false,
+    ) {
+        return finish_join_report(p, report);
+    }
+
+    let roam_off = iovar_u32_payload::<ROAM_OFF_PAYLOAD_BYTES>(ROAM_OFF_IOVAR_NAME, 0);
+    if !join_control_step(
+        p,
+        state,
+        &mut report,
+        b"roam-off",
+        WLC_SET_VAR_IOCTL,
+        CDC_SET_FLAG,
+        &roam_off,
+        false,
+    ) {
+        return finish_join_report(p, report);
+    }
+
+    let sup_wpa =
+        bsscfg_iovar_u32_payload::<BSSCFG_SUP_WPA_PAYLOAD_BYTES>(BSSCFG_SUP_WPA_IOVAR_NAME, 1);
+    if !join_control_step(
+        p,
+        state,
+        &mut report,
+        b"sup-wpa",
+        WLC_SET_VAR_IOCTL,
+        CDC_SET_FLAG,
+        &sup_wpa,
+        true,
+    ) {
+        return finish_join_report(p, report);
+    }
+
+    let sup_wpa2_eapver = bsscfg_iovar_u32_payload::<BSSCFG_SUP_WPA2_EAPVER_PAYLOAD_BYTES>(
+        BSSCFG_SUP_WPA2_EAPVER_IOVAR_NAME,
+        -1i32 as u32,
+    );
+    if !join_control_step(
+        p,
+        state,
+        &mut report,
+        b"sup-wpa2-eapver",
+        WLC_SET_VAR_IOCTL,
+        CDC_SET_FLAG,
+        &sup_wpa2_eapver,
+        true,
+    ) {
+        return finish_join_report(p, report);
+    }
+
+    let sup_wpa_tmo = bsscfg_iovar_u32_payload::<BSSCFG_SUP_WPA_TMO_PAYLOAD_BYTES>(
+        BSSCFG_SUP_WPA_TMO_IOVAR_NAME,
+        DEFAULT_EAPOL_KEY_PACKET_TIMEOUT_MS,
+    );
+    if !join_control_step(
+        p,
+        state,
+        &mut report,
+        b"sup-wpa-tmo",
+        WLC_SET_VAR_IOCTL,
+        CDC_SET_FLAG,
+        &sup_wpa_tmo,
+        true,
+    ) {
+        return finish_join_report(p, report);
+    }
+
+    delay_ms(1);
+    let pmk = wsec_pmk_payload(passphrase);
+    if !join_control_step(
+        p,
+        state,
+        &mut report,
+        b"set-pmk",
+        WLC_SET_WSEC_PMK_IOCTL,
+        CDC_SET_FLAG,
+        &pmk,
+        false,
+    ) {
+        return finish_join_report(p, report);
+    }
+
+    if !join_control_value_step(
+        p,
+        state,
+        &mut report,
+        b"set-infra",
+        WLC_SET_INFRA_IOCTL,
+        CDC_SET_FLAG,
+        1,
+        false,
+    ) {
+        return finish_join_report(p, report);
+    }
+
+    if !join_control_value_step(
+        p,
+        state,
+        &mut report,
+        b"set-auth",
+        WLC_SET_AUTH_IOCTL,
+        CDC_SET_FLAG,
+        WL_AUTH_OPEN_SYSTEM,
+        false,
+    ) {
+        return finish_join_report(p, report);
+    }
+
+    if !join_control_value_step(
+        p,
+        state,
+        &mut report,
+        b"set-wpa-auth",
+        WLC_SET_WPA_AUTH_IOCTL,
+        CDC_SET_FLAG,
+        WPA2_AUTH_PSK,
+        false,
+    ) {
+        return finish_join_report(p, report);
+    }
+
+    let event_mask = network_event_mask_payload();
+    if !join_control_step(
+        p,
+        state,
+        &mut report,
+        b"enable-events",
+        WLC_SET_VAR_IOCTL,
+        CDC_SET_FLAG,
+        &event_mask,
+        false,
+    ) {
+        return finish_join_report(p, report);
+    }
+
+    let ssid_payload = wlc_ssid_payload(ssid);
+    if !join_control_step(
+        p,
+        state,
+        &mut report,
+        b"set-ssid",
+        WLC_SET_SSID_IOCTL,
+        CDC_SET_FLAG,
+        &ssid_payload,
+        false,
+    ) {
+        return finish_join_report(p, report);
+    }
+
+    drain_join_events(p, state, &mut report);
+    finish_join_report(p, report)
+}
+
 pub fn drain_scan_events(
     p: &Peripherals,
     state: &mut WifiSdioControlState,
@@ -5825,6 +6161,202 @@ pub fn drain_scan_events(
 
     report.stop_reason = WifiSdioScanEventStopReason::FrameLimit;
     report
+}
+
+fn join_control_value_step(
+    p: &Peripherals,
+    state: &mut WifiSdioControlState,
+    report: &mut WifiSdioJoinReport,
+    step: &'static [u8],
+    command: u32,
+    flags: u32,
+    value: u32,
+    allow_cdc_error: bool,
+) -> bool {
+    let mut payload = [0u8; 4];
+    write_slice_le_u32(&mut payload, 0, value);
+    join_control_step(
+        p,
+        state,
+        report,
+        step,
+        command,
+        flags,
+        &payload,
+        allow_cdc_error,
+    )
+}
+
+fn join_control_step(
+    p: &Peripherals,
+    state: &mut WifiSdioControlState,
+    report: &mut WifiSdioJoinReport,
+    step: &'static [u8],
+    command: u32,
+    flags: u32,
+    payload: &[u8],
+    allow_cdc_error: bool,
+) -> bool {
+    report.step = step;
+    let send = send_control_ioctl(p, state, command, flags, payload);
+    let expected_ioctl_id = send.ioctl_id;
+    report.send_status = send.report.status;
+    report.send_packet_length = send.report.packet_length;
+    report.send_write_response = send.report.write_response;
+    report.send_last_error = send.report.write_last_error;
+    if !matches!(send.report.status, WifiSdioF2ControlStatus::Ready) {
+        report.status = WifiSdioJoinStatus::SendFailed;
+        return false;
+    }
+
+    let (response, _, skipped_frames) = read_join_control_response(p, state);
+    report.non_event_frames = report.non_event_frames.saturating_add(skipped_frames);
+    report.response_status = response.status;
+    report.response_length = response.length;
+    report.response_sequence = response.sequence;
+    report.response_channel = response.channel;
+    report.response_bus_data_credit = response.bus_data_credit;
+    report.response_last_error = response.last_error;
+    if !matches!(response.status, WifiSdioF2FrameStatus::Ready) {
+        report.status = WifiSdioJoinStatus::ResponseFrameFailed;
+        return false;
+    }
+    state.update_credit(response.bus_data_credit);
+    if !response.valid
+        || response.length < (SDPCM_HEADER_BYTES as u16 + CDC_HEADER_BYTES as u16)
+        || response.header_length != SDPCM_HEADER_BYTES
+        || response.channel != SDPCM_CONTROL_CHANNEL
+    {
+        report.status = WifiSdioJoinStatus::UnexpectedResponseFrame;
+        return false;
+    }
+
+    report.cdc_command = read_le_u32(&response.bytes, 12);
+    report.cdc_length = read_le_u32(&response.bytes, 16);
+    report.cdc_flags = read_le_u32(&response.bytes, 20);
+    report.cdc_id = (report.cdc_flags >> CDC_IOCTL_ID_SHIFT) as u16;
+    report.cdc_status = read_le_u32(&response.bytes, 24);
+    if report.cdc_command != command || report.cdc_id != expected_ioctl_id {
+        report.status = WifiSdioJoinStatus::UnexpectedResponseFrame;
+        return false;
+    }
+    if report.cdc_status != 0 {
+        if allow_cdc_error {
+            report.optional_cdc_errors = report.optional_cdc_errors.saturating_add(1);
+            return true;
+        }
+        report.status = WifiSdioJoinStatus::CdcStatusError;
+        return false;
+    }
+
+    true
+}
+
+fn read_join_control_response(
+    p: &Peripherals,
+    state: &mut WifiSdioControlState,
+) -> (WifiSdioF2FrameReport, u16, u8) {
+    let mut attempts = 0u16;
+    let mut skipped_frames = 0u8;
+    loop {
+        attempts += 1;
+        let response = f2_read_frame_with_drain(p, WHD_IOCTL_MAX_TX_PACKET_BYTES as u16);
+        if is_empty_frame_response(&response) {
+            if attempts >= CONTROL_RESPONSE_MAX_ATTEMPTS {
+                return (response, attempts, skipped_frames);
+            }
+            delay_us(CONTROL_RESPONSE_RETRY_US);
+            continue;
+        }
+        if matches!(response.status, WifiSdioF2FrameStatus::Ready)
+            && response.channel != SDPCM_CONTROL_CHANNEL
+        {
+            if response.channel < 3 {
+                state.update_credit(response.bus_data_credit);
+            }
+            skipped_frames = skipped_frames.saturating_add(1);
+            if attempts >= CONTROL_RESPONSE_MAX_ATTEMPTS {
+                return (response, attempts, skipped_frames);
+            }
+            delay_us(CONTROL_RESPONSE_RETRY_US);
+            continue;
+        }
+        return (response, attempts, skipped_frames);
+    }
+}
+
+fn drain_join_events(
+    p: &Peripherals,
+    state: &mut WifiSdioControlState,
+    report: &mut WifiSdioJoinReport,
+) {
+    report.step = b"join-events";
+    let mut frame_bytes = [0u8; WHD_IOCTL_MAX_TX_PACKET_BYTES];
+    while report.polls < JOIN_EVENT_DRAIN_POLLS {
+        report.polls = report.polls.saturating_add(1);
+
+        let ack = ack_interrupts(p);
+        report.ack_status = ack.status;
+        report.ack_int_status_before = ack.int_status_before;
+        report.ack_clear_value = ack.clear_value;
+        report.ack_int_status_after = ack.int_status_after;
+        report.ack_final_response = ack.final_response;
+        report.ack_last_error = ack.last_error;
+        if !matches!(ack.status, WifiSdioInterruptAckStatus::Ready) {
+            report.status = WifiSdioJoinStatus::AckFailed;
+            return;
+        }
+
+        clear_bytes(&mut frame_bytes);
+        let (frame, copied) =
+            f2_read_frame_copy_all(p, WHD_IOCTL_MAX_TX_PACKET_BYTES as u16, &mut frame_bytes);
+        update_join_last_frame(report, &frame);
+        if frame.channel < 3 {
+            state.update_credit(frame.bus_data_credit);
+        }
+
+        if is_empty_frame_response(&frame) {
+            delay_ms(JOIN_EVENT_POLL_DELAY_MS);
+            continue;
+        }
+        if !matches!(frame.status, WifiSdioF2FrameStatus::Ready) {
+            report.status = WifiSdioJoinStatus::EventFrameReadFailed;
+            return;
+        }
+        report.frames_read = report.frames_read.saturating_add(1);
+        if !frame.valid {
+            report.status = WifiSdioJoinStatus::EventFrameInvalid;
+            return;
+        }
+
+        let parsed = parse_scan_event_frame(&frame, &frame_bytes, copied);
+        if matches!(
+            parsed.stop_reason,
+            WifiSdioScanEventStopReason::NonEventChannel
+        ) {
+            report.non_event_frames = report.non_event_frames.saturating_add(1);
+            continue;
+        }
+        if !matches!(parsed.stop_reason, WifiSdioScanEventStopReason::NotStopped) {
+            report.status = WifiSdioJoinStatus::EventFrameInvalid;
+            return;
+        }
+
+        report.events_seen = report.events_seen.saturating_add(1);
+        update_join_last_event(report, &parsed);
+        if let Some(status) = update_join_status_from_event(report, &parsed) {
+            report.status = status;
+            return;
+        }
+        if report.join_flags & JOIN_SUCCESS_FLAGS == JOIN_SUCCESS_FLAGS {
+            report.status = WifiSdioJoinStatus::Ready;
+            return;
+        }
+
+        delay_ms(JOIN_EVENT_POLL_DELAY_MS);
+    }
+
+    report.status = WifiSdioJoinStatus::Timeout;
 }
 
 pub fn get_clm_version(
@@ -7055,11 +7587,150 @@ fn copy_escan_start_fields_to_report(
         slice_all_eq(&payload[bssid_offset..bssid_offset + BSSID_BYTES], 0xff);
 }
 
+fn iovar_u32_payload<const N: usize>(name: &[u8], value: u32) -> [u8; N] {
+    let mut payload = [0u8; N];
+    copy_bytes_to_slice(name, &mut payload, 0);
+    write_slice_le_u32(&mut payload, name.len(), value);
+    payload
+}
+
+fn bsscfg_iovar_u32_payload<const N: usize>(name: &[u8], value: u32) -> [u8; N] {
+    let mut payload = [0u8; N];
+    copy_bytes_to_slice(name, &mut payload, 0);
+    write_slice_le_u32(&mut payload, name.len(), 0);
+    write_slice_le_u32(&mut payload, name.len() + 4, value);
+    payload
+}
+
+fn wsec_pmk_payload(passphrase: &[u8]) -> [u8; WSEC_PMK_PAYLOAD_BYTES] {
+    let mut payload = [0u8; WSEC_PMK_PAYLOAD_BYTES];
+    write_slice_le_u16(&mut payload, 0, passphrase.len() as u16);
+    write_slice_le_u16(&mut payload, 2, WSEC_PASSPHRASE);
+    copy_bytes_to_slice(passphrase, &mut payload, 4);
+    payload
+}
+
+fn wlc_ssid_payload(ssid: &[u8]) -> [u8; WLC_SSID_PAYLOAD_BYTES] {
+    let mut payload = [0u8; WLC_SSID_PAYLOAD_BYTES];
+    write_slice_le_u32(&mut payload, 0, ssid.len() as u32);
+    copy_bytes_to_slice(ssid, &mut payload, 4);
+    payload
+}
+
+fn update_join_last_frame(report: &mut WifiSdioJoinReport, frame: &WifiSdioF2FrameReport) {
+    report.last_frame_status = frame.status;
+    report.last_frame_length = frame.length;
+    report.last_frame_channel = frame.channel;
+    report.last_frame_bus_data_credit = frame.bus_data_credit;
+    report.frame_last_error = frame.last_error;
+}
+
+fn update_join_last_event(report: &mut WifiSdioJoinReport, parsed: &ParsedScanEvent) {
+    report.last_event_type = parsed.event_type;
+    report.last_event_status = parsed.event_status;
+    report.last_event_reason = parsed.event_reason;
+    report.last_event_flags = parsed.event_flags;
+    report.last_event_datalen = parsed.event_datalen;
+    report.last_event_ifidx = parsed.event_ifidx;
+    report.last_event_bsscfgidx = parsed.event_bsscfgidx;
+}
+
+fn update_join_status_from_event(
+    report: &mut WifiSdioJoinReport,
+    parsed: &ParsedScanEvent,
+) -> Option<WifiSdioJoinStatus> {
+    match parsed.event_type as u8 {
+        WLC_E_PSK_SUP => update_join_supplicant_status(report, parsed),
+        WLC_E_SET_SSID => {
+            if parsed.event_status == WLC_E_STATUS_SUCCESS {
+                report.join_flags |= JOIN_SSID_SET;
+                None
+            } else if parsed.event_status == WLC_E_STATUS_NO_NETWORKS {
+                report.join_flags |= JOIN_NO_NETWORKS;
+                Some(WifiSdioJoinStatus::NoNetworks)
+            } else {
+                Some(WifiSdioJoinStatus::AuthFailed)
+            }
+        }
+        WLC_E_LINK => {
+            if parsed.event_flags & WLC_EVENT_MSG_LINK != 0 {
+                report.join_flags |= JOIN_LINK_READY;
+            } else {
+                report.join_flags &= !JOIN_LINK_READY;
+            }
+            None
+        }
+        WLC_E_DEAUTH_IND | WLC_E_DISASSOC_IND => {
+            report.join_flags &= !(JOIN_AUTHENTICATED | JOIN_LINK_READY);
+            Some(WifiSdioJoinStatus::AuthFailed)
+        }
+        WLC_E_AUTH => {
+            if parsed.event_status == WLC_E_STATUS_SUCCESS {
+                report.join_flags |= JOIN_AUTHENTICATED;
+                None
+            } else if parsed.event_status == WLC_E_STATUS_UNSOLICITED {
+                None
+            } else {
+                Some(WifiSdioJoinStatus::AuthFailed)
+            }
+        }
+        WLC_E_REASSOC => {
+            if parsed.event_status == WLC_E_STATUS_SUCCESS {
+                report.join_flags |= JOIN_LINK_READY | JOIN_SSID_SET;
+            }
+            None
+        }
+        WLC_E_PROBRESP_MSG => {
+            report.join_flags |= JOIN_PROBE_RESPONSE;
+            None
+        }
+        _ => None,
+    }
+}
+
+fn update_join_supplicant_status(
+    report: &mut WifiSdioJoinReport,
+    parsed: &ParsedScanEvent,
+) -> Option<WifiSdioJoinStatus> {
+    if report.join_flags & JOIN_LINK_READY == 0 {
+        return None;
+    }
+
+    if parsed.event_status == WLC_SUP_KEYED {
+        report.join_flags &= !JOIN_SECURITY_FLAGS_MASK;
+        report.join_flags |= JOIN_SECURITY_COMPLETE;
+        return None;
+    }
+
+    if parsed.event_status == WLC_SUP_KEYXCHANGE_WAIT_M1
+        && parsed.event_reason == WLC_E_SUP_WPA_PSK_TMO
+    {
+        report.join_flags |= JOIN_EAPOL_KEY_M1_TIMEOUT;
+        return Some(WifiSdioJoinStatus::EapolKeyM1Timeout);
+    }
+    if parsed.event_status == WLC_SUP_KEYXCHANGE_WAIT_M3
+        && parsed.event_reason == WLC_E_SUP_WPA_PSK_TMO
+    {
+        report.join_flags |= JOIN_EAPOL_KEY_M3_TIMEOUT;
+        return Some(WifiSdioJoinStatus::EapolKeyM3Timeout);
+    }
+    if parsed.event_status == WLC_SUP_KEYXCHANGE_WAIT_G1
+        && parsed.event_reason == WLC_E_SUP_WPA_PSK_TMO
+    {
+        report.join_flags |= JOIN_EAPOL_KEY_G1_TIMEOUT;
+        return Some(WifiSdioJoinStatus::EapolKeyG1Timeout);
+    }
+
+    report.join_flags |= JOIN_EAPOL_KEY_FAILURE;
+    Some(WifiSdioJoinStatus::EapolKeyFailure)
+}
+
 struct ParsedScanEvent {
     stop_reason: WifiSdioScanEventStopReason,
     event_type: u32,
     event_status: u32,
     event_reason: u32,
+    event_flags: u32,
     event_datalen: u32,
     event_ifidx: u8,
     event_bsscfgidx: u8,
@@ -7107,6 +7778,7 @@ fn parse_scan_event_frame(
     }
 
     let event_message_offset = event_offset + WHD_EVENT_MSG_OFFSET;
+    parsed.event_flags = read_slice_be_u16(bytes, event_message_offset + 2) as u32;
     parsed.event_type = read_slice_be_u32(bytes, event_message_offset + 4);
     parsed.event_status = read_slice_be_u32(bytes, event_message_offset + 8);
     parsed.event_reason = read_slice_be_u32(bytes, event_message_offset + 12);
@@ -7135,6 +7807,7 @@ fn empty_parsed_scan_event() -> ParsedScanEvent {
         event_type: 0,
         event_status: 0,
         event_reason: 0,
+        event_flags: 0,
         event_datalen: 0,
         event_ifidx: 0,
         event_bsscfgidx: 0,
@@ -10403,6 +11076,73 @@ fn finish_scan_start_report(
     p: &Peripherals,
     mut report: WifiSdioScanStartReport,
 ) -> WifiSdioScanStartReport {
+    let core = &p.SDHC0.core;
+    report.host_normal_int = core.normal_int_stat_r.read().bits();
+    report.host_error_int = core.error_int_stat_r.read().bits();
+    report.host = host_snapshot(p);
+    report
+}
+
+fn empty_join_report(p: &Peripherals) -> WifiSdioJoinReport {
+    WifiSdioJoinReport {
+        status: WifiSdioJoinStatus::Timeout,
+        step: b"not-run",
+        ssid_len: 0,
+        passphrase_len: 0,
+        optional_cdc_errors: 0,
+        ht_status: WifiSdioHtRequestStatus::Timeout,
+        ht_attempts: 0,
+        ht_write_response: 0,
+        ht_read_value: 0,
+        ht_read_response: 0,
+        ht_available: false,
+        send_status: WifiSdioF2ControlStatus::NotRun,
+        send_packet_length: 0,
+        send_write_response: 0,
+        response_status: WifiSdioF2FrameStatus::NotRun,
+        response_length: 0,
+        response_sequence: 0,
+        response_channel: 0,
+        response_bus_data_credit: 0,
+        cdc_command: 0,
+        cdc_length: 0,
+        cdc_flags: 0,
+        cdc_id: 0,
+        cdc_status: 0,
+        requested_polls: JOIN_EVENT_DRAIN_POLLS,
+        polls: 0,
+        frames_read: 0,
+        non_event_frames: 0,
+        events_seen: 0,
+        join_flags: 0,
+        last_frame_status: WifiSdioF2FrameStatus::NotRun,
+        last_frame_length: 0,
+        last_frame_channel: 0,
+        last_frame_bus_data_credit: 0,
+        last_event_type: 0,
+        last_event_status: 0,
+        last_event_reason: 0,
+        last_event_flags: 0,
+        last_event_datalen: 0,
+        last_event_ifidx: 0,
+        last_event_bsscfgidx: 0,
+        ack_status: WifiSdioInterruptAckStatus::NotRun,
+        ack_int_status_before: 0,
+        ack_clear_value: 0,
+        ack_int_status_after: 0,
+        ack_final_response: 0,
+        ht_last_error: None,
+        send_last_error: None,
+        response_last_error: None,
+        frame_last_error: None,
+        ack_last_error: None,
+        host_normal_int: 0,
+        host_error_int: 0,
+        host: disabled_host_snapshot(0),
+    }
+}
+
+fn finish_join_report(p: &Peripherals, mut report: WifiSdioJoinReport) -> WifiSdioJoinReport {
     let core = &p.SDHC0.core;
     report.host_normal_int = core.normal_int_stat_r.read().bits();
     report.host_error_int = core.error_int_stat_r.read().bits();

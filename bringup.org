@@ -4425,6 +4425,61 @@ This only suppresses typed character and backspace echo. Evaluation results,
 prompts, and command errors still print, which keeps unattended scripts
 observable while avoiding credential input in the serial log.
 
+* 2026-06-28 WPA2 join primitive
+
+Added =(wifi-join-wpa2 ssid passphrase)= as the first credential-bearing
+join primitive. The board report intentionally records only SSID and
+passphrase lengths, control/status fields, parsed join events, and SDHC0
+diagnostics.
+
+Added =tools/send-wifi-join.scm= so local ignored credentials can be sent
+without putting the secret-bearing Lisp form in argv, terminal output, or the
+serial log. Use its held-return mode when a serial logger is running:
+
+#+begin_example
+tools/send-wifi-join.scm --hold-before-join-cr-ms 20000
+#+end_example
+
+The 2026-06-28 live test flow after flashing a =--wifi-firmware= build:
+
+#+begin_example
+(wifi-join-wpa2 "" "short")
+=> ((status . invalid-ssid-length)
+    (step . validate-ssid)
+    ...)
+
+(wifi-sdio-init)            ; ready
+(wifi-start-firmware)       ; ready
+(wifi-wlc-up)               ; ready
+(wifi-ack-interrupts)       ; ready
+(wifi-load-clm)             ; ready
+(wifi-disable-tx-glomming)  ; ready
+(wifi-set-country "XX" -1)  ; ready
+#+end_example
+
+The first credentialed join no longer fails in the early ioctl path. It
+completed the control setup, skipped one interleaved non-control frame while
+waiting for control responses, and reached join-event parsing. The current
+board result is:
+
+#+begin_example
+((status . eapol-key-failure)
+ (step . join-events)
+ (ssid.length . #x0000000c)
+ (passphrase.length . #x00000008)
+ (optional-cdc.errors . #x00000000)
+ (frames.read . #x00000005)
+ (non-event.frames . #x00000001)
+ (events.seen . #x00000005)
+ (join.flags . #x00000606)
+ (last.event.type . #x0000002e)
+ (last.event.status . #x00000006))
+#+end_example
+
+This is not a successful association yet. The next debugging target is WPA2
+security configuration and EAPOL event interpretation, not basic SDIO
+transport, firmware loading, CLM loading, or ioctl response matching.
+
 * Next actions
 
 1. Watch for any remaining UART corruption during longer Wi-Fi association
@@ -4433,7 +4488,8 @@ observable while avoiding credential input in the serial log.
 3. Add a FAT/exFAT-aware storage layer after raw block reads/writes work.
 4. Test the newer Infineon target =infineon/cy8cxxa.cfg= as a replacement
    for obsolete =target/psoc6_2m.cfg=.
-5. Turn parsed scan events into a sanitized AP summary and join workflow.
+5. Fix WPA2 security setup or credential validation for the current
+   =eapol-key-failure= join result.
 6. Add generic CDC ioctl/iovar helpers for firmware version and join.
 7. Start Wi-Fi from a known-good Infineon or Zephyr sample before trying
    to hand-port the full CYW4343W network stack.

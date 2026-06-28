@@ -589,6 +589,19 @@ impl lisp::Board for PsocBoard<'_> {
         ))
     }
 
+    fn wifi_join_wpa2(
+        &mut self,
+        ssid: lisp::StringBytes,
+        passphrase: lisp::StringBytes,
+    ) -> lisp::WifiSdioJoinReport {
+        wifi_sdio_join_report(wifi_sdio::join_wpa2(
+            self.p,
+            &mut self.state.wifi_control_state,
+            &ssid.bytes[..ssid.len as usize],
+            &passphrase.bytes[..passphrase.len as usize],
+        ))
+    }
+
     fn wifi_drain_scan_events(&mut self) -> lisp::WifiSdioScanEventDrainReport {
         wifi_sdio_scan_event_drain_report(wifi_sdio::drain_scan_events(
             self.p,
@@ -1242,6 +1255,29 @@ fn wifi_sdio_scan_start_status(status: wifi_sdio::WifiSdioScanStartStatus) -> &'
         wifi_sdio::WifiSdioScanStartStatus::ResponseFrameFailed => b"response-frame-failed",
         wifi_sdio::WifiSdioScanStartStatus::UnexpectedResponseFrame => b"unexpected-response-frame",
         wifi_sdio::WifiSdioScanStartStatus::CdcStatusError => b"cdc-status-error",
+    }
+}
+
+fn wifi_sdio_join_status(status: wifi_sdio::WifiSdioJoinStatus) -> &'static [u8] {
+    match status {
+        wifi_sdio::WifiSdioJoinStatus::Ready => b"ready",
+        wifi_sdio::WifiSdioJoinStatus::InvalidSsidLength => b"invalid-ssid-length",
+        wifi_sdio::WifiSdioJoinStatus::InvalidPassphraseLength => b"invalid-passphrase-length",
+        wifi_sdio::WifiSdioJoinStatus::HtRequestFailed => b"ht-request-failed",
+        wifi_sdio::WifiSdioJoinStatus::SendFailed => b"send-failed",
+        wifi_sdio::WifiSdioJoinStatus::ResponseFrameFailed => b"response-frame-failed",
+        wifi_sdio::WifiSdioJoinStatus::UnexpectedResponseFrame => b"unexpected-response-frame",
+        wifi_sdio::WifiSdioJoinStatus::CdcStatusError => b"cdc-status-error",
+        wifi_sdio::WifiSdioJoinStatus::AckFailed => b"ack-failed",
+        wifi_sdio::WifiSdioJoinStatus::EventFrameReadFailed => b"event-frame-read-failed",
+        wifi_sdio::WifiSdioJoinStatus::EventFrameInvalid => b"event-frame-invalid",
+        wifi_sdio::WifiSdioJoinStatus::NoNetworks => b"no-networks",
+        wifi_sdio::WifiSdioJoinStatus::AuthFailed => b"auth-failed",
+        wifi_sdio::WifiSdioJoinStatus::EapolKeyM1Timeout => b"eapol-key-m1-timeout",
+        wifi_sdio::WifiSdioJoinStatus::EapolKeyM3Timeout => b"eapol-key-m3-timeout",
+        wifi_sdio::WifiSdioJoinStatus::EapolKeyG1Timeout => b"eapol-key-g1-timeout",
+        wifi_sdio::WifiSdioJoinStatus::EapolKeyFailure => b"eapol-key-failure",
+        wifi_sdio::WifiSdioJoinStatus::Timeout => b"timeout",
     }
 }
 
@@ -1990,6 +2026,67 @@ fn wifi_sdio_scan_start_report(
         response_last_error: report
             .response_last_error
             .map(wifi_sdio_command_error_report),
+        host_normal_int: report.host_normal_int,
+        host_error_int: report.host_error_int,
+        host: wifi_sdio_host_report(report.host),
+    }
+}
+
+fn wifi_sdio_join_report(report: wifi_sdio::WifiSdioJoinReport) -> lisp::WifiSdioJoinReport {
+    lisp::WifiSdioJoinReport {
+        status: wifi_sdio_join_status(report.status),
+        step: report.step,
+        ssid_len: report.ssid_len,
+        passphrase_len: report.passphrase_len,
+        optional_cdc_errors: report.optional_cdc_errors,
+        ht_status: wifi_sdio_ht_request_status(report.ht_status),
+        ht_attempts: report.ht_attempts,
+        ht_write_response: report.ht_write_response,
+        ht_read_value: report.ht_read_value,
+        ht_read_response: report.ht_read_response,
+        ht_available: report.ht_available,
+        send_status: wifi_sdio_f2_control_status(report.send_status),
+        send_packet_length: report.send_packet_length,
+        send_write_response: report.send_write_response,
+        response_status: wifi_sdio_f2_frame_status(report.response_status),
+        response_length: report.response_length,
+        response_sequence: report.response_sequence,
+        response_channel: report.response_channel,
+        response_bus_data_credit: report.response_bus_data_credit,
+        cdc_command: report.cdc_command,
+        cdc_length: report.cdc_length,
+        cdc_flags: report.cdc_flags,
+        cdc_id: report.cdc_id,
+        cdc_status: report.cdc_status,
+        requested_polls: report.requested_polls,
+        polls: report.polls,
+        frames_read: report.frames_read,
+        non_event_frames: report.non_event_frames,
+        events_seen: report.events_seen,
+        join_flags: report.join_flags,
+        last_frame_status: wifi_sdio_f2_frame_status(report.last_frame_status),
+        last_frame_length: report.last_frame_length,
+        last_frame_channel: report.last_frame_channel,
+        last_frame_bus_data_credit: report.last_frame_bus_data_credit,
+        last_event_type: report.last_event_type,
+        last_event_status: report.last_event_status,
+        last_event_reason: report.last_event_reason,
+        last_event_flags: report.last_event_flags,
+        last_event_datalen: report.last_event_datalen,
+        last_event_ifidx: report.last_event_ifidx,
+        last_event_bsscfgidx: report.last_event_bsscfgidx,
+        ack_status: wifi_sdio_interrupt_ack_status(report.ack_status),
+        ack_int_status_before: report.ack_int_status_before,
+        ack_clear_value: report.ack_clear_value,
+        ack_int_status_after: report.ack_int_status_after,
+        ack_final_response: report.ack_final_response,
+        ht_last_error: report.ht_last_error.map(wifi_sdio_command_error_report),
+        send_last_error: report.send_last_error.map(wifi_sdio_command_error_report),
+        response_last_error: report
+            .response_last_error
+            .map(wifi_sdio_command_error_report),
+        frame_last_error: report.frame_last_error.map(wifi_sdio_command_error_report),
+        ack_last_error: report.ack_last_error.map(wifi_sdio_command_error_report),
         host_normal_int: report.host_normal_int,
         host_error_int: report.host_error_int,
         host: wifi_sdio_host_report(report.host),

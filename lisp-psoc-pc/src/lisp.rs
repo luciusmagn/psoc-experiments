@@ -110,6 +110,7 @@ pub trait Board {
     fn wifi_disable_tx_glomming(&mut self) -> WifiSdioTxGlommingReport;
     fn wifi_enable_network_events(&mut self) -> WifiSdioEventMaskReport;
     fn wifi_start_scan(&mut self) -> WifiSdioScanStartReport;
+    fn wifi_join_wpa2(&mut self, ssid: StringBytes, passphrase: StringBytes) -> WifiSdioJoinReport;
     fn wifi_drain_scan_events(&mut self) -> WifiSdioScanEventDrainReport;
     fn wifi_get_clm_version(&mut self) -> WifiSdioGetClmVersionReport;
     fn wifi_f2_read_frame_abort(&mut self) -> WifiSdioF2AbortProbeReport;
@@ -936,6 +937,64 @@ pub struct WifiSdioScanStartReport {
 }
 
 #[derive(Clone, Copy)]
+pub struct WifiSdioJoinReport {
+    pub status: &'static [u8],
+    pub step: &'static [u8],
+    pub ssid_len: u8,
+    pub passphrase_len: u8,
+    pub optional_cdc_errors: u8,
+    pub ht_status: &'static [u8],
+    pub ht_attempts: u16,
+    pub ht_write_response: u32,
+    pub ht_read_value: u8,
+    pub ht_read_response: u32,
+    pub ht_available: bool,
+    pub send_status: &'static [u8],
+    pub send_packet_length: u16,
+    pub send_write_response: u32,
+    pub response_status: &'static [u8],
+    pub response_length: u16,
+    pub response_sequence: u8,
+    pub response_channel: u8,
+    pub response_bus_data_credit: u8,
+    pub cdc_command: u32,
+    pub cdc_length: u32,
+    pub cdc_flags: u32,
+    pub cdc_id: u16,
+    pub cdc_status: u32,
+    pub requested_polls: u8,
+    pub polls: u8,
+    pub frames_read: u8,
+    pub non_event_frames: u8,
+    pub events_seen: u8,
+    pub join_flags: u32,
+    pub last_frame_status: &'static [u8],
+    pub last_frame_length: u16,
+    pub last_frame_channel: u8,
+    pub last_frame_bus_data_credit: u8,
+    pub last_event_type: u32,
+    pub last_event_status: u32,
+    pub last_event_reason: u32,
+    pub last_event_flags: u32,
+    pub last_event_datalen: u32,
+    pub last_event_ifidx: u8,
+    pub last_event_bsscfgidx: u8,
+    pub ack_status: &'static [u8],
+    pub ack_int_status_before: u32,
+    pub ack_clear_value: u32,
+    pub ack_int_status_after: u32,
+    pub ack_final_response: u32,
+    pub ht_last_error: Option<WifiSdioCommandErrorReport>,
+    pub send_last_error: Option<WifiSdioCommandErrorReport>,
+    pub response_last_error: Option<WifiSdioCommandErrorReport>,
+    pub frame_last_error: Option<WifiSdioCommandErrorReport>,
+    pub ack_last_error: Option<WifiSdioCommandErrorReport>,
+    pub host_normal_int: u16,
+    pub host_error_int: u16,
+    pub host: WifiSdioHostReport,
+}
+
+#[derive(Clone, Copy)]
 pub struct WifiSdioScanEventDrainReport {
     pub status: &'static [u8],
     pub stop_reason: &'static [u8],
@@ -1305,6 +1364,7 @@ pub enum Primitive {
     WifiDisableTxGlomming,
     WifiEnableNetworkEvents,
     WifiStartScan,
+    WifiJoinWpa2,
     WifiDrainScanEvents,
     WifiGetClmVersion,
     WifiF2ReadFrameAbort,
@@ -1403,6 +1463,7 @@ impl Primitive {
             Self::WifiDisableTxGlomming => "wifi-disable-tx-glomming",
             Self::WifiEnableNetworkEvents => "wifi-enable-network-events",
             Self::WifiStartScan => "wifi-start-scan",
+            Self::WifiJoinWpa2 => "wifi-join-wpa2",
             Self::WifiDrainScanEvents => "wifi-drain-scan-events",
             Self::WifiGetClmVersion => "wifi-get-clm-version",
             Self::WifiF2ReadFrameAbort => "wifi-f2-read-frame-abort",
@@ -1667,6 +1728,7 @@ impl Machine {
             Primitive::WifiEnableNetworkEvents,
         )?;
         self.install_primitive(b"wifi-start-scan", Primitive::WifiStartScan)?;
+        self.install_primitive(b"wifi-join-wpa2", Primitive::WifiJoinWpa2)?;
         self.install_primitive(b"wifi-drain-scan-events", Primitive::WifiDrainScanEvents)?;
         self.install_primitive(b"wifi-get-clm-version", Primitive::WifiGetClmVersion)?;
         self.install_primitive(b"wifi-f2-read-frame-abort", Primitive::WifiF2ReadFrameAbort)?;
@@ -2563,6 +2625,12 @@ impl Machine {
                 self.expect_count(args, 0)?;
                 self.wifi_sdio_scan_start_report(board.wifi_start_scan())
             }
+            Primitive::WifiJoinWpa2 => {
+                self.expect_count(args, 2)?;
+                let ssid = self.expect_string(args[0])?;
+                let passphrase = self.expect_string(args[1])?;
+                self.wifi_sdio_join_report(board.wifi_join_wpa2(ssid, passphrase))
+            }
             Primitive::WifiDrainScanEvents => {
                 self.expect_count(args, 0)?;
                 self.wifi_sdio_scan_event_drain_report(board.wifi_drain_scan_events())
@@ -3014,6 +3082,7 @@ impl Machine {
             b"wifi-disable-tx-glomming",
             b"wifi-enable-network-events",
             b"wifi-start-scan",
+            b"wifi-join-wpa2",
             b"wifi-drain-scan-events",
             b"wifi-get-clm-version",
             b"wifi-f2-read-frame-abort",
@@ -4582,6 +4651,147 @@ impl Machine {
             ht_last_error,
             send_last_error,
             response_last_error,
+            host,
+        ];
+        self.make_list_from_values(&entries)
+    }
+
+    fn wifi_sdio_join_report(&mut self, report: WifiSdioJoinReport) -> LispResult<Value> {
+        let status = self.symbol_entry(b"status", report.status)?;
+        let step = self.symbol_entry(b"step", report.step)?;
+        let ssid_len = self.word_entry(b"ssid.length", report.ssid_len as u32)?;
+        let passphrase_len = self.word_entry(b"passphrase.length", report.passphrase_len as u32)?;
+        let optional_cdc_errors =
+            self.word_entry(b"optional-cdc.errors", report.optional_cdc_errors as u32)?;
+        let ht_status = self.symbol_entry(b"ht.status", report.ht_status)?;
+        let ht_attempts = self.word_entry(b"ht.attempts", report.ht_attempts as u32)?;
+        let ht_write_response = self.word_entry(b"ht.write-response", report.ht_write_response)?;
+        let ht_read_value = self.word_entry(b"ht.read-value", report.ht_read_value as u32)?;
+        let ht_read_response = self.word_entry(b"ht.read-response", report.ht_read_response)?;
+        let ht_available = self.bool_entry(b"ht.available", report.ht_available)?;
+        let send_status = self.symbol_entry(b"send.status", report.send_status)?;
+        let send_packet_length =
+            self.word_entry(b"send.packet-length", report.send_packet_length as u32)?;
+        let send_write_response =
+            self.word_entry(b"send.write-response", report.send_write_response)?;
+        let response_status = self.symbol_entry(b"response.status", report.response_status)?;
+        let response_length = self.word_entry(b"response.length", report.response_length as u32)?;
+        let response_sequence =
+            self.word_entry(b"response.sequence", report.response_sequence as u32)?;
+        let response_channel =
+            self.word_entry(b"response.channel", report.response_channel as u32)?;
+        let response_bus_data_credit = self.word_entry(
+            b"response.bus-data-credit",
+            report.response_bus_data_credit as u32,
+        )?;
+        let cdc_command = self.word_entry(b"cdc.command", report.cdc_command)?;
+        let cdc_length = self.word_entry(b"cdc.length", report.cdc_length)?;
+        let cdc_flags = self.word_entry(b"cdc.flags", report.cdc_flags)?;
+        let cdc_id = self.word_entry(b"cdc.id", report.cdc_id as u32)?;
+        let cdc_status = self.word_entry(b"cdc.status", report.cdc_status)?;
+        let requested_polls =
+            self.word_entry(b"join.requested-polls", report.requested_polls as u32)?;
+        let polls = self.word_entry(b"join.polls", report.polls as u32)?;
+        let frames_read = self.word_entry(b"frames.read", report.frames_read as u32)?;
+        let non_event_frames =
+            self.word_entry(b"non-event.frames", report.non_event_frames as u32)?;
+        let events_seen = self.word_entry(b"events.seen", report.events_seen as u32)?;
+        let join_flags = self.word_entry(b"join.flags", report.join_flags)?;
+        let last_frame_status =
+            self.symbol_entry(b"last.frame.status", report.last_frame_status)?;
+        let last_frame_length =
+            self.word_entry(b"last.frame.length", report.last_frame_length as u32)?;
+        let last_frame_channel =
+            self.word_entry(b"last.frame.channel", report.last_frame_channel as u32)?;
+        let last_frame_bus_data_credit = self.word_entry(
+            b"last.frame.bus-data-credit",
+            report.last_frame_bus_data_credit as u32,
+        )?;
+        let last_event_type = self.word_entry(b"last.event.type", report.last_event_type)?;
+        let last_event_status = self.word_entry(b"last.event.status", report.last_event_status)?;
+        let last_event_reason = self.word_entry(b"last.event.reason", report.last_event_reason)?;
+        let last_event_flags = self.word_entry(b"last.event.flags", report.last_event_flags)?;
+        let last_event_datalen =
+            self.word_entry(b"last.event.datalen", report.last_event_datalen)?;
+        let last_event_ifidx =
+            self.word_entry(b"last.event.ifidx", report.last_event_ifidx as u32)?;
+        let last_event_bsscfgidx =
+            self.word_entry(b"last.event.bsscfgidx", report.last_event_bsscfgidx as u32)?;
+        let ack_status = self.symbol_entry(b"ack.status", report.ack_status)?;
+        let ack_int_status_before =
+            self.word_entry(b"ack.INT_STATUS.before", report.ack_int_status_before)?;
+        let ack_clear_value = self.word_entry(b"ack.INT_STATUS.clear", report.ack_clear_value)?;
+        let ack_int_status_after =
+            self.word_entry(b"ack.INT_STATUS.after", report.ack_int_status_after)?;
+        let ack_final_response =
+            self.word_entry(b"ack.INT_STATUS.final-response", report.ack_final_response)?;
+        let host_normal_int = self.word_entry(b"HOST.NORM_INT", report.host_normal_int as u32)?;
+        let host_error_int = self.word_entry(b"HOST.ERR_INT", report.host_error_int as u32)?;
+        let ht_last_error = self.wifi_sdio_error_entry(b"ht.last-error", report.ht_last_error)?;
+        let send_last_error =
+            self.wifi_sdio_error_entry(b"send.last-error", report.send_last_error)?;
+        let response_last_error =
+            self.wifi_sdio_error_entry(b"response.last-error", report.response_last_error)?;
+        let frame_last_error =
+            self.wifi_sdio_error_entry(b"frame.last-error", report.frame_last_error)?;
+        let ack_last_error =
+            self.wifi_sdio_error_entry(b"ack.last-error", report.ack_last_error)?;
+        let host = self.wifi_sdio_host_report(report.host)?;
+        let host = self.entry(b"SDHC0", host)?;
+        let entries = [
+            status,
+            step,
+            ssid_len,
+            passphrase_len,
+            optional_cdc_errors,
+            ht_status,
+            ht_attempts,
+            ht_write_response,
+            ht_read_value,
+            ht_read_response,
+            ht_available,
+            send_status,
+            send_packet_length,
+            send_write_response,
+            response_status,
+            response_length,
+            response_sequence,
+            response_channel,
+            response_bus_data_credit,
+            cdc_command,
+            cdc_length,
+            cdc_flags,
+            cdc_id,
+            cdc_status,
+            requested_polls,
+            polls,
+            frames_read,
+            non_event_frames,
+            events_seen,
+            join_flags,
+            last_frame_status,
+            last_frame_length,
+            last_frame_channel,
+            last_frame_bus_data_credit,
+            last_event_type,
+            last_event_status,
+            last_event_reason,
+            last_event_flags,
+            last_event_datalen,
+            last_event_ifidx,
+            last_event_bsscfgidx,
+            ack_status,
+            ack_int_status_before,
+            ack_clear_value,
+            ack_int_status_after,
+            ack_final_response,
+            host_normal_int,
+            host_error_int,
+            ht_last_error,
+            send_last_error,
+            response_last_error,
+            frame_last_error,
+            ack_last_error,
             host,
         ];
         self.make_list_from_values(&entries)
