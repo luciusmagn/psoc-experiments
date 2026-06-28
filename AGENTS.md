@@ -201,6 +201,11 @@ UDP REPL requests. It writes ignored binary request/response files under
 `.local/net-repl/`, calls `nc`, and prints response metadata plus payload text.
 Use a longer receive window such as `--wait 15` for FAT-backed forms like
 `save-file`, `read-file`, and `cat`.
+Use `tools/send-net-repl.scm --color` only when ANSI payload coloring is wanted;
+plain output is the default. Use `--read-only` as a conservative host-side
+accidental-send guard for status, directory, FAT info, and simple-path
+file-read forms. Do not treat this client flag as a board-side authorization
+boundary.
 
 To make a normal quiet Wi-Fi image start the UDP REPL service from microSD,
 install this `boot.lisp` through the temporary service-smoke image:

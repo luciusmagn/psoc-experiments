@@ -19,10 +19,12 @@
 (define response-path ".local/net-repl/response.bin")
 
 (define (usage)
-  (say "usage: tools/send-net-repl.scm --host HOST [--port PORT] [--sequence N] [--attempts N] [--wait SECONDS] FORM")
+  (say "usage: tools/send-net-repl.scm --host HOST [--port PORT] [--sequence N] [--attempts N] [--wait SECONDS] [--color] [--read-only] FORM")
   (say "")
   (say "Sends one framed UDP Lisp request to the board network REPL endpoint.")
   (say "The Lisp form is written to an ignored binary request file, not printed in the shell command.")
+  (say "--color wraps the payload text in ANSI color. The default is plain output.")
+  (say "--read-only refuses forms outside the conservative host-side read-only allowlist.")
   (say "HOST may also be supplied with PSOC_NET_REPL_HOST."))
 
 (define (parse-integer-option name text min max)
@@ -34,16 +36,25 @@
                             ".."
                             (number->string max))))))
 
-(define (parse args host port sequence attempts wait-seconds forms)
+(define (parse args host port sequence attempts wait-seconds color? read-only? forms)
   (cond
-    ((null? args) (values host port sequence attempts wait-seconds (reverse forms)))
+    ((null? args)
+     (values host port sequence attempts wait-seconds color? read-only? (reverse forms)))
     ((string=? (car args) "--help")
      (usage)
      (exit 0))
     ((string=? (car args) "--host")
      (if (null? (cdr args))
          (die "--host needs a value")
-         (parse (cddr args) (cadr args) port sequence attempts wait-seconds forms)))
+         (parse (cddr args)
+                (cadr args)
+                port
+                sequence
+                attempts
+                wait-seconds
+                color?
+                read-only?
+                forms)))
     ((string=? (car args) "--port")
      (if (null? (cdr args))
          (die "--port needs a value")
@@ -53,6 +64,8 @@
                 sequence
                 attempts
                 wait-seconds
+                color?
+                read-only?
                 forms)))
     ((string=? (car args) "--sequence")
      (if (null? (cdr args))
@@ -63,6 +76,8 @@
                 (parse-integer-option "--sequence" (cadr args) 0 4294967295)
                 attempts
                 wait-seconds
+                color?
+                read-only?
                 forms)))
     ((string=? (car args) "--attempts")
      (if (null? (cdr args))
@@ -73,6 +88,8 @@
                 sequence
                 (parse-integer-option "--attempts" (cadr args) 1 1000)
                 wait-seconds
+                color?
+                read-only?
                 forms)))
     ((string=? (car args) "--wait")
      (if (null? (cdr args))
@@ -83,9 +100,25 @@
                 sequence
                 attempts
                 (parse-integer-option "--wait" (cadr args) 1 60)
+                color?
+                read-only?
                 forms)))
+    ((string=? (car args) "--color")
+     (parse (cdr args) host port sequence attempts wait-seconds #t read-only? forms))
+    ((string=? (car args) "--no-color")
+     (parse (cdr args) host port sequence attempts wait-seconds #f read-only? forms))
+    ((string=? (car args) "--read-only")
+     (parse (cdr args) host port sequence attempts wait-seconds color? #t forms))
     (else
-     (parse (cdr args) host port sequence attempts wait-seconds (cons (car args) forms)))))
+     (parse (cdr args)
+            host
+            port
+            sequence
+            attempts
+            wait-seconds
+            color?
+            read-only?
+            (cons (car args) forms)))))
 
 (define (join-form parts)
   (let loop ((items parts) (out ""))
@@ -153,6 +186,42 @@
       ((string=? out "") (loop (cdr items) (byte-hex (car items))))
       (else (loop (cdr items) (string-append out " " (byte-hex (car items))))))))
 
+(define (write-ansi code)
+  (put-char (current-output-port) (integer->char 27))
+  (display "[")
+  (display code)
+  (display "m"))
+
+(define (bytes-prefix-ascii? prefix bytes)
+  (and (<= (string-length prefix) (length bytes))
+       (let loop ((index 0) (items bytes))
+         (cond
+           ((= index (string-length prefix)) #t)
+           ((null? items) #f)
+           ((= (char->integer (string-ref prefix index)) (car items))
+            (loop (+ index 1) (cdr items)))
+           (else #f)))))
+
+(define (payload-color-code bytes)
+  (cond
+    ((bytes-prefix-ascii? "=> " bytes) "32")
+    ((bytes-prefix-ascii? "error:" bytes) "31")
+    (else "36")))
+
+(define (bytes-end-with? wanted bytes)
+  (and (pair? bytes)
+       (let loop ((items bytes))
+         (if (null? (cdr items))
+             (= (car items) wanted)
+             (loop (cdr items))))))
+
+(define (drop-final-byte bytes)
+  (let loop ((items bytes) (out '()))
+    (cond
+      ((null? items) (reverse out))
+      ((null? (cdr items)) (reverse out))
+      (else (loop (cdr items) (cons (car items) out))))))
+
 (define (display-payload bytes)
   (let loop ((items bytes))
     (when (pair? items)
@@ -166,6 +235,83 @@
            (display "\\x")
            (display (byte-hex byte)))))
       (loop (cdr items)))))
+
+(define (display-payload-line bytes color?)
+  (let ((payload (if (bytes-end-with? 10 bytes)
+                     (drop-final-byte bytes)
+                     bytes)))
+    (display "payload.text=")
+    (when color?
+      (write-ansi (payload-color-code bytes)))
+    (display-payload payload)
+    (when color?
+      (write-ansi "0"))
+    (newline)))
+
+(define (ascii-space? char)
+  (or (char=? char #\space)
+      (char=? char #\tab)
+      (char=? char #\newline)
+      (char=? char #\return)))
+
+(define (trim-ascii text)
+  (let find-start ((start 0))
+    (if (and (< start (string-length text))
+             (ascii-space? (string-ref text start)))
+        (find-start (+ start 1))
+        (let find-end ((end (string-length text)))
+          (if (and (> end start)
+                   (ascii-space? (string-ref text (- end 1))))
+              (find-end (- end 1))
+              (substring text start end))))))
+
+(define (string-suffix? suffix text)
+  (let ((text-len (string-length text))
+        (suffix-len (string-length suffix)))
+    (and (<= suffix-len text-len)
+         (string=? suffix (substring text (- text-len suffix-len) text-len)))))
+
+(define (ascii-alphanumeric? char)
+  (or (and (char>=? char #\a) (char<=? char #\z))
+      (and (char>=? char #\A) (char<=? char #\Z))
+      (and (char>=? char #\0) (char<=? char #\9))))
+
+(define (safe-read-path-char? char)
+  (or (ascii-alphanumeric? char)
+      (char=? char #\.)
+      (char=? char #\-)
+      (char=? char #\_)
+      (char=? char #\/)))
+
+(define (safe-read-path? text)
+  (and (> (string-length text) 0)
+       (let loop ((index 0))
+         (cond
+           ((>= index (string-length text)) #t)
+           ((safe-read-path-char? (string-ref text index))
+            (loop (+ index 1)))
+           (else #f)))))
+
+(define (safe-read-string-call? prefix text)
+  (let ((prefix-len (string-length prefix))
+        (text-len (string-length text)))
+    (and (string-prefix? prefix text)
+         (string-suffix? "\")" text)
+         (> text-len (+ prefix-len 2))
+         (safe-read-path? (substring text prefix-len (- text-len 2))))))
+
+(define (read-only-form? form)
+  (let ((text (trim-ascii form)))
+    (or (string=? text "(wifi-net-repl-service status)")
+        (string=? text "(ls)")
+        (string=? text "(fat-info)")
+        (string=? text "(sd-status)")
+        (safe-read-string-call? "(cat \"" text)
+        (safe-read-string-call? "(read-file \"" text))))
+
+(define (enforce-read-only form)
+  (unless (read-only-form? form)
+    (die "read-only mode allows only status, ls, fat-info, sd-status, cat, and read-file forms")))
 
 (define (take-after-header bytes)
   (let loop ((items bytes) (index 0))
@@ -204,13 +350,15 @@
     (say command)
     (system command)))
 
-(define-values (host port sequence attempts wait-seconds parts)
+(define-values (host port sequence attempts wait-seconds color? read-only? parts)
   (parse (command-line-tail)
          (env "PSOC_NET_REPL_HOST")
          default-port
          default-sequence
          default-attempts
          default-wait-seconds
+         #f
+         #f
          '()))
 
 (when (not host)
@@ -226,6 +374,9 @@
   (die (string-append "form is longer than "
                       (number->string max-request-bytes)
                       " bytes")))
+
+(when read-only?
+  (enforce-read-only form))
 
 (define request-file (repo-path request-path))
 (define response-file (repo-path response-path))
@@ -244,9 +395,7 @@
          (say (string-append "response.bytes=" (number->string (length response))))
          (say (string-append "response.hex=" (bytes-hex response)))
          (say (string-append "payload.bytes=" (number->string (length payload))))
-         (display "payload.text=")
-         (display-payload payload)
-         (newline)
+         (display-payload-line payload color?)
          (exit 0)))
       ((>= attempt attempts)
        (if (null? response)

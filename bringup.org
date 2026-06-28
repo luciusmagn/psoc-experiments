@@ -5200,6 +5200,35 @@ payload.text==> ((enabled . #t)
     (last.response.truncated . #f))
 #+end_example
 
+* 2026-06-28 Network REPL client colors and read-only guard
+
+Added two host-side options to =tools/send-net-repl.scm=:
+
+- =--color= wraps only =payload.text= in ANSI color. Success payloads beginning
+  with ="=> "= are green, error payloads beginning with ="error:"= are red, and
+  other payloads are cyan. Plain output remains the default.
+- =--read-only= refuses to send forms outside a conservative allowlist:
+  =(wifi-net-repl-service status)=, =(ls)=, =(fat-info)=, =(sd-status)=,
+  =(cat "simple/path.lisp")=, and =(read-file "simple/path.lisp")=.
+
+This is a host-side accidental-send guard, not a firmware security boundary.
+The board-side service still evaluates any valid form it receives.
+
+Local validation:
+
+#+begin_example
+tools/send-net-repl.scm --help
+tools/send-net-repl.scm --host 127.0.0.1 --read-only '(save-file "boot.lisp" "x")'
+error: read-only mode allows only status, ls, fat-info, sd-status, cat, and read-file forms
+#+end_example
+
+Board validation used the quiet image started from microSD =boot.lisp=:
+
+#+begin_example
+tools/send-net-repl.scm --host 192.168.0.107 --sequence 72 --wait 3 --read-only --color '(wifi-net-repl-service status)'
+payload.text=<green status payload>
+#+end_example
+
 Transport decision for now: keep UDP as the working board-control path because
 DHCP, ARP, DNS, and framed UDP replies are already live. A future standard
 console should likely be raw TCP first, with minimal telnet option handling on

@@ -152,6 +152,20 @@ request from the host. The script writes the binary request under ignored
 `.local/net-repl/`, calls `nc`, parses the `LPS1` response, and prints response
 lengths, hex, and payload text.
 
+`tools/send-net-repl.scm --color` wraps payload text in ANSI color. Plain output
+is the default so logs and scripts do not receive escape codes. Use
+`--read-only` for a conservative host-side guard that refuses forms outside
+status, directory, FAT info, and simple-path file-read operations before it
+sends a UDP request:
+
+```sh
+tools/send-net-repl.scm --host BOARD_IP --read-only --color \
+  '(wifi-net-repl-service status)'
+```
+
+This guard is for avoiding accidental writes from the host client; it is not a
+board-side authorization boundary.
+
 For unattended Wi-Fi association, DHCP, router ARP, DNS, and background framed
 UDP REPL service smoke testing:
 
