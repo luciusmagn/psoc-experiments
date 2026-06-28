@@ -18,10 +18,18 @@ mod wifi_resources;
 const SYSCLK_HZ: u32 = 50_000_000;
 const CONSOLE_POLL_DELAY_US: u32 = 50;
 #[cfg(feature = "wifi-boot-smoke")]
+#[cfg(not(feature = "wifi-dhcp-boot-smoke"))]
 const WIFI_BOOT_SMOKE_FORMS: [&[u8]; 3] = [
     b"(console-echo off)",
     b"(wifi-connect-local)",
     b"(wifi-link-status)",
+];
+#[cfg(feature = "wifi-dhcp-boot-smoke")]
+const WIFI_BOOT_SMOKE_FORMS: [&[u8]; 4] = [
+    b"(console-echo off)",
+    b"(wifi-connect-local)",
+    b"(wifi-link-status)",
+    b"(wifi-dhcp-discover)",
 ];
 #[cfg(feature = "storage-boot-smoke")]
 const STORAGE_BOOT_SMOKE_FORMS: [&[u8]; 4] = [

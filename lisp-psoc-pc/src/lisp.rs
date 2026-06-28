@@ -117,6 +117,7 @@ pub trait Board {
     fn wifi_get_version(&mut self) -> WifiSdioGetVersionReport;
     fn wifi_get_mpc(&mut self) -> WifiSdioGetMpcReport;
     fn wifi_link_status(&mut self) -> WifiSdioLinkStatusReport;
+    fn wifi_dhcp_discover(&mut self) -> WifiSdioDhcpDiscoverReport;
     fn wifi_load_clm(&mut self) -> WifiSdioClmLoadReport;
     fn wifi_get_country(&mut self) -> WifiSdioCountryReport;
     fn wifi_set_country(&mut self, country_code: [u8; 2], revision: i32) -> WifiSdioCountryReport;
@@ -888,6 +889,38 @@ pub struct WifiSdioLinkStatusReport {
 }
 
 #[derive(Clone, Copy)]
+pub struct WifiSdioDhcpDiscoverReport {
+    pub status: &'static [u8],
+    pub step: &'static [u8],
+    pub ht_status: &'static [u8],
+    pub ht_attempts: u16,
+    pub ht_write_response: u32,
+    pub ht_read_value: u8,
+    pub ht_read_response: u32,
+    pub ht_available: bool,
+    pub mac_status: &'static [u8],
+    pub mac_hash: u32,
+    pub mac_present: bool,
+    pub mac_cdc_status: u32,
+    pub mac_cdc_length: u32,
+    pub skipped_frames: u8,
+    pub transaction_id: u32,
+    pub ethernet_length: u16,
+    pub ethernet_hash: u32,
+    pub ip_total_length: u16,
+    pub udp_length: u16,
+    pub dhcp_payload_length: u16,
+    pub send_status: &'static [u8],
+    pub send_initial_tx_credit: u8,
+    pub send_packet_length: u16,
+    pub send_write_response: u32,
+    pub ht_last_error: Option<WifiSdioCommandErrorReport>,
+    pub send_last_error: Option<WifiSdioCommandErrorReport>,
+    pub host_normal_int: u16,
+    pub host_error_int: u16,
+}
+
+#[derive(Clone, Copy)]
 pub struct WifiSdioClmLoadReport {
     pub status: &'static [u8],
     pub ht_status: &'static [u8],
@@ -1517,6 +1550,7 @@ pub enum Primitive {
     WifiGetVersion,
     WifiGetMpc,
     WifiLinkStatus,
+    WifiDhcpDiscover,
     WifiLoadClm,
     WifiGetCountry,
     WifiSetCountry,
@@ -1627,6 +1661,7 @@ impl Primitive {
             Self::WifiGetVersion => "wifi-get-version",
             Self::WifiGetMpc => "wifi-get-mpc",
             Self::WifiLinkStatus => "wifi-link-status",
+            Self::WifiDhcpDiscover => "wifi-dhcp-discover",
             Self::WifiLoadClm => "wifi-load-clm",
             Self::WifiGetCountry => "wifi-get-country",
             Self::WifiSetCountry => "wifi-set-country",
@@ -1905,6 +1940,7 @@ impl Machine {
         self.install_primitive(b"wifi-get-version", Primitive::WifiGetVersion)?;
         self.install_primitive(b"wifi-get-mpc", Primitive::WifiGetMpc)?;
         self.install_primitive(b"wifi-link-status", Primitive::WifiLinkStatus)?;
+        self.install_primitive(b"wifi-dhcp-discover", Primitive::WifiDhcpDiscover)?;
         self.install_primitive(b"wifi-load-clm", Primitive::WifiLoadClm)?;
         self.install_primitive(b"wifi-get-country", Primitive::WifiGetCountry)?;
         self.install_primitive(b"wifi-set-country", Primitive::WifiSetCountry)?;
@@ -2806,6 +2842,10 @@ impl Machine {
             Primitive::WifiLinkStatus => {
                 self.expect_count(args, 0)?;
                 self.wifi_sdio_link_status_report(board.wifi_link_status())
+            }
+            Primitive::WifiDhcpDiscover => {
+                self.expect_count(args, 0)?;
+                self.wifi_sdio_dhcp_discover_report(board.wifi_dhcp_discover())
             }
             Primitive::WifiLoadClm => {
                 self.expect_count(args, 0)?;
@@ -4601,6 +4641,78 @@ impl Machine {
             skipped_frames,
             host_normal_int,
             host_error_int,
+        ];
+        self.make_list_from_values(&entries)
+    }
+
+    fn wifi_sdio_dhcp_discover_report(
+        &mut self,
+        report: WifiSdioDhcpDiscoverReport,
+    ) -> LispResult<Value> {
+        let status = self.symbol_entry(b"status", report.status)?;
+        let step = self.symbol_entry(b"step", report.step)?;
+        let ht_status = self.symbol_entry(b"ht.status", report.ht_status)?;
+        let ht_attempts = self.word_entry(b"ht.attempts", report.ht_attempts as u32)?;
+        let ht_write_response = self.word_entry(b"ht.write-response", report.ht_write_response)?;
+        let ht_read_value = self.word_entry(b"ht.read-value", report.ht_read_value as u32)?;
+        let ht_read_response = self.word_entry(b"ht.read-response", report.ht_read_response)?;
+        let ht_available = self.bool_entry(b"ht.available", report.ht_available)?;
+        let mac_status = self.symbol_entry(b"mac.status", report.mac_status)?;
+        let mac_present = self.bool_entry(b"mac.present", report.mac_present)?;
+        let mac_hash = self.word_entry(b"mac.hash", report.mac_hash)?;
+        let mac_cdc_status = self.word_entry(b"mac.cdc.status", report.mac_cdc_status)?;
+        let mac_cdc_length = self.word_entry(b"mac.cdc.length", report.mac_cdc_length)?;
+        let skipped_frames = self.word_entry(b"skipped.frames", report.skipped_frames as u32)?;
+        let transaction_id = self.word_entry(b"dhcp.transaction-id", report.transaction_id)?;
+        let ethernet_length = self.word_entry(b"ethernet.length", report.ethernet_length as u32)?;
+        let ethernet_hash = self.word_entry(b"ethernet.hash", report.ethernet_hash)?;
+        let ip_total_length = self.word_entry(b"ip.total-length", report.ip_total_length as u32)?;
+        let udp_length = self.word_entry(b"udp.length", report.udp_length as u32)?;
+        let dhcp_payload_length =
+            self.word_entry(b"dhcp.payload-length", report.dhcp_payload_length as u32)?;
+        let send_status = self.symbol_entry(b"send.status", report.send_status)?;
+        let send_initial_tx_credit = self.word_entry(
+            b"send.initial-tx-credit",
+            report.send_initial_tx_credit as u32,
+        )?;
+        let send_packet_length =
+            self.word_entry(b"send.packet-length", report.send_packet_length as u32)?;
+        let send_write_response =
+            self.word_entry(b"send.write-response", report.send_write_response)?;
+        let host_normal_int = self.word_entry(b"HOST.NORM_INT", report.host_normal_int as u32)?;
+        let host_error_int = self.word_entry(b"HOST.ERR_INT", report.host_error_int as u32)?;
+        let ht_last_error = self.wifi_sdio_error_entry(b"ht.last-error", report.ht_last_error)?;
+        let send_last_error =
+            self.wifi_sdio_error_entry(b"send.last-error", report.send_last_error)?;
+        let entries = [
+            status,
+            step,
+            ht_status,
+            ht_attempts,
+            ht_write_response,
+            ht_read_value,
+            ht_read_response,
+            ht_available,
+            mac_status,
+            mac_present,
+            mac_hash,
+            mac_cdc_status,
+            mac_cdc_length,
+            skipped_frames,
+            transaction_id,
+            ethernet_length,
+            ethernet_hash,
+            ip_total_length,
+            udp_length,
+            dhcp_payload_length,
+            send_status,
+            send_initial_tx_credit,
+            send_packet_length,
+            send_write_response,
+            host_normal_int,
+            host_error_int,
+            ht_last_error,
+            send_last_error,
         ];
         self.make_list_from_values(&entries)
     }

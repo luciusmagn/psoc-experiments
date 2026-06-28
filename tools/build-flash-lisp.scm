@@ -29,6 +29,7 @@
     ((or (string=? (car args) "--wifi-firmware")
          (string=? (car args) "--wifi-credentials")
          (string=? (car args) "--wifi-boot-smoke")
+         (string=? (car args) "--wifi-dhcp-boot-smoke")
          (string=? (car args) "--storage-boot-smoke")
          (string=? (car args) "--storage-format-boot-smoke"))
      (parse (cdr args) (cons (car args) build-args) flash-args))
@@ -43,7 +44,7 @@
 
 (let ((args (command-line-tail)))
   (when (and (pair? args) (string=? (car args) "--help"))
-    (say "usage: tools/build-flash-lisp.scm [--wifi-firmware] [--wifi-credentials] [--wifi-boot-smoke] [--storage-boot-smoke] [--storage-format-boot-smoke] [flash-lisp arguments]")
+    (say "usage: tools/build-flash-lisp.scm [--wifi-firmware] [--wifi-credentials] [--wifi-boot-smoke] [--wifi-dhcp-boot-smoke] [--storage-boot-smoke] [--storage-format-boot-smoke] [flash-lisp arguments]")
     (say "")
     (say "Builds lisp-psoc-pc, packs the bootloader, then flashes it.")
     (exit 0))

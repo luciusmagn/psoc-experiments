@@ -60,13 +60,18 @@ const CDC_HEADER_BYTES: u8 = 16;
 const SDPCM_WLC_UP_PACKET_BYTES: u8 = 28;
 const SDPCM_CONTROL_CHANNEL: u8 = 0;
 const SDPCM_EVENT_CHANNEL: u8 = 1;
+const SDPCM_DATA_CHANNEL: u8 = 2;
 const CDC_SET_FLAG: u32 = 0x02;
 const CDC_IOCTL_ID_SHIFT: u8 = 16;
 const WHD_IOCTL_MAX_TX_PACKET_BYTES: usize = 1500;
 const SCAN_EVENT_DRAIN_FRAMES: u8 = 32;
 const BDC_HEADER_BYTES: usize = 4;
+const BCDC_PROTO_VER: u8 = 2;
+const BCDC_FLAG_VER_SHIFT: u8 = 4;
 const ETHERNET_ADDRESS_BYTES: usize = 6;
 const ETHERNET_HEADER_BYTES: usize = 14;
+const ETHERNET_BROADCAST: [u8; ETHERNET_ADDRESS_BYTES] = [0xff; ETHERNET_ADDRESS_BYTES];
+const IPV4_ETHERTYPE: u16 = 0x0800;
 const BRCM_ETHERTYPE: u16 = 0x886c;
 const BRCM_OUI: [u8; 3] = [0x00, 0x10, 0x18];
 const WHD_EVENT_ETH_HEADER_BYTES: usize = 10;
@@ -75,6 +80,21 @@ const WHD_EVENT_MSG_OFFSET: usize = ETHERNET_HEADER_BYTES + WHD_EVENT_ETH_HEADER
 const WHD_EVENT_DATA_OFFSET: usize = WHD_EVENT_MSG_OFFSET + WHD_EVENT_MSG_BYTES;
 const WHD_EVENT_FIXED_BYTES: usize = WHD_EVENT_DATA_OFFSET;
 const WL_ESCAN_RESULT_FIXED_BYTES: usize = 12;
+const IPV4_HEADER_BYTES: usize = 20;
+const UDP_HEADER_BYTES: usize = 8;
+const DHCP_FIXED_BYTES: usize = 236;
+const DHCP_UDP_PAYLOAD_BYTES: usize = 300;
+const DHCP_OPTIONS_OFFSET: usize = DHCP_FIXED_BYTES;
+const DHCP_MAGIC_COOKIE: [u8; 4] = [99, 130, 83, 99];
+const DHCP_ETHERNET_FRAME_BYTES: usize =
+    ETHERNET_HEADER_BYTES + IPV4_HEADER_BYTES + UDP_HEADER_BYTES + DHCP_UDP_PAYLOAD_BYTES;
+const DHCP_BOOTREQUEST: u8 = 1;
+const DHCP_HTYPE_ETHERNET: u8 = 1;
+const DHCP_DISCOVER_MESSAGE_TYPE: u8 = 1;
+const DHCP_CLIENT_PORT: u16 = 68;
+const DHCP_SERVER_PORT: u16 = 67;
+const DHCP_IP_IDENTIFICATION: u16 = 0x4c50;
+const DHCP_INITIAL_TRANSACTION_ID: u32 = 0x4c49_5350;
 const WLC_UP_IOCTL: u32 = 2;
 const WLC_GET_VERSION_IOCTL: u32 = 1;
 const WLC_GET_BSSID_IOCTL: u32 = 23;
@@ -423,6 +443,15 @@ pub enum WifiSdioF2ControlStatus {
     Cmd53Failed,
     TransferTimeout,
     DataLineBusy,
+}
+
+#[derive(Clone, Copy)]
+pub enum WifiSdioDhcpDiscoverStatus {
+    Ready,
+    HtRequestFailed,
+    MacReadFailed,
+    MacMissing,
+    SendFailed,
 }
 
 #[derive(Clone, Copy)]
@@ -1044,6 +1073,7 @@ pub struct WifiSdioControlState {
     tx_sequence: u8,
     tx_max: u8,
     requested_ioctl_id: u16,
+    dhcp_transaction_id: u32,
 }
 
 impl WifiSdioControlState {
@@ -1052,6 +1082,7 @@ impl WifiSdioControlState {
             tx_sequence: 0,
             tx_max: 1,
             requested_ioctl_id: 0,
+            dhcp_transaction_id: DHCP_INITIAL_TRANSACTION_ID,
         }
     }
 
@@ -1059,6 +1090,7 @@ impl WifiSdioControlState {
         self.tx_sequence = 0;
         self.tx_max = 1;
         self.requested_ioctl_id = 0;
+        self.dhcp_transaction_id = DHCP_INITIAL_TRANSACTION_ID;
     }
 
     fn available_tx_credits(&self) -> u8 {
@@ -1087,6 +1119,14 @@ impl WifiSdioControlState {
             self.requested_ioctl_id = 1;
         }
         self.requested_ioctl_id
+    }
+
+    fn allocate_dhcp_transaction_id(&mut self) -> u32 {
+        self.dhcp_transaction_id = self.dhcp_transaction_id.wrapping_add(1);
+        if self.dhcp_transaction_id == 0 {
+            self.dhcp_transaction_id = DHCP_INITIAL_TRANSACTION_ID;
+        }
+        self.dhcp_transaction_id
     }
 
     fn update_credit(&mut self, bus_data_credit: u8) {
@@ -1345,6 +1385,56 @@ pub struct WifiSdioF2ControlReport {
     pub host_normal_int: u16,
     pub host_error_int: u16,
     pub write_last_error: Option<CommandError>,
+    pub host: WifiSdioHostSnapshot,
+}
+
+pub struct WifiSdioDataTxReport {
+    pub status: WifiSdioF2ControlStatus,
+    pub initial_tx_credit: u8,
+    pub ethernet_length: u16,
+    pub packet_length: u16,
+    pub sdpcm_channel: u8,
+    pub sdpcm_data_offset: u8,
+    pub bcdc_flags: u8,
+    pub bcdc_priority: u8,
+    pub bcdc_flags2: u8,
+    pub bcdc_data_offset: u8,
+    pub write_response: u32,
+    pub host_normal_int: u16,
+    pub host_error_int: u16,
+    pub write_last_error: Option<CommandError>,
+    pub host: WifiSdioHostSnapshot,
+}
+
+pub struct WifiSdioDhcpDiscoverReport {
+    pub status: WifiSdioDhcpDiscoverStatus,
+    pub step: &'static [u8],
+    pub ht_status: WifiSdioHtRequestStatus,
+    pub ht_attempts: u16,
+    pub ht_write_response: u32,
+    pub ht_read_value: u8,
+    pub ht_read_response: u32,
+    pub ht_available: bool,
+    pub mac_status: WifiSdioLinkGetStatus,
+    pub mac_hash: u32,
+    pub mac_nonzero: bool,
+    pub mac_cdc_status: u32,
+    pub mac_cdc_length: u32,
+    pub skipped_frames: u8,
+    pub transaction_id: u32,
+    pub ethernet_length: u16,
+    pub ethernet_hash: u32,
+    pub ip_total_length: u16,
+    pub udp_length: u16,
+    pub dhcp_payload_length: u16,
+    pub send_status: WifiSdioF2ControlStatus,
+    pub send_initial_tx_credit: u8,
+    pub send_packet_length: u16,
+    pub send_write_response: u32,
+    pub ht_last_error: Option<CommandError>,
+    pub send_last_error: Option<CommandError>,
+    pub host_normal_int: u16,
+    pub host_error_int: u16,
     pub host: WifiSdioHostSnapshot,
 }
 
@@ -5250,6 +5340,131 @@ fn send_control_ioctl(
     }
 }
 
+fn send_data_packet(
+    p: &Peripherals,
+    state: &mut WifiSdioControlState,
+    ethernet_frame: &[u8],
+) -> WifiSdioDataTxReport {
+    let packet_length = SDPCM_HEADER_BYTES as usize + BDC_HEADER_BYTES + ethernet_frame.len();
+    if packet_length > SDIO_CMD53_MAX_CONTROL_PACKET_BYTES {
+        return f2_data_tx_report(
+            p,
+            WifiSdioF2ControlStatus::PacketTooLarge,
+            state.available_tx_credits(),
+            ethernet_frame.len() as u16,
+            packet_length as u16,
+            0,
+            None,
+        );
+    }
+
+    let (sequence, initial_tx_credit) = match state.allocate_tx_sequence() {
+        Some(allocation) => allocation,
+        None => {
+            return f2_data_tx_report(
+                p,
+                WifiSdioF2ControlStatus::NoTxCredit,
+                0,
+                ethernet_frame.len() as u16,
+                packet_length as u16,
+                0,
+                None,
+            )
+        }
+    };
+    let plan = match sdio_write_plan(packet_length as u16) {
+        Some(plan) => plan,
+        None => {
+            return f2_data_tx_report(
+                p,
+                WifiSdioF2ControlStatus::PacketTooLarge,
+                initial_tx_credit,
+                ethernet_frame.len() as u16,
+                packet_length as u16,
+                0,
+                None,
+            )
+        }
+    };
+
+    let core = &p.SDHC0.core;
+    let descriptor_address = prepare_data_packet(
+        sequence,
+        ethernet_frame,
+        packet_length as u16,
+        plan.transfer_bytes,
+    );
+    if !configure_cmd53_write_adma_transfer(
+        core,
+        plan.block_size,
+        plan.block_count,
+        descriptor_address,
+    ) {
+        return f2_data_tx_report(
+            p,
+            WifiSdioF2ControlStatus::DataSetupBusy,
+            initial_tx_credit,
+            ethernet_frame.len() as u16,
+            packet_length as u16,
+            0,
+            None,
+        );
+    }
+
+    let argument = cmd53_argument(
+        true,
+        SDIO_WLAN_FUNCTION,
+        plan.block_mode,
+        true,
+        0,
+        plan.command_count,
+    );
+    let write_response = match send_command(
+        core,
+        Command {
+            index: 53,
+            argument,
+            response: ResponseType::Len48,
+            command_type: CommandType::Normal,
+            data_present: true,
+            crc_check: true,
+            index_check: true,
+        },
+    ) {
+        Ok(response) => response,
+        Err(error) => {
+            return f2_data_tx_report(
+                p,
+                WifiSdioF2ControlStatus::Cmd53Failed,
+                initial_tx_credit,
+                ethernet_frame.len() as u16,
+                packet_length as u16,
+                0,
+                Some(error),
+            )
+        }
+    };
+
+    let status = match wait_cmd53_adma_write_complete(core) {
+        Ok(()) => WifiSdioF2ControlStatus::Ready,
+        Err(WifiSdioBackplaneWrite32Status::TransferTimeout) => {
+            WifiSdioF2ControlStatus::TransferTimeout
+        }
+        Err(WifiSdioBackplaneWrite32Status::DataLineBusy) => WifiSdioF2ControlStatus::DataLineBusy,
+        Err(_) => WifiSdioF2ControlStatus::Cmd53Failed,
+    };
+
+    f2_data_tx_report(
+        p,
+        status,
+        initial_tx_credit,
+        ethernet_frame.len() as u16,
+        packet_length as u16,
+        write_response,
+        None,
+    )
+}
+
 pub fn wlc_up(p: &Peripherals, state: &mut WifiSdioControlState) -> WifiSdioWlcUpReport {
     let mut report = empty_wlc_up_report(p);
 
@@ -5530,6 +5745,80 @@ pub fn link_status(p: &Peripherals, state: &mut WifiSdioControlState) -> WifiSdi
     report.status = WifiSdioLinkGetStatus::Ready;
     report.step = b"done";
     finish_link_status_report(p, report)
+}
+
+pub fn dhcp_discover(
+    p: &Peripherals,
+    state: &mut WifiSdioControlState,
+) -> WifiSdioDhcpDiscoverReport {
+    let mut report = empty_dhcp_discover_report(p);
+
+    report.step = b"ht";
+    let ht = request_ht(p);
+    report.ht_status = ht.status;
+    report.ht_attempts = ht.attempts;
+    report.ht_write_response = ht.write_response;
+    report.ht_read_value = ht.read_value;
+    report.ht_read_response = ht.read_response;
+    report.ht_available = ht.ht_available;
+    report.ht_last_error = ht.last_error;
+    if !matches!(ht.status, WifiSdioHtRequestStatus::Ready) {
+        report.status = WifiSdioDhcpDiscoverStatus::HtRequestFailed;
+        return finish_dhcp_discover_report(p, report);
+    }
+
+    report.step = b"mac";
+    let mut mac_payload = [0u8; CUR_ETHERADDR_PAYLOAD_BYTES];
+    copy_bytes_to_slice(CUR_ETHERADDR_IOVAR_NAME, &mut mac_payload, 0);
+    let mac = link_control_get_payload(
+        p,
+        state,
+        WLC_GET_VAR_IOCTL,
+        &mac_payload,
+        ETHERNET_ADDRESS_BYTES,
+    );
+    report.mac_status = mac.status;
+    report.mac_cdc_status = mac.cdc_status;
+    report.mac_cdc_length = mac.cdc_length;
+    report.skipped_frames = mac.skipped_frames;
+    if !matches!(mac.status, WifiSdioLinkGetStatus::Ready) {
+        report.status = WifiSdioDhcpDiscoverStatus::MacReadFailed;
+        return finish_dhcp_discover_report(p, report);
+    }
+    report.mac_hash = checksum_bytes(&mac.bytes[..ETHERNET_ADDRESS_BYTES]);
+    report.mac_nonzero = !slice_all_eq(&mac.bytes[..ETHERNET_ADDRESS_BYTES], 0);
+    if !report.mac_nonzero {
+        report.status = WifiSdioDhcpDiscoverStatus::MacMissing;
+        return finish_dhcp_discover_report(p, report);
+    }
+
+    let mut mac_bytes = [0u8; ETHERNET_ADDRESS_BYTES];
+    copy_bytes_to_slice(&mac.bytes[..ETHERNET_ADDRESS_BYTES], &mut mac_bytes, 0);
+    let transaction_id = state.allocate_dhcp_transaction_id();
+    let mut ethernet_frame = [0u8; DHCP_ETHERNET_FRAME_BYTES];
+    build_dhcp_discover_frame(&mut ethernet_frame, &mac_bytes, transaction_id);
+    report.transaction_id = transaction_id;
+    report.ethernet_length = DHCP_ETHERNET_FRAME_BYTES as u16;
+    report.ethernet_hash = checksum_bytes(&ethernet_frame);
+    report.ip_total_length = (IPV4_HEADER_BYTES + UDP_HEADER_BYTES + DHCP_UDP_PAYLOAD_BYTES) as u16;
+    report.udp_length = (UDP_HEADER_BYTES + DHCP_UDP_PAYLOAD_BYTES) as u16;
+    report.dhcp_payload_length = DHCP_UDP_PAYLOAD_BYTES as u16;
+
+    report.step = b"send";
+    let send = send_data_packet(p, state, &ethernet_frame);
+    report.send_status = send.status;
+    report.send_initial_tx_credit = send.initial_tx_credit;
+    report.send_packet_length = send.packet_length;
+    report.send_write_response = send.write_response;
+    report.send_last_error = send.write_last_error;
+    if !matches!(send.status, WifiSdioF2ControlStatus::Ready) {
+        report.status = WifiSdioDhcpDiscoverStatus::SendFailed;
+        return finish_dhcp_discover_report(p, report);
+    }
+
+    report.status = WifiSdioDhcpDiscoverStatus::Ready;
+    report.step = b"done";
+    finish_dhcp_discover_report(p, report)
 }
 
 struct LinkControlGet {
@@ -7617,6 +7906,93 @@ fn copy_bytes_to_slice(source: &[u8], destination: &mut [u8], offset: usize) {
         destination[offset + index] = source[index];
         index += 1;
     }
+}
+
+fn build_dhcp_discover_frame(
+    frame: &mut [u8; DHCP_ETHERNET_FRAME_BYTES],
+    mac: &[u8; ETHERNET_ADDRESS_BYTES],
+    transaction_id: u32,
+) {
+    clear_bytes(frame);
+
+    copy_bytes_to_slice(&ETHERNET_BROADCAST, frame, 0);
+    copy_bytes_to_slice(mac, frame, ETHERNET_ADDRESS_BYTES);
+    write_slice_be_u16(frame, 12, IPV4_ETHERTYPE);
+
+    let ip_offset = ETHERNET_HEADER_BYTES;
+    let ip_total_length = (IPV4_HEADER_BYTES + UDP_HEADER_BYTES + DHCP_UDP_PAYLOAD_BYTES) as u16;
+    frame[ip_offset] = 0x45;
+    frame[ip_offset + 1] = 0;
+    write_slice_be_u16(frame, ip_offset + 2, ip_total_length);
+    write_slice_be_u16(frame, ip_offset + 4, DHCP_IP_IDENTIFICATION);
+    write_slice_be_u16(frame, ip_offset + 6, 0);
+    frame[ip_offset + 8] = 64;
+    frame[ip_offset + 9] = 17;
+    write_slice_be_u16(frame, ip_offset + 10, 0);
+    copy_bytes_to_slice(&[0, 0, 0, 0], frame, ip_offset + 12);
+    copy_bytes_to_slice(&[255, 255, 255, 255], frame, ip_offset + 16);
+    let ip_checksum = ipv4_header_checksum(&frame[ip_offset..ip_offset + IPV4_HEADER_BYTES]);
+    write_slice_be_u16(frame, ip_offset + 10, ip_checksum);
+
+    let udp_offset = ip_offset + IPV4_HEADER_BYTES;
+    let udp_length = (UDP_HEADER_BYTES + DHCP_UDP_PAYLOAD_BYTES) as u16;
+    write_slice_be_u16(frame, udp_offset, DHCP_CLIENT_PORT);
+    write_slice_be_u16(frame, udp_offset + 2, DHCP_SERVER_PORT);
+    write_slice_be_u16(frame, udp_offset + 4, udp_length);
+    write_slice_be_u16(frame, udp_offset + 6, 0);
+
+    let dhcp_offset = udp_offset + UDP_HEADER_BYTES;
+    frame[dhcp_offset] = DHCP_BOOTREQUEST;
+    frame[dhcp_offset + 1] = DHCP_HTYPE_ETHERNET;
+    frame[dhcp_offset + 2] = ETHERNET_ADDRESS_BYTES as u8;
+    frame[dhcp_offset + 3] = 0;
+    write_slice_be_u32(frame, dhcp_offset + 4, transaction_id);
+    write_slice_be_u16(frame, dhcp_offset + 8, 0);
+    write_slice_be_u16(frame, dhcp_offset + 10, 0x8000);
+    copy_bytes_to_slice(mac, frame, dhcp_offset + 28);
+
+    let mut option_offset = dhcp_offset + DHCP_OPTIONS_OFFSET;
+    copy_bytes_to_slice(&DHCP_MAGIC_COOKIE, frame, option_offset);
+    option_offset += DHCP_MAGIC_COOKIE.len();
+
+    frame[option_offset] = 53;
+    frame[option_offset + 1] = 1;
+    frame[option_offset + 2] = DHCP_DISCOVER_MESSAGE_TYPE;
+    option_offset += 3;
+
+    frame[option_offset] = 61;
+    frame[option_offset + 1] = 7;
+    frame[option_offset + 2] = DHCP_HTYPE_ETHERNET;
+    copy_bytes_to_slice(mac, frame, option_offset + 3);
+    option_offset += 9;
+
+    frame[option_offset] = 55;
+    frame[option_offset + 1] = 6;
+    copy_bytes_to_slice(&[1, 3, 6, 15, 51, 54], frame, option_offset + 2);
+    option_offset += 8;
+
+    frame[option_offset] = 57;
+    frame[option_offset + 1] = 2;
+    write_slice_be_u16(frame, option_offset + 2, 1500);
+    option_offset += 4;
+
+    frame[option_offset] = 255;
+}
+
+fn ipv4_header_checksum(header: &[u8]) -> u16 {
+    let mut sum = 0u32;
+    let mut index = 0usize;
+    while index + 1 < header.len() {
+        sum = sum.wrapping_add(((header[index] as u32) << 8) | header[index + 1] as u32);
+        index += 2;
+    }
+    if index < header.len() {
+        sum = sum.wrapping_add((header[index] as u32) << 8);
+    }
+    while (sum >> 16) != 0 {
+        sum = (sum & 0xffff) + (sum >> 16);
+    }
+    !(sum as u16)
 }
 
 fn country_payload(country_code: [u8; 2], revision: i32) -> [u8; COUNTRY_PAYLOAD_BYTES] {
@@ -10752,6 +11128,48 @@ fn prepare_control_ioctl_packet(
     }
 }
 
+fn prepare_data_packet(
+    sequence: u8,
+    ethernet_frame: &[u8],
+    packet_length: u16,
+    transfer_bytes: u16,
+) -> u32 {
+    let descriptor = ADMA_ATTR_VALID
+        | ADMA_ATTR_END
+        | ADMA_ACT_TRAN
+        | ((transfer_bytes as u32) << ADMA_LEN_SHIFT);
+
+    unsafe {
+        let bytes = core::ptr::addr_of_mut!(CMD53_WRITE_CONTROL_PACKET_WORDS) as *mut u8;
+        zero_control_packet_bytes(bytes, transfer_bytes as usize);
+        write_packet_le_u16(bytes, 0, packet_length);
+        write_packet_le_u16(bytes, 2, !packet_length);
+        write_packet_byte(bytes, 4, sequence);
+        write_packet_byte(bytes, 5, SDPCM_DATA_CHANNEL);
+        write_packet_byte(bytes, 7, SDPCM_HEADER_BYTES);
+
+        let bcdc_offset = SDPCM_HEADER_BYTES as usize;
+        write_packet_byte(bytes, bcdc_offset, BCDC_PROTO_VER << BCDC_FLAG_VER_SHIFT);
+        write_packet_byte(bytes, bcdc_offset + 1, 0);
+        write_packet_byte(bytes, bcdc_offset + 2, 0);
+        write_packet_byte(bytes, bcdc_offset + 3, 0);
+
+        let frame_offset = bcdc_offset + BDC_HEADER_BYTES;
+        let mut index = 0usize;
+        while index < ethernet_frame.len() {
+            write_packet_byte(bytes, frame_offset + index, ethernet_frame[index]);
+            index += 1;
+        }
+
+        let descriptor_table = core::ptr::addr_of_mut!(CMD53_WRITE_ADMA_DESCRIPTOR) as *mut u32;
+        core::ptr::write_volatile(descriptor_table, descriptor);
+        core::ptr::write_volatile(descriptor_table.add(1), bytes as u32);
+        cortex_m::asm::dsb();
+
+        descriptor_table as u32
+    }
+}
+
 unsafe fn zero_control_packet_bytes(bytes: *mut u8, count: usize) {
     let mut index = 0usize;
     while index < count {
@@ -10798,6 +11216,18 @@ fn write_slice_le_u32(bytes: &mut [u8], offset: usize, value: u32) {
     bytes[offset + 1] = (value >> 8) as u8;
     bytes[offset + 2] = (value >> 16) as u8;
     bytes[offset + 3] = (value >> 24) as u8;
+}
+
+fn write_slice_be_u16(bytes: &mut [u8], offset: usize, value: u16) {
+    bytes[offset] = (value >> 8) as u8;
+    bytes[offset + 1] = value as u8;
+}
+
+fn write_slice_be_u32(bytes: &mut [u8], offset: usize, value: u32) {
+    bytes[offset] = (value >> 24) as u8;
+    bytes[offset + 1] = (value >> 16) as u8;
+    bytes[offset + 2] = (value >> 8) as u8;
+    bytes[offset + 3] = value as u8;
 }
 
 fn read_le_u32(bytes: &[u8; SDIO_CMD53_PREVIEW_BYTES], offset: usize) -> u32 {
@@ -10902,6 +11332,35 @@ fn f2_control_report(
         status,
         initial_tx_credit,
         packet_length,
+        write_response,
+        host_normal_int: core.normal_int_stat_r.read().bits(),
+        host_error_int: core.error_int_stat_r.read().bits(),
+        write_last_error,
+        host: host_snapshot(p),
+    }
+}
+
+fn f2_data_tx_report(
+    p: &Peripherals,
+    status: WifiSdioF2ControlStatus,
+    initial_tx_credit: u8,
+    ethernet_length: u16,
+    packet_length: u16,
+    write_response: u32,
+    write_last_error: Option<CommandError>,
+) -> WifiSdioDataTxReport {
+    let core = &p.SDHC0.core;
+    WifiSdioDataTxReport {
+        status,
+        initial_tx_credit,
+        ethernet_length,
+        packet_length,
+        sdpcm_channel: SDPCM_DATA_CHANNEL,
+        sdpcm_data_offset: SDPCM_HEADER_BYTES,
+        bcdc_flags: BCDC_PROTO_VER << BCDC_FLAG_VER_SHIFT,
+        bcdc_priority: 0,
+        bcdc_flags2: 0,
+        bcdc_data_offset: 0,
         write_response,
         host_normal_int: core.normal_int_stat_r.read().bits(),
         host_error_int: core.error_int_stat_r.read().bits(),
@@ -11069,6 +11528,51 @@ fn finish_link_status_report(
     p: &Peripherals,
     mut report: WifiSdioLinkStatusReport,
 ) -> WifiSdioLinkStatusReport {
+    let core = &p.SDHC0.core;
+    report.host_normal_int = core.normal_int_stat_r.read().bits();
+    report.host_error_int = core.error_int_stat_r.read().bits();
+    report.host = host_snapshot(p);
+    report
+}
+
+fn empty_dhcp_discover_report(p: &Peripherals) -> WifiSdioDhcpDiscoverReport {
+    WifiSdioDhcpDiscoverReport {
+        status: WifiSdioDhcpDiscoverStatus::SendFailed,
+        step: b"start",
+        ht_status: WifiSdioHtRequestStatus::Timeout,
+        ht_attempts: 0,
+        ht_write_response: 0,
+        ht_read_value: 0,
+        ht_read_response: 0,
+        ht_available: false,
+        mac_status: WifiSdioLinkGetStatus::NotRun,
+        mac_hash: 0,
+        mac_nonzero: false,
+        mac_cdc_status: 0,
+        mac_cdc_length: 0,
+        skipped_frames: 0,
+        transaction_id: 0,
+        ethernet_length: 0,
+        ethernet_hash: 0,
+        ip_total_length: 0,
+        udp_length: 0,
+        dhcp_payload_length: 0,
+        send_status: WifiSdioF2ControlStatus::NotRun,
+        send_initial_tx_credit: 0,
+        send_packet_length: 0,
+        send_write_response: 0,
+        ht_last_error: None,
+        send_last_error: None,
+        host_normal_int: 0,
+        host_error_int: 0,
+        host: host_snapshot(p),
+    }
+}
+
+fn finish_dhcp_discover_report(
+    p: &Peripherals,
+    mut report: WifiSdioDhcpDiscoverReport,
+) -> WifiSdioDhcpDiscoverReport {
     let core = &p.SDHC0.core;
     report.host_normal_int = core.normal_int_stat_r.read().bits();
     report.host_error_int = core.error_int_stat_r.read().bits();

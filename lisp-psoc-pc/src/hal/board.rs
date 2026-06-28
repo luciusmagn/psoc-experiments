@@ -547,6 +547,13 @@ impl lisp::Board for PsocBoard<'_> {
         ))
     }
 
+    fn wifi_dhcp_discover(&mut self) -> lisp::WifiSdioDhcpDiscoverReport {
+        wifi_sdio_dhcp_discover_report(wifi_sdio::dhcp_discover(
+            self.p,
+            &mut self.state.wifi_control_state,
+        ))
+    }
+
     fn wifi_load_clm(&mut self) -> lisp::WifiSdioClmLoadReport {
         wifi_sdio_clm_load_report(wifi_sdio::load_clm(
             self.p,
@@ -1228,6 +1235,16 @@ fn wifi_sdio_link_get_status(status: wifi_sdio::WifiSdioLinkGetStatus) -> &'stat
     }
 }
 
+fn wifi_sdio_dhcp_discover_status(status: wifi_sdio::WifiSdioDhcpDiscoverStatus) -> &'static [u8] {
+    match status {
+        wifi_sdio::WifiSdioDhcpDiscoverStatus::Ready => b"ready",
+        wifi_sdio::WifiSdioDhcpDiscoverStatus::HtRequestFailed => b"ht-request-failed",
+        wifi_sdio::WifiSdioDhcpDiscoverStatus::MacReadFailed => b"mac-read-failed",
+        wifi_sdio::WifiSdioDhcpDiscoverStatus::MacMissing => b"mac-missing",
+        wifi_sdio::WifiSdioDhcpDiscoverStatus::SendFailed => b"send-failed",
+    }
+}
+
 fn wifi_sdio_clm_load_status(status: wifi_sdio::WifiSdioClmLoadStatus) -> &'static [u8] {
     match status {
         wifi_sdio::WifiSdioClmLoadStatus::Ready => b"ready",
@@ -1877,6 +1894,41 @@ fn wifi_sdio_link_status_report(
         bssid_cdc_length: report.bssid_cdc_length,
         rssi_cdc_length: report.rssi_cdc_length,
         skipped_frames: report.skipped_frames,
+        host_normal_int: report.host_normal_int,
+        host_error_int: report.host_error_int,
+    }
+}
+
+fn wifi_sdio_dhcp_discover_report(
+    report: wifi_sdio::WifiSdioDhcpDiscoverReport,
+) -> lisp::WifiSdioDhcpDiscoverReport {
+    lisp::WifiSdioDhcpDiscoverReport {
+        status: wifi_sdio_dhcp_discover_status(report.status),
+        step: report.step,
+        ht_status: wifi_sdio_ht_request_status(report.ht_status),
+        ht_attempts: report.ht_attempts,
+        ht_write_response: report.ht_write_response,
+        ht_read_value: report.ht_read_value,
+        ht_read_response: report.ht_read_response,
+        ht_available: report.ht_available,
+        mac_status: wifi_sdio_link_get_status(report.mac_status),
+        mac_hash: report.mac_hash,
+        mac_present: report.mac_nonzero,
+        mac_cdc_status: report.mac_cdc_status,
+        mac_cdc_length: report.mac_cdc_length,
+        skipped_frames: report.skipped_frames,
+        transaction_id: report.transaction_id,
+        ethernet_length: report.ethernet_length,
+        ethernet_hash: report.ethernet_hash,
+        ip_total_length: report.ip_total_length,
+        udp_length: report.udp_length,
+        dhcp_payload_length: report.dhcp_payload_length,
+        send_status: wifi_sdio_f2_control_status(report.send_status),
+        send_initial_tx_credit: report.send_initial_tx_credit,
+        send_packet_length: report.send_packet_length,
+        send_write_response: report.send_write_response,
+        ht_last_error: report.ht_last_error.map(wifi_sdio_command_error_report),
+        send_last_error: report.send_last_error.map(wifi_sdio_command_error_report),
         host_normal_int: report.host_normal_int,
         host_error_int: report.host_error_int,
     }
