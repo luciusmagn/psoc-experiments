@@ -26,7 +26,8 @@
 (define (parse args build-args flash-args)
   (cond
     ((null? args) (values (reverse build-args) (reverse flash-args)))
-    ((string=? (car args) "--wifi-firmware")
+    ((or (string=? (car args) "--wifi-firmware")
+         (string=? (car args) "--wifi-credentials"))
      (parse (cdr args) (cons (car args) build-args) flash-args))
     (else
      (parse (cdr args) build-args (cons (car args) flash-args)))))
@@ -39,7 +40,7 @@
 
 (let ((args (command-line-tail)))
   (when (and (pair? args) (string=? (car args) "--help"))
-    (say "usage: tools/build-flash-lisp.scm [--wifi-firmware] [flash-lisp arguments]")
+    (say "usage: tools/build-flash-lisp.scm [--wifi-firmware] [--wifi-credentials] [flash-lisp arguments]")
     (say "")
     (say "Builds lisp-psoc-pc, packs the bootloader, then flashes it.")
     (exit 0))

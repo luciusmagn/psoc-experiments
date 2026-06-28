@@ -1,8 +1,10 @@
 use core::fmt::{self, Write};
 
+use crate::wifi_credentials;
+
 const MAX_OBJECTS: usize = 448;
 const MAX_SYMBOLS: usize = 512;
-const MAX_GLOBALS: usize = 112;
+const MAX_GLOBALS: usize = 128;
 const MAX_SYMBOL_BYTES: usize = 32;
 pub const MAX_STRING_BYTES: usize = 96;
 pub const MAX_STORE_FILES: usize = 5;
@@ -205,6 +207,24 @@ fn append_string_byte(target: &mut StringBytes, byte: u8) -> LispResult<()> {
     target.bytes[index] = byte;
     target.len += 1;
     Ok(())
+}
+
+fn string_bytes_from_slice(bytes: &[u8], empty_message: &'static str) -> LispResult<StringBytes> {
+    if bytes.is_empty() {
+        return Err(Error::new(empty_message));
+    }
+    if bytes.len() > MAX_STRING_BYTES {
+        return Err(Error::new("string too long"));
+    }
+
+    let mut value = EMPTY_STRING_BYTES;
+    let mut index = 0usize;
+    while index < bytes.len() {
+        value.bytes[index] = bytes[index];
+        index += 1;
+    }
+    value.len = bytes.len() as u8;
+    Ok(value)
 }
 
 #[derive(Clone, Copy)]
@@ -1481,6 +1501,7 @@ pub enum Primitive {
     WifiPrepareJoin,
     WifiJoinWpa2,
     WifiConnectWpa2,
+    WifiConnectLocal,
     WifiSsid,
     WifiPassphrase,
     WifiSsidClear,
@@ -1589,6 +1610,7 @@ impl Primitive {
             Self::WifiPrepareJoin => "wifi-prepare-join",
             Self::WifiJoinWpa2 => "wifi-join-wpa2",
             Self::WifiConnectWpa2 => "wifi-connect-wpa2",
+            Self::WifiConnectLocal => "wifi-connect-local",
             Self::WifiSsid => "wifi-ssid",
             Self::WifiPassphrase => "wifi-passphrase",
             Self::WifiSsidClear => "wifi-ssid-clear",
@@ -1871,6 +1893,7 @@ impl Machine {
         self.install_primitive(b"wifi-prepare-join", Primitive::WifiPrepareJoin)?;
         self.install_primitive(b"wifi-join-wpa2", Primitive::WifiJoinWpa2)?;
         self.install_primitive(b"wifi-connect-wpa2", Primitive::WifiConnectWpa2)?;
+        self.install_primitive(b"wifi-connect-local", Primitive::WifiConnectLocal)?;
         self.install_primitive(b"wifi-ssid", Primitive::WifiSsid)?;
         self.install_primitive(b"wifi-passphrase", Primitive::WifiPassphrase)?;
         self.install_primitive(b"wifi-ssid-clear", Primitive::WifiSsidClear)?;
@@ -2800,6 +2823,23 @@ impl Machine {
                     self.wifi_sdio_join_report(board.wifi_join_wpa2(ssid, passphrase))
                 }
             }
+            Primitive::WifiConnectLocal => {
+                self.expect_count(args, 0)?;
+                let ssid = string_bytes_from_slice(
+                    wifi_credentials::local_ssid(),
+                    "local wifi ssid missing",
+                )?;
+                let passphrase = string_bytes_from_slice(
+                    wifi_credentials::local_passphrase(),
+                    "local wifi passphrase missing",
+                )?;
+                let prepare = board.wifi_prepare_join();
+                if !status_ready(prepare.status) {
+                    self.wifi_prepare_join_report(prepare)
+                } else {
+                    self.wifi_sdio_join_report(board.wifi_join_wpa2(ssid, passphrase))
+                }
+            }
             Primitive::WifiSsid => {
                 self.expect_count(args, 1)?;
                 let ssid = self.expect_string(args[0])?;
@@ -3310,7 +3350,17 @@ impl Machine {
             b"wifi-disable-tx-glomming",
             b"wifi-enable-network-events",
             b"wifi-start-scan",
+            b"wifi-prepare-join",
             b"wifi-join-wpa2",
+            b"wifi-connect-wpa2",
+            b"wifi-connect-local",
+            b"wifi-ssid",
+            b"wifi-passphrase",
+            b"wifi-ssid-clear",
+            b"wifi-ssid-byte",
+            b"wifi-pass-clear",
+            b"wifi-pass-byte",
+            b"wifi-connect",
             b"wifi-drain-scan-events",
             b"wifi-get-clm-version",
             b"wifi-f2-read-frame-abort",

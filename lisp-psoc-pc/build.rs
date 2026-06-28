@@ -11,7 +11,7 @@
 //! The build script also sets the linker flags to tell it which link script to use.
 
 use std::env;
-use std::fs::File;
+use std::fs::{self, File};
 use std::io::Write;
 use std::path::{Path, PathBuf};
 
@@ -38,6 +38,8 @@ fn main() {
     println!("cargo:rerun-if-changed=memory-bootloader.x");
     println!("cargo:rerun-if-changed=../.local/wifi/resources/4343WA1.bin");
     println!("cargo:rerun-if-changed=../.local/wifi/resources/wifi_nvram.bin");
+    println!("cargo:rerun-if-changed=../.local/wifi/credentials/ssid.bin");
+    println!("cargo:rerun-if-changed=../.local/wifi/credentials/passphrase.bin");
 
     if env::var("CARGO_FEATURE_WIFI_FIRMWARE_BLOB").is_ok() {
         let firmware = Path::new("../.local/wifi/resources/4343WA1.bin");
@@ -49,6 +51,12 @@ fn main() {
             panic!("missing CYW4343W NVRAM; run tools/prepare-wifi-resources.scm");
         }
     }
+    if env::var("CARGO_FEATURE_WIFI_LOCAL_CREDENTIALS").is_ok() {
+        let ssid = Path::new("../.local/wifi/credentials/ssid.bin");
+        let passphrase = Path::new("../.local/wifi/credentials/passphrase.bin");
+        validate_credential_file(ssid, 1, 32, "local Wi-Fi SSID");
+        validate_credential_file(passphrase, 8, 63, "local Wi-Fi passphrase");
+    }
 
     // Specify linker arguments.
 
@@ -59,4 +67,16 @@ fn main() {
 
     // Set the linker script to the one provided by cortex-m-rt.
     println!("cargo:rustc-link-arg=-Tlink.x");
+}
+
+fn validate_credential_file(path: &Path, min_len: usize, max_len: usize, label: &str) {
+    let bytes = fs::read(path).unwrap_or_else(|_| {
+        panic!(
+            "missing {}; run tools/prepare-wifi-credential-blobs.scm",
+            label
+        )
+    });
+    if bytes.len() < min_len || bytes.len() > max_len {
+        panic!("{} length is outside the supported range", label);
+    }
 }

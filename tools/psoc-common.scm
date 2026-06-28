@@ -1,6 +1,8 @@
 (define tool-versions
   '("3.8" "3.7" "3.6" "3.5" "3.4" "3.3" "3.2" "3.1"))
 
+(define psoc-serial-baud "115200")
+
 (define (say text)
   (display text)
   (newline))
@@ -121,7 +123,9 @@
   (run (string-append
         "stty -F "
         (shell-quote device)
-        " 115200 cs8 -cstopb -parenb -ixon -ixoff -crtscts -hupcl clocal raw -echo -echoe -echok -echoctl -echoke -icanon min 1 time 0")))
+        " "
+        psoc-serial-baud
+        " cs8 -cstopb -parenb -ixon -ixoff -crtscts -hupcl clocal raw -echo -echoe -echok -echoctl -echoke -icanon min 1 time 0")))
 
 (define (capture-first-line command)
   (ensure-local-dir)

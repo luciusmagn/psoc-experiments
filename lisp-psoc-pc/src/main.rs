@@ -12,9 +12,11 @@ mod hal;
 mod lisp;
 mod lisp_fat;
 mod lisp_store;
+mod wifi_credentials;
 mod wifi_resources;
 
 const SYSCLK_HZ: u32 = 50_000_000;
+const CONSOLE_POLL_DELAY_US: u32 = 50;
 
 #[entry]
 fn main() -> ! {
@@ -57,6 +59,7 @@ fn main() -> ! {
 
     let mut line = [0u8; 384];
     let mut line_len = 0usize;
+    let mut tick_accumulated_us = 0u32;
 
     loop {
         while let Some(byte) = console.read_byte() {
@@ -112,8 +115,12 @@ fn main() -> ! {
             }
         }
 
-        delay.delay_ms(1);
-        board_state.tick_ms(&p);
+        delay.delay_us(CONSOLE_POLL_DELAY_US);
+        tick_accumulated_us += CONSOLE_POLL_DELAY_US;
+        while tick_accumulated_us >= 1000 {
+            tick_accumulated_us -= 1000;
+            board_state.tick_ms(&p);
+        }
     }
 }
 

@@ -50,6 +50,20 @@ bits when they are present. `(wifi-interrupt-state)`, `(wifi-keep-awake)`,
 CCCR interrupt state, WHD KSO wake, PSoC SDHC line reset, and WHD read-abort
 behavior after the startup frame.
 
+To include ignored local Wi-Fi credentials in the CM4 image for association
+tests, prepare the credential blobs and build with the opt-in credentials
+feature:
+
+```sh
+tools/prepare-wifi-credential-blobs.scm
+tools/build-lisp.scm --wifi-firmware --wifi-credentials
+tools/flash-lisp.scm
+```
+
+`(wifi-connect-local)` then runs the same prepare-and-join path as
+`(wifi-connect-wpa2 ...)` without sending the SSID or passphrase over the serial
+console. The credential blob script prints paths and byte lengths only.
+
 To keep the large vendor tools out of git, install ModusToolbox into the
 ignored `.local/ModusToolbox` directory:
 
@@ -75,12 +89,16 @@ tools/prepare-wifi-credentials.scm
 tools/prepare-wifi-credentials.scm --all
 tools/prepare-wifi-credentials.scm --check
 tools/prepare-wifi-credentials.scm --check --all
+tools/prepare-wifi-credential-blobs.scm
+tools/prepare-wifi-credential-blobs.scm --check
 ```
 
 The script writes `.local/wifi/selected.env` with mode `600`. With `--all`, it
 also writes numbered env files under `.local/wifi/profiles/`. It reports only
 paths, counts, and field lengths, never credential values or SSIDs. Use `--ssid`
-or `--profile` to choose a specific non-enterprise profile.
+or `--profile` to choose a specific non-enterprise profile. The credential blob
+script converts `.local/wifi/selected.env` into ignored binary files under
+`.local/wifi/credentials/` for `--wifi-credentials` builds.
 
 Prepare local CYW4343W firmware, CLM, and NVRAM resources before building Wi-Fi
 firmware-loader work:

@@ -4519,6 +4519,78 @@ reader or leave it in continuation state. A full byte-staged credential send
 did not produce a join report before the board was reset. This points at
 console transport/repl input robustness rather than the Wi-Fi setup sequence.
 
+* 2026-06-28 Console poll cadence and rejected lower baud
+
+The earlier RX drain improvement was not sufficient. A flashed test still showed
+occasional bad bytes in the boot banner itself and longer one-shot forms could
+leave the REPL at a continuation prompt. That means the problem is below the
+Lisp reader and at least partly in the UART transport.
+
+Firmware change kept:
+
+- REPL idle polling now sleeps for =50 us= instead of =1 ms= and advances
+  =board_state.tick_ms= through a millisecond accumulator, preserving the board
+  time base while checking the SCB5 RX FIFO more often.
+
+A =57600 8N1= test image was also tried with SCB divider =71= and matching
+host-side =stty=. It made the boot banner visibly worse than =115200 8N1= and
+was reverted. Keep the console at =115200 8N1= until the actual transport
+fault is found.
+
+Validation before flashing:
+
+#+begin_example
+cargo fmt --check
+tools/build-lisp.scm --wifi-firmware
+tools/flash-lisp.scm
+#+end_example
+
+* 2026-06-28 Local credential Wi-Fi connect
+
+The UART remains unreliable for repeated credential-bearing forms, so Wi-Fi join
+testing now has an opt-in local credential path:
+
+#+begin_example
+tools/prepare-wifi-credential-blobs.scm
+tools/build-lisp.scm --wifi-firmware --wifi-credentials
+tools/flash-lisp.scm
+#+end_example
+
+This writes ignored binary blobs under =.local/wifi/credentials/= and embeds
+them only when =wifi-local-credentials= is enabled. The new Lisp form is
+=(wifi-connect-local)=. It runs =wifi-prepare-join= followed by the same WPA2
+join path as =(wifi-connect-wpa2 ...)=, but it does not require the host to send
+SSID or passphrase bytes over UART. The default build still contains no
+credentials.
+
+Live test result after flashing a =--wifi-firmware --wifi-credentials= image:
+
+#+begin_example
+(console-echo off)
+=> #f
+
+(wifi-connect-local)
+=> ((status . ready)
+    (step . join-events)
+    (ssid.length . #x0000000c)
+    (passphrase.length . #x00000008)
+    (optional-cdc.errors . #x00000000)
+    (send.status . ready)
+    (response.status . ready)
+    (frames.read . #x00000007)
+    (non-event.frames . #x00000001)
+    (events.seen . #x00000007)
+    (join.flags . #x0000041e)
+    (last.event.type . #x00000000)
+    (last.event.status . #x00000000)
+    (last.event.reason . #x00000000)
+    (ack.status . ready))
+#+end_example
+
+The printed report still has occasional UART character damage in long SDHC
+diagnostic sections, but the status fields above were readable and indicate a
+successful credentialed association path.
+
 * Next actions
 
 1. Watch for any remaining UART corruption during longer Wi-Fi association
@@ -4529,7 +4601,9 @@ console transport/repl input robustness rather than the Wi-Fi setup sequence.
    for obsolete =target/psoc6_2m.cfg=.
 5. Fix UART/REPL input reliability for credential-bearing forms, or add a
    non-console credential injection path for Wi-Fi connect tests.
-6. Re-run =(wifi-connect)= once credentials can be staged reliably.
+6. Add the next high-level network primitive after association, probably DHCP
+   or a small status form that reports link/IP state without dumping firmware
+   internals.
 7. Add generic CDC ioctl/iovar helpers for firmware version and join.
 8. Start Wi-Fi from a known-good Infineon or Zephyr sample before trying
    to hand-port the full CYW4343W network stack.

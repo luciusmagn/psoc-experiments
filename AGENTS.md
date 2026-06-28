@@ -94,6 +94,11 @@ Treat hardware writes as externally visible side effects.
   numbered env files under `.local/wifi/profiles/` for every non-enterprise
   PSK profile with a stored secret. Its output must stay limited to
   counts/paths/field lengths rather than SSIDs or secret values.
+- Use `tools/prepare-wifi-credential-blobs.scm` to convert
+  `.local/wifi/selected.env` into ignored byte blobs under
+  `.local/wifi/credentials/` for `--wifi-credentials` builds. Its output must
+  stay limited to counts/paths/field lengths rather than SSIDs or secret
+  values.
 - Use `tools/prepare-wifi-resources.scm` for local CYW4343W firmware, CLM,
   and NVRAM extraction. It writes `.local/wifi/resources/`, including a
   generated local MAC address, and its output must stay limited to
@@ -142,6 +147,12 @@ Use `tools/build-lisp.scm --wifi-firmware` or
 firmware blob should be embedded in the CM4 image for `(wifi-load-firmware)`.
 The default build keeps the blob out of the image and returns `blob-missing`
 from that form.
+
+Use `tools/build-lisp.scm --wifi-firmware --wifi-credentials` or
+`tools/build-flash-lisp.scm --wifi-firmware --wifi-credentials` only when the
+ignored local SSID/passphrase blobs should be embedded in the CM4 image for
+`(wifi-connect-local)`. Never commit the generated blobs or credential-bearing
+firmware artifacts.
 
 The scripts keep vendor downloads and generated local state under `.local/`
 and discover Infineon OpenOCD from `OPENOCD_ROOT`,

@@ -11,34 +11,51 @@
        (else (loop (- index 1)))))))
 
 (define (usage)
-  (say "usage: tools/build-lisp.scm [--wifi-firmware]")
+  (say "usage: tools/build-lisp.scm [--wifi-firmware] [--wifi-credentials]")
   (say "")
   (say "Builds the CM4 Lisp firmware, packs it into the CM0+ bootloader,")
   (say "and rebuilds the bootloader image.")
   (say "")
-  (say "--wifi-firmware includes local firmware, NVRAM, and CLM resources in the CM4 image."))
+  (say "--wifi-firmware includes local firmware, NVRAM, and CLM resources in the CM4 image.")
+  (say "--wifi-credentials includes ignored local SSID/passphrase blobs in the CM4 image."))
 
-(define (parse args wifi-firmware?)
+(define (parse args wifi-firmware? wifi-credentials?)
   (cond
-    ((null? args) wifi-firmware?)
+    ((null? args) (values wifi-firmware? wifi-credentials?))
     ((string=? (car args) "--help")
      (usage)
      (exit 0))
     ((string=? (car args) "--wifi-firmware")
-     (parse (cdr args) #t))
+     (parse (cdr args) #t wifi-credentials?))
+    ((string=? (car args) "--wifi-credentials")
+     (parse (cdr args) wifi-firmware? #t))
     (else
      (die (string-append "unknown argument: " (car args))))))
 
-(define wifi-firmware? (parse (command-line-tail) #f))
-(define features
-  (if wifi-firmware?
-      "use-bootloader,wifi-firmware-blob"
-      "use-bootloader"))
+(define (join-with-comma items)
+  (let loop ((items items) (out ""))
+    (cond
+      ((null? items) out)
+      ((string=? out "") (loop (cdr items) (car items)))
+      (else (loop (cdr items) (string-append out "," (car items)))))))
+
+(define (feature-list wifi-firmware? wifi-credentials?)
+  (join-with-comma
+   (append
+    '("use-bootloader")
+    (if wifi-firmware? '("wifi-firmware-blob") '())
+    (if wifi-credentials? '("wifi-local-credentials") '()))))
+
+(define-values (wifi-firmware? wifi-credentials?)
+  (parse (command-line-tail) #f #f))
+(define features (feature-list wifi-firmware? wifi-credentials?))
 
 (when wifi-firmware?
   (run (string-append
         (shell-quote (repo-path "tools/prepare-wifi-resources.scm"))
         " --check")))
+(when wifi-credentials?
+  (run (shell-quote (repo-path "tools/prepare-wifi-credential-blobs.scm"))))
 
 (run-in (repo-path "lisp-psoc-pc")
         (string-append
