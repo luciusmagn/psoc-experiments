@@ -17,6 +17,12 @@ mod wifi_resources;
 
 const SYSCLK_HZ: u32 = 50_000_000;
 const CONSOLE_POLL_DELAY_US: u32 = 50;
+#[cfg(feature = "wifi-boot-smoke")]
+const WIFI_BOOT_SMOKE_FORMS: [&[u8]; 3] = [
+    b"(console-echo off)",
+    b"(wifi-connect-local)",
+    b"(wifi-link-status)",
+];
 
 #[entry]
 fn main() -> ! {
@@ -53,6 +59,11 @@ fn main() -> ! {
     {
         let mut board = board_state.lisp_board(&p);
         load_boot_file(&mut machine, &mut board, &mut console).ok();
+    }
+    #[cfg(feature = "wifi-boot-smoke")]
+    {
+        let mut board = board_state.lisp_board(&p);
+        run_wifi_boot_smoke(&mut machine, &mut board, &mut console).ok();
     }
     writeln!(console, "Try: (help), (ls), (cat \"boot.lisp\"), (+ 1 2 3)").ok();
     console.prompt();
@@ -122,6 +133,22 @@ fn main() -> ! {
             board_state.tick_ms(&p);
         }
     }
+}
+
+#[cfg(feature = "wifi-boot-smoke")]
+fn run_wifi_boot_smoke<B: lisp::Board, W: Write>(
+    machine: &mut lisp::Machine,
+    board: &mut B,
+    output: &mut W,
+) -> fmt::Result {
+    writeln!(output, "wifi boot smoke: start")?;
+    for form in WIFI_BOOT_SMOKE_FORMS {
+        write!(output, "boot> ")?;
+        write_ascii(form, output)?;
+        writeln!(output)?;
+        machine.eval_line(form, board, output)?;
+    }
+    writeln!(output, "wifi boot smoke: done")
 }
 
 fn load_boot_file<B: lisp::Board, W: Write>(

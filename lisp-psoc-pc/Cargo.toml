@@ -16,6 +16,7 @@ embedded-sdmmc = {version = "0.9.0", default-features = false}
 use-bootloader = []
 wifi-firmware-blob = []
 wifi-local-credentials = []
+wifi-boot-smoke = []
 
 [profile.release]
 lto = true

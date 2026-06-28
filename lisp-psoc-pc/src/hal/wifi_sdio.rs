@@ -65,6 +65,7 @@ const CDC_IOCTL_ID_SHIFT: u8 = 16;
 const WHD_IOCTL_MAX_TX_PACKET_BYTES: usize = 1500;
 const SCAN_EVENT_DRAIN_FRAMES: u8 = 32;
 const BDC_HEADER_BYTES: usize = 4;
+const ETHERNET_ADDRESS_BYTES: usize = 6;
 const ETHERNET_HEADER_BYTES: usize = 14;
 const BRCM_ETHERTYPE: u16 = 0x886c;
 const BRCM_OUI: [u8; 3] = [0x00, 0x10, 0x18];
@@ -76,9 +77,11 @@ const WHD_EVENT_FIXED_BYTES: usize = WHD_EVENT_DATA_OFFSET;
 const WL_ESCAN_RESULT_FIXED_BYTES: usize = 12;
 const WLC_UP_IOCTL: u32 = 2;
 const WLC_GET_VERSION_IOCTL: u32 = 1;
+const WLC_GET_BSSID_IOCTL: u32 = 23;
 const WLC_SET_INFRA_IOCTL: u32 = 20;
 const WLC_SET_AUTH_IOCTL: u32 = 22;
 const WLC_SET_SSID_IOCTL: u32 = 26;
+const WLC_GET_RSSI_IOCTL: u32 = 127;
 const WLC_SET_WSEC_IOCTL: u32 = 134;
 const WLC_SET_WPA_AUTH_IOCTL: u32 = 165;
 const WLC_GET_VAR_IOCTL: u32 = 262;
@@ -103,6 +106,8 @@ const COUNTRY_IOVAR_NAME: &[u8; 8] = b"country\0";
 const COUNTRY_FIELD_BYTES: usize = 4;
 const COUNTRY_STRUCT_BYTES: usize = 12;
 const COUNTRY_PAYLOAD_BYTES: usize = COUNTRY_IOVAR_NAME.len() + COUNTRY_STRUCT_BYTES;
+const CUR_ETHERADDR_IOVAR_NAME: &[u8; 14] = b"cur_etheraddr\0";
+const CUR_ETHERADDR_PAYLOAD_BYTES: usize = CUR_ETHERADDR_IOVAR_NAME.len() + ETHERNET_ADDRESS_BYTES;
 const TX_GLOMMING_IOVAR_NAME: &[u8; 11] = b"bus:txglom\0";
 const TX_GLOMMING_PAYLOAD_BYTES: usize = TX_GLOMMING_IOVAR_NAME.len() + 4;
 const ROAM_OFF_IOVAR_NAME: &[u8; 9] = b"roam_off\0";
@@ -444,6 +449,17 @@ pub enum WifiSdioGetVersionStatus {
 
 #[derive(Clone, Copy)]
 pub enum WifiSdioGetMpcStatus {
+    Ready,
+    HtRequestFailed,
+    SendFailed,
+    ResponseFrameFailed,
+    UnexpectedResponseFrame,
+    CdcStatusError,
+}
+
+#[derive(Clone, Copy)]
+pub enum WifiSdioLinkGetStatus {
+    NotRun,
     Ready,
     HtRequestFailed,
     SendFailed,
@@ -1421,6 +1437,29 @@ pub struct WifiSdioGetMpcReport {
     pub ht_last_error: Option<CommandError>,
     pub send_last_error: Option<CommandError>,
     pub response_last_error: Option<CommandError>,
+    pub host_normal_int: u16,
+    pub host_error_int: u16,
+    pub host: WifiSdioHostSnapshot,
+}
+
+pub struct WifiSdioLinkStatusReport {
+    pub status: WifiSdioLinkGetStatus,
+    pub step: &'static [u8],
+    pub mac_status: WifiSdioLinkGetStatus,
+    pub bssid_status: WifiSdioLinkGetStatus,
+    pub rssi_status: WifiSdioLinkGetStatus,
+    pub mac_hash: u32,
+    pub mac_nonzero: bool,
+    pub bssid_hash: u32,
+    pub bssid_nonzero: bool,
+    pub rssi: i32,
+    pub mac_cdc_status: u32,
+    pub bssid_cdc_status: u32,
+    pub rssi_cdc_status: u32,
+    pub mac_cdc_length: u32,
+    pub bssid_cdc_length: u32,
+    pub rssi_cdc_length: u32,
+    pub skipped_frames: u8,
     pub host_normal_int: u16,
     pub host_error_int: u16,
     pub host: WifiSdioHostSnapshot,
@@ -5424,6 +5463,142 @@ pub fn get_mpc(p: &Peripherals, state: &mut WifiSdioControlState) -> WifiSdioGet
     }
 
     finish_get_mpc_report(p, report)
+}
+
+pub fn link_status(p: &Peripherals, state: &mut WifiSdioControlState) -> WifiSdioLinkStatusReport {
+    let mut report = empty_link_status_report(p);
+
+    let ht = request_ht(p);
+    if !matches!(ht.status, WifiSdioHtRequestStatus::Ready) {
+        report.status = WifiSdioLinkGetStatus::HtRequestFailed;
+        return finish_link_status_report(p, report);
+    }
+
+    report.step = b"mac";
+    let mut mac_payload = [0u8; CUR_ETHERADDR_PAYLOAD_BYTES];
+    copy_bytes_to_slice(CUR_ETHERADDR_IOVAR_NAME, &mut mac_payload, 0);
+    let mac = link_control_get_payload(
+        p,
+        state,
+        WLC_GET_VAR_IOCTL,
+        &mac_payload,
+        ETHERNET_ADDRESS_BYTES,
+    );
+    report.mac_status = mac.status;
+    report.mac_cdc_status = mac.cdc_status;
+    report.mac_cdc_length = mac.cdc_length;
+    report.skipped_frames = report.skipped_frames.saturating_add(mac.skipped_frames);
+    if !matches!(mac.status, WifiSdioLinkGetStatus::Ready) {
+        report.status = mac.status;
+        return finish_link_status_report(p, report);
+    }
+    report.mac_hash = checksum_bytes(&mac.bytes[..ETHERNET_ADDRESS_BYTES]);
+    report.mac_nonzero = !slice_all_eq(&mac.bytes[..ETHERNET_ADDRESS_BYTES], 0);
+
+    report.step = b"bssid";
+    let bssid_payload = [0u8; ETHERNET_ADDRESS_BYTES];
+    let bssid = link_control_get_payload(
+        p,
+        state,
+        WLC_GET_BSSID_IOCTL,
+        &bssid_payload,
+        ETHERNET_ADDRESS_BYTES,
+    );
+    report.bssid_status = bssid.status;
+    report.bssid_cdc_status = bssid.cdc_status;
+    report.bssid_cdc_length = bssid.cdc_length;
+    report.skipped_frames = report.skipped_frames.saturating_add(bssid.skipped_frames);
+    if !matches!(bssid.status, WifiSdioLinkGetStatus::Ready) {
+        report.status = bssid.status;
+        return finish_link_status_report(p, report);
+    }
+    report.bssid_hash = checksum_bytes(&bssid.bytes[..ETHERNET_ADDRESS_BYTES]);
+    report.bssid_nonzero = !slice_all_eq(&bssid.bytes[..ETHERNET_ADDRESS_BYTES], 0);
+
+    report.step = b"rssi";
+    let rssi_payload = [0u8; 4];
+    let rssi = link_control_get_payload(p, state, WLC_GET_RSSI_IOCTL, &rssi_payload, 4);
+    report.rssi_status = rssi.status;
+    report.rssi_cdc_status = rssi.cdc_status;
+    report.rssi_cdc_length = rssi.cdc_length;
+    report.skipped_frames = report.skipped_frames.saturating_add(rssi.skipped_frames);
+    if !matches!(rssi.status, WifiSdioLinkGetStatus::Ready) {
+        report.status = rssi.status;
+        return finish_link_status_report(p, report);
+    }
+    report.rssi = read_small_le_u32(&rssi.bytes, 0) as i32;
+    report.status = WifiSdioLinkGetStatus::Ready;
+    report.step = b"done";
+    finish_link_status_report(p, report)
+}
+
+struct LinkControlGet {
+    status: WifiSdioLinkGetStatus,
+    cdc_status: u32,
+    cdc_length: u32,
+    skipped_frames: u8,
+    bytes: [u8; 8],
+}
+
+fn link_control_get_payload(
+    p: &Peripherals,
+    state: &mut WifiSdioControlState,
+    command: u32,
+    payload: &[u8],
+    output_bytes: usize,
+) -> LinkControlGet {
+    let mut get = LinkControlGet {
+        status: WifiSdioLinkGetStatus::SendFailed,
+        cdc_status: 0,
+        cdc_length: 0,
+        skipped_frames: 0,
+        bytes: [0; 8],
+    };
+
+    let send = send_control_ioctl(p, state, command, 0, payload);
+    let expected_ioctl_id = send.ioctl_id;
+    if !matches!(send.report.status, WifiSdioF2ControlStatus::Ready) {
+        return get;
+    }
+
+    let (response, _, skipped_frames) = read_join_control_response(p, state);
+    get.skipped_frames = skipped_frames;
+    if !matches!(response.status, WifiSdioF2FrameStatus::Ready) {
+        get.status = WifiSdioLinkGetStatus::ResponseFrameFailed;
+        return get;
+    }
+    state.update_credit(response.bus_data_credit);
+    if !response.valid
+        || response.length
+            < (SDPCM_HEADER_BYTES as u16 + CDC_HEADER_BYTES as u16 + output_bytes as u16)
+        || response.header_length != SDPCM_HEADER_BYTES
+        || response.channel != SDPCM_CONTROL_CHANNEL
+    {
+        get.status = WifiSdioLinkGetStatus::UnexpectedResponseFrame;
+        return get;
+    }
+
+    let cdc_command = read_le_u32(&response.bytes, 12);
+    get.cdc_length = read_le_u32(&response.bytes, 16);
+    let cdc_flags = read_le_u32(&response.bytes, 20);
+    let cdc_id = (cdc_flags >> CDC_IOCTL_ID_SHIFT) as u16;
+    get.cdc_status = read_le_u32(&response.bytes, 24);
+    if cdc_command != command || cdc_id != expected_ioctl_id {
+        get.status = WifiSdioLinkGetStatus::UnexpectedResponseFrame;
+        return get;
+    }
+    if get.cdc_status != 0 {
+        get.status = WifiSdioLinkGetStatus::CdcStatusError;
+        return get;
+    }
+
+    let mut index = 0usize;
+    while index < output_bytes && index < get.bytes.len() {
+        get.bytes[index] = response.bytes[28 + index];
+        index += 1;
+    }
+    get.status = WifiSdioLinkGetStatus::Ready;
+    get
 }
 
 pub fn load_clm(
@@ -10632,6 +10807,13 @@ fn read_le_u32(bytes: &[u8; SDIO_CMD53_PREVIEW_BYTES], offset: usize) -> u32 {
         | ((bytes[offset + 3] as u32) << 24)
 }
 
+fn read_small_le_u32(bytes: &[u8; 8], offset: usize) -> u32 {
+    (bytes[offset] as u32)
+        | ((bytes[offset + 1] as u32) << 8)
+        | ((bytes[offset + 2] as u32) << 16)
+        | ((bytes[offset + 3] as u32) << 24)
+}
+
 fn bytes_to_words(bytes: &[u8; SDIO_CMD53_BLOCK_BYTES as usize]) -> [u32; SDIO_CMD53_BLOCK_WORDS] {
     let mut words = [0u32; SDIO_CMD53_BLOCK_WORDS];
     let mut index = 0usize;
@@ -10851,6 +11033,42 @@ fn finish_get_mpc_report(
     p: &Peripherals,
     mut report: WifiSdioGetMpcReport,
 ) -> WifiSdioGetMpcReport {
+    let core = &p.SDHC0.core;
+    report.host_normal_int = core.normal_int_stat_r.read().bits();
+    report.host_error_int = core.error_int_stat_r.read().bits();
+    report.host = host_snapshot(p);
+    report
+}
+
+fn empty_link_status_report(p: &Peripherals) -> WifiSdioLinkStatusReport {
+    WifiSdioLinkStatusReport {
+        status: WifiSdioLinkGetStatus::NotRun,
+        step: b"start",
+        mac_status: WifiSdioLinkGetStatus::NotRun,
+        bssid_status: WifiSdioLinkGetStatus::NotRun,
+        rssi_status: WifiSdioLinkGetStatus::NotRun,
+        mac_hash: 0,
+        mac_nonzero: false,
+        bssid_hash: 0,
+        bssid_nonzero: false,
+        rssi: 0,
+        mac_cdc_status: 0,
+        bssid_cdc_status: 0,
+        rssi_cdc_status: 0,
+        mac_cdc_length: 0,
+        bssid_cdc_length: 0,
+        rssi_cdc_length: 0,
+        skipped_frames: 0,
+        host_normal_int: 0,
+        host_error_int: 0,
+        host: host_snapshot(p),
+    }
+}
+
+fn finish_link_status_report(
+    p: &Peripherals,
+    mut report: WifiSdioLinkStatusReport,
+) -> WifiSdioLinkStatusReport {
     let core = &p.SDHC0.core;
     report.host_normal_int = core.normal_int_stat_r.read().bits();
     report.host_error_int = core.error_int_stat_r.read().bits();

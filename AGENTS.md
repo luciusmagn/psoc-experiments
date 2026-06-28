@@ -154,6 +154,12 @@ ignored local SSID/passphrase blobs should be embedded in the CM4 image for
 `(wifi-connect-local)`. Never commit the generated blobs or credential-bearing
 firmware artifacts.
 
+Use `tools/build-lisp.scm --wifi-boot-smoke` or
+`tools/build-flash-lisp.scm --wifi-boot-smoke` only for unattended Wi-Fi
+association smoke tests while UART RX is unreliable. It implies the Wi-Fi
+firmware and local credential features, then runs `(console-echo off)`,
+`(wifi-connect-local)`, and `(wifi-link-status)` at boot.
+
 The scripts keep vendor downloads and generated local state under `.local/`
 and discover Infineon OpenOCD from `OPENOCD_ROOT`,
 `MODUSTOOLBOX_OPENOCD_ROOT`, `MODUSTOOLBOX_ROOT`,

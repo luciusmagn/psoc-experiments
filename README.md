@@ -63,6 +63,20 @@ tools/flash-lisp.scm
 `(wifi-connect-local)` then runs the same prepare-and-join path as
 `(wifi-connect-wpa2 ...)` without sending the SSID or passphrase over the serial
 console. The credential blob script prints paths and byte lengths only.
+`(wifi-link-status)` reports the current link through sanitized MAC/BSSID
+presence fields, short fingerprints, RSSI, and CDC status values.
+
+For unattended Wi-Fi association and link-status smoke testing on the flaky
+UART RX path:
+
+```sh
+tools/build-lisp.scm --wifi-boot-smoke
+tools/flash-lisp.scm
+```
+
+`--wifi-boot-smoke` implies the firmware and credential build features and runs
+`(console-echo off)`, `(wifi-connect-local)`, and `(wifi-link-status)` at boot.
+Do not use it for normal quiet images.
 
 To keep the large vendor tools out of git, install ModusToolbox into the
 ignored `.local/ModusToolbox` directory:

@@ -4,7 +4,7 @@ use crate::wifi_credentials;
 
 const MAX_OBJECTS: usize = 448;
 const MAX_SYMBOLS: usize = 512;
-const MAX_GLOBALS: usize = 128;
+const MAX_GLOBALS: usize = 144;
 const MAX_SYMBOL_BYTES: usize = 32;
 pub const MAX_STRING_BYTES: usize = 96;
 pub const MAX_STORE_FILES: usize = 5;
@@ -116,6 +116,7 @@ pub trait Board {
     fn wifi_wlc_up(&mut self) -> WifiSdioWlcUpReport;
     fn wifi_get_version(&mut self) -> WifiSdioGetVersionReport;
     fn wifi_get_mpc(&mut self) -> WifiSdioGetMpcReport;
+    fn wifi_link_status(&mut self) -> WifiSdioLinkStatusReport;
     fn wifi_load_clm(&mut self) -> WifiSdioClmLoadReport;
     fn wifi_get_country(&mut self) -> WifiSdioCountryReport;
     fn wifi_set_country(&mut self, country_code: [u8; 2], revision: i32) -> WifiSdioCountryReport;
@@ -864,6 +865,29 @@ pub struct WifiSdioGetMpcReport {
 }
 
 #[derive(Clone, Copy)]
+pub struct WifiSdioLinkStatusReport {
+    pub status: &'static [u8],
+    pub step: &'static [u8],
+    pub mac_status: &'static [u8],
+    pub bssid_status: &'static [u8],
+    pub rssi_status: &'static [u8],
+    pub mac_hash: u32,
+    pub mac_present: bool,
+    pub bssid_hash: u32,
+    pub bssid_present: bool,
+    pub rssi: i32,
+    pub mac_cdc_status: u32,
+    pub bssid_cdc_status: u32,
+    pub rssi_cdc_status: u32,
+    pub mac_cdc_length: u32,
+    pub bssid_cdc_length: u32,
+    pub rssi_cdc_length: u32,
+    pub skipped_frames: u8,
+    pub host_normal_int: u16,
+    pub host_error_int: u16,
+}
+
+#[derive(Clone, Copy)]
 pub struct WifiSdioClmLoadReport {
     pub status: &'static [u8],
     pub ht_status: &'static [u8],
@@ -1492,6 +1516,7 @@ pub enum Primitive {
     WifiWlcUp,
     WifiGetVersion,
     WifiGetMpc,
+    WifiLinkStatus,
     WifiLoadClm,
     WifiGetCountry,
     WifiSetCountry,
@@ -1601,6 +1626,7 @@ impl Primitive {
             Self::WifiWlcUp => "wifi-wlc-up",
             Self::WifiGetVersion => "wifi-get-version",
             Self::WifiGetMpc => "wifi-get-mpc",
+            Self::WifiLinkStatus => "wifi-link-status",
             Self::WifiLoadClm => "wifi-load-clm",
             Self::WifiGetCountry => "wifi-get-country",
             Self::WifiSetCountry => "wifi-set-country",
@@ -1878,6 +1904,7 @@ impl Machine {
         self.install_primitive(b"wifi-wlc-up", Primitive::WifiWlcUp)?;
         self.install_primitive(b"wifi-get-version", Primitive::WifiGetVersion)?;
         self.install_primitive(b"wifi-get-mpc", Primitive::WifiGetMpc)?;
+        self.install_primitive(b"wifi-link-status", Primitive::WifiLinkStatus)?;
         self.install_primitive(b"wifi-load-clm", Primitive::WifiLoadClm)?;
         self.install_primitive(b"wifi-get-country", Primitive::WifiGetCountry)?;
         self.install_primitive(b"wifi-set-country", Primitive::WifiSetCountry)?;
@@ -2776,6 +2803,10 @@ impl Machine {
                 self.expect_count(args, 0)?;
                 self.wifi_sdio_get_mpc_report(board.wifi_get_mpc())
             }
+            Primitive::WifiLinkStatus => {
+                self.expect_count(args, 0)?;
+                self.wifi_sdio_link_status_report(board.wifi_link_status())
+            }
             Primitive::WifiLoadClm => {
                 self.expect_count(args, 0)?;
                 self.wifi_sdio_clm_load_report(board.wifi_load_clm())
@@ -3344,6 +3375,7 @@ impl Machine {
             b"wifi-wlc-up",
             b"wifi-get-version",
             b"wifi-get-mpc",
+            b"wifi-link-status",
             b"wifi-load-clm",
             b"wifi-get-country",
             b"wifi-set-country",
@@ -4522,6 +4554,53 @@ impl Machine {
             send_last_error,
             response_last_error,
             host,
+        ];
+        self.make_list_from_values(&entries)
+    }
+
+    fn wifi_sdio_link_status_report(
+        &mut self,
+        report: WifiSdioLinkStatusReport,
+    ) -> LispResult<Value> {
+        let status = self.symbol_entry(b"status", report.status)?;
+        let step = self.symbol_entry(b"step", report.step)?;
+        let mac_status = self.symbol_entry(b"mac.status", report.mac_status)?;
+        let mac_present = self.bool_entry(b"mac.present", report.mac_present)?;
+        let mac_hash = self.word_entry(b"mac.hash", report.mac_hash)?;
+        let bssid_status = self.symbol_entry(b"bssid.status", report.bssid_status)?;
+        let bssid_present = self.bool_entry(b"bssid.present", report.bssid_present)?;
+        let bssid_hash = self.word_entry(b"bssid.hash", report.bssid_hash)?;
+        let rssi_status = self.symbol_entry(b"rssi.status", report.rssi_status)?;
+        let rssi = self.int_entry(b"rssi.dbm", report.rssi)?;
+        let mac_cdc_status = self.word_entry(b"mac.cdc.status", report.mac_cdc_status)?;
+        let bssid_cdc_status = self.word_entry(b"bssid.cdc.status", report.bssid_cdc_status)?;
+        let rssi_cdc_status = self.word_entry(b"rssi.cdc.status", report.rssi_cdc_status)?;
+        let mac_cdc_length = self.word_entry(b"mac.cdc.length", report.mac_cdc_length)?;
+        let bssid_cdc_length = self.word_entry(b"bssid.cdc.length", report.bssid_cdc_length)?;
+        let rssi_cdc_length = self.word_entry(b"rssi.cdc.length", report.rssi_cdc_length)?;
+        let skipped_frames = self.word_entry(b"skipped.frames", report.skipped_frames as u32)?;
+        let host_normal_int = self.word_entry(b"HOST.NORM_INT", report.host_normal_int as u32)?;
+        let host_error_int = self.word_entry(b"HOST.ERR_INT", report.host_error_int as u32)?;
+        let entries = [
+            status,
+            step,
+            mac_status,
+            mac_present,
+            mac_hash,
+            bssid_status,
+            bssid_present,
+            bssid_hash,
+            rssi_status,
+            rssi,
+            mac_cdc_status,
+            bssid_cdc_status,
+            rssi_cdc_status,
+            mac_cdc_length,
+            bssid_cdc_length,
+            rssi_cdc_length,
+            skipped_frames,
+            host_normal_int,
+            host_error_int,
         ];
         self.make_list_from_values(&entries)
     }

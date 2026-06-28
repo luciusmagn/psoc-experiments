@@ -540,6 +540,13 @@ impl lisp::Board for PsocBoard<'_> {
         ))
     }
 
+    fn wifi_link_status(&mut self) -> lisp::WifiSdioLinkStatusReport {
+        wifi_sdio_link_status_report(wifi_sdio::link_status(
+            self.p,
+            &mut self.state.wifi_control_state,
+        ))
+    }
+
     fn wifi_load_clm(&mut self) -> lisp::WifiSdioClmLoadReport {
         wifi_sdio_clm_load_report(wifi_sdio::load_clm(
             self.p,
@@ -1200,6 +1207,18 @@ fn wifi_sdio_get_mpc_status(status: wifi_sdio::WifiSdioGetMpcStatus) -> &'static
     }
 }
 
+fn wifi_sdio_link_get_status(status: wifi_sdio::WifiSdioLinkGetStatus) -> &'static [u8] {
+    match status {
+        wifi_sdio::WifiSdioLinkGetStatus::NotRun => b"not-run",
+        wifi_sdio::WifiSdioLinkGetStatus::Ready => b"ready",
+        wifi_sdio::WifiSdioLinkGetStatus::HtRequestFailed => b"ht-request-failed",
+        wifi_sdio::WifiSdioLinkGetStatus::SendFailed => b"send-failed",
+        wifi_sdio::WifiSdioLinkGetStatus::ResponseFrameFailed => b"response-frame-failed",
+        wifi_sdio::WifiSdioLinkGetStatus::UnexpectedResponseFrame => b"unexpected-response-frame",
+        wifi_sdio::WifiSdioLinkGetStatus::CdcStatusError => b"cdc-status-error",
+    }
+}
+
 fn wifi_sdio_clm_load_status(status: wifi_sdio::WifiSdioClmLoadStatus) -> &'static [u8] {
     match status {
         wifi_sdio::WifiSdioClmLoadStatus::Ready => b"ready",
@@ -1825,6 +1844,32 @@ fn wifi_sdio_get_mpc_report(report: wifi_sdio::WifiSdioGetMpcReport) -> lisp::Wi
         host_normal_int: report.host_normal_int,
         host_error_int: report.host_error_int,
         host: wifi_sdio_host_report(report.host),
+    }
+}
+
+fn wifi_sdio_link_status_report(
+    report: wifi_sdio::WifiSdioLinkStatusReport,
+) -> lisp::WifiSdioLinkStatusReport {
+    lisp::WifiSdioLinkStatusReport {
+        status: wifi_sdio_link_get_status(report.status),
+        step: report.step,
+        mac_status: wifi_sdio_link_get_status(report.mac_status),
+        bssid_status: wifi_sdio_link_get_status(report.bssid_status),
+        rssi_status: wifi_sdio_link_get_status(report.rssi_status),
+        mac_hash: report.mac_hash,
+        mac_present: report.mac_nonzero,
+        bssid_hash: report.bssid_hash,
+        bssid_present: report.bssid_nonzero,
+        rssi: report.rssi,
+        mac_cdc_status: report.mac_cdc_status,
+        bssid_cdc_status: report.bssid_cdc_status,
+        rssi_cdc_status: report.rssi_cdc_status,
+        mac_cdc_length: report.mac_cdc_length,
+        bssid_cdc_length: report.bssid_cdc_length,
+        rssi_cdc_length: report.rssi_cdc_length,
+        skipped_frames: report.skipped_frames,
+        host_normal_int: report.host_normal_int,
+        host_error_int: report.host_error_int,
     }
 }
 

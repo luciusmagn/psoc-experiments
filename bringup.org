@@ -4591,6 +4591,75 @@ The printed report still has occasional UART character damage in long SDHC
 diagnostic sections, but the status fields above were readable and indicate a
 successful credentialed association path.
 
+* 2026-06-28 Wi-Fi link status and boot smoke
+
+Added =(wifi-link-status)= as a compact post-association link report. It uses
+the WHD control path for =cur_etheraddr=, =WLC_GET_BSSID=, and =WLC_GET_RSSI=.
+The Lisp report does not print raw MAC or BSSID bytes; it reports presence,
+short fingerprints, RSSI, CDC status values, skipped frame count, and the host
+interrupt summary.
+
+The UART RX path is still unreliable even with a single raw host file
+descriptor. A direct =(millis)= send at =115200 8N1= reached the board as a
+damaged symbol in one live test. The previous =57600= test was worse, so the
+console stays at =115200= until the physical or clocking cause is found.
+
+To keep Wi-Fi bring-up moving without typing over the lossy UART RX path, added
+the opt-in =wifi-boot-smoke= feature and script flag:
+
+#+begin_example
+tools/build-lisp.scm --wifi-boot-smoke
+tools/flash-lisp.scm
+#+end_example
+
+The flag implies the local Wi-Fi firmware and local credential build features,
+then runs these Lisp forms at boot:
+
+#+begin_example
+(console-echo off)
+(wifi-connect-local)
+(wifi-link-status)
+#+end_example
+
+Live boot-smoke result after flashing the image:
+
+#+begin_example
+boot> (wifi-connect-local)
+=> ((status . ready)
+    (step . join-events)
+    (ssid.length . #x0000000c)
+    (passphrase.length . #x00000008)
+    (send.status . ready)
+    (response.status . ready)
+    (frames.read . #x00000007)
+    (non-event.frames . #x00000001)
+    (events.seen . #x00000007)
+    (join.flags . #x0000041e)
+    (ack.status . ready))
+
+boot> (wifi-link-status)
+=> ((status . ready)
+    (step . done)
+    (mac.status . ready)
+    (mac.present . #t)
+    (bssid.status . ready)
+    (bssid.present . #t)
+    (rssi.status . ready)
+    (rssi.dbm . -55)
+    (mac.cdc.status . #x00000000)
+    (bssid.cdc.status . #x00000000)
+    (rssi.cdc.status . #x00000000)
+    (mac.cdc.length . #x00000014)
+    (bssid.cdc.length . #x00000006)
+    (rssi.cdc.length . #x00000004)
+    (skipped.frames . #x00000000)
+    (HOST.NORM_INT . #x00000100)
+    (HOST.ERR_INT . #x00000000))
+#+end_example
+
+The serial log still shows occasional damaged characters during long output,
+but the link-status transaction itself completed and returned ready.
+
 * Next actions
 
 1. Watch for any remaining UART corruption during longer Wi-Fi association
@@ -4599,11 +4668,10 @@ successful credentialed association path.
 3. Add a FAT/exFAT-aware storage layer after raw block reads/writes work.
 4. Test the newer Infineon target =infineon/cy8cxxa.cfg= as a replacement
    for obsolete =target/psoc6_2m.cfg=.
-5. Fix UART/REPL input reliability for credential-bearing forms, or add a
-   non-console credential injection path for Wi-Fi connect tests.
-6. Add the next high-level network primitive after association, probably DHCP
-   or a small status form that reports link/IP state without dumping firmware
-   internals.
-7. Add generic CDC ioctl/iovar helpers for firmware version and join.
+5. Fix UART/REPL input reliability; boot smoke is only a workaround for
+   unattended Wi-Fi tests.
+6. Add the next high-level network primitive after association, probably DHCP.
+7. Add generic CDC ioctl/iovar helpers for firmware version, join, and link
+   status.
 8. Start Wi-Fi from a known-good Infineon or Zephyr sample before trying
    to hand-port the full CYW4343W network stack.
