@@ -88,7 +88,25 @@ logs.
 (wifi-net-repl-service on)
 (wifi-net-repl-service status)
 (http-get "http://example.com/")
+(spawn '(begin (sleep-ms 1000) (+ 40 2)))
+(processes)
+(kill #x00000001)
 #+end_src
+
+* Processes
+
+The current process runner is cooperative and top-level. It runs at most one
+top-level form from one ready process every 10 ms:
+
+#+begin_src scheme
+(spawn '(begin
+          (sleep-ms 1000)
+          (+ 40 2)))
+(processes)
+#+end_src
+
+Use =yield= or =sleep-ms= inside spawned code. A long-running single form or
+blocking primitive still blocks the firmware loop until it returns.
 
 * Boot File
 

@@ -3,7 +3,29 @@
 
 * Current State
 
-There are no Lisp-level processes, coroutines, or continuations yet.
+The firmware has a first cooperative Lisp process runner on CM4:
+
+#+begin_src scheme
+(spawn '(begin ...))
+(yield)
+(sleep-ms 100)
+(processes)
+(process-poll)
+(kill pid)
+#+end_src
+
+Processes are stored in a fixed-size runtime table. Each process owns a quoted
+top-level form or a quoted =begin= body. The firmware loop polls the table
+every 10 ms and runs at most one top-level form per poll. =(yield)= advances
+to the next top-level form without delay, and =(sleep-ms n)= parks the process
+until the board millisecond counter reaches the wake time.
+
+This is not a full continuation system yet. A single top-level Lisp form still
+uses the direct recursive evaluator until it returns, and blocking primitives
+such as FAT writes and Wi-Fi SDIO commands still block serial input and network
+REPL polling while that primitive is running. The process table is rooted for
+mark-sweep GC, so suspended process code, environments, and last values remain
+live across collections.
 
 The CM0+ image is a bootloader and handoff shim. The CM4 image owns the Lisp
 machine, UART console, FAT operations, Wi-Fi driver, and UDP network REPL.
@@ -11,10 +33,28 @@ The evaluator is direct recursive Rust code, so a primitive owns the firmware
 loop until it returns. Blocking primitives such as FAT writes and Wi-Fi SDIO
 commands therefore block serial input and network REPL polling.
 
-* Near-Term Architecture
+* Usage
 
-Use a cooperative scheduler in the CM4 Lisp runtime before attempting a
-dual-core split:
+Quote the program passed to =spawn= so it is stored as process code instead of
+being evaluated immediately:
+
+#+begin_src scheme
+(spawn '(begin
+          (sleep-ms 1000)
+          (+ 40 2)))
+(processes)
+(process-poll 1)
+(kill #x00000001)
+#+end_src
+
+The automatic poller normally advances ready processes without manual
+=(process-poll)=. Manual polling remains useful in a debugger session or in a
+future recovery image with the automatic poller disabled.
+
+* Remaining Architecture
+
+The first scheduler is deliberately above the evaluator. A later process model
+should replace direct recursive evaluation with explicit evaluator frames:
 
 #+begin_src scheme
 (spawn '(begin ...))
@@ -24,20 +64,18 @@ dual-core split:
 (kill pid)
 #+end_src
 
-The first implementation should model processes as explicit evaluator states,
-not host-style preemptive threads. Each runnable process gets a bounded number
-of evaluator steps, then yields to the firmware loop. Firmware services such as
-UART RX, network REPL polling, timers, and SD/Wi-Fi progress must get time
-between Lisp steps.
+Each runnable process should get a bounded number of evaluator frames, then
+yield to the firmware loop. Firmware services such as UART RX, network REPL
+polling, timers, and SD/Wi-Fi progress must get time between Lisp steps.
 
 * Required Runtime Changes
 
 1. Replace direct recursive evaluation with a resumable evaluator frame stack.
-2. Keep roots for every suspended process so mark-sweep GC sees live values.
-3. Represent sleep, I/O wait, completed value, and error as process states.
-4. Move long FAT and Wi-Fi operations behind request objects or incremental
+2. Add process-friendly I/O wait states beyond sleep, completed, error, and
+   killed.
+3. Move long FAT and Wi-Fi operations behind request objects or incremental
    poll functions before exposing them as process-friendly Lisp forms.
-5. Keep synchronous forms available for diagnostics, but document when they
+4. Keep synchronous forms available for diagnostics, but document when they
    block the firmware loop.
 
 * Dual-Core Direction

@@ -18,6 +18,7 @@ mod wifi_resources;
 const SYSCLK_HZ: u32 = 50_000_000;
 const CONSOLE_POLL_DELAY_US: u32 = 50;
 const WIFI_NET_REPL_SERVICE_INTERVAL_MS: u32 = 50;
+const PROCESS_SERVICE_INTERVAL_MS: u32 = 10;
 #[cfg(feature = "wifi-boot-smoke")]
 #[cfg(not(feature = "wifi-dhcp-boot-smoke"))]
 const WIFI_BOOT_SMOKE_FORMS: [&[u8]; 3] = [
@@ -122,6 +123,7 @@ fn main() -> ! {
     let mut line_len = 0usize;
     let mut tick_accumulated_us = 0u32;
     let mut net_repl_service_accumulated_ms = 0u32;
+    let mut process_service_accumulated_ms = 0u32;
 
     loop {
         while let Some(byte) = console.read_byte() {
@@ -183,6 +185,7 @@ fn main() -> ! {
             tick_accumulated_us -= 1000;
             board_state.tick_ms(&p);
             net_repl_service_accumulated_ms = net_repl_service_accumulated_ms.saturating_add(1);
+            process_service_accumulated_ms = process_service_accumulated_ms.saturating_add(1);
         }
 
         if machine.wifi_net_repl_service_enabled() {
@@ -195,6 +198,13 @@ fn main() -> ! {
             }
         } else {
             net_repl_service_accumulated_ms = 0;
+        }
+
+        if process_service_accumulated_ms >= PROCESS_SERVICE_INTERVAL_MS {
+            process_service_accumulated_ms = 0;
+            let now_ms = board_state.uptime_ms();
+            let mut board = board_state.lisp_board(&p);
+            machine.poll_background_processes(&mut board, &mut console, now_ms, 1);
         }
     }
 }

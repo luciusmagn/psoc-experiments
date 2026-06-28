@@ -79,6 +79,10 @@ impl State {
         }
     }
 
+    pub fn uptime_ms(&self) -> u32 {
+        self.uptime_ms
+    }
+
     pub fn lisp_board<'a>(&'a mut self, p: &'a Peripherals) -> PsocBoard<'a> {
         PsocBoard { p, state: self }
     }

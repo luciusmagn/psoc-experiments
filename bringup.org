@@ -5959,6 +5959,130 @@ service at the existing DHCP lease. A post-reboot read-only
 =(thermistor-status)= returned the expected =P10.x= thermistor routing on the
 normal image.
 
+* 2026-06-28 Cooperative process runner
+
+Added a first Lisp-level cooperative process runner:
+
+#+begin_src scheme
+(spawn '(begin ...))
+(yield)
+(sleep-ms 100)
+(processes)
+(process-poll)
+(kill pid)
+#+end_src
+
+The current scheduler is intentionally top-level. The firmware loop polls the
+process table every 10 ms and runs at most one top-level form from one ready
+process per poll. =(yield)= advances to the next top-level form, and
+=(sleep-ms n)= parks the process until the board millisecond counter reaches
+the wake time. A single long-running form still uses the direct recursive
+evaluator until it returns, so FAT and Wi-Fi primitives are still synchronous
+unless a later slice makes those operations incremental.
+
+The process table is rooted during mark-sweep GC. Suspended process code,
+cursor, environment, and last value are marked live so =(gc)= cannot free a
+sleeping process out from under the scheduler.
+
+Before flashing this slice, the then-current board image was dumped to an
+ignored local backup:
+
+#+begin_example
+backups/flash-10000000-40000-before-process-runner-local-20260628T203744Z.bin
+#+end_example
+
+The validated Wi-Fi service boot-smoke image was also dumped across a larger
+range because current Wi-Fi images are larger than the older 256 KiB backup
+range:
+
+#+begin_example
+backups/flash-10000000-c0000-process-runner-smoke-local-20260628T205302Z.bin
+#+end_example
+
+Restore command for that validated smoke image:
+
+#+begin_src sh
+/opt/ModusToolbox/tools_3.4/openocd/bin/openocd \
+  -s /opt/ModusToolbox/tools_3.4/openocd/scripts \
+  -f interface/cmsis-dap.cfg \
+  -f target/psoc6_2m.cfg \
+  -c "program backups/flash-10000000-c0000-process-runner-smoke-local-20260628T205302Z.bin 0x10000000 verify reset exit"
+#+end_src
+
+The normal =--wifi-firmware --wifi-credentials= build completed. During
+runtime validation the normal image did not answer UDP after one reset, and a
+debug halt found CM4 inside =micro_sd::identify_card= while loading the FAT
+=boot.lisp=. A =--skip-boot-file= image reached the serial prompt, but UART RX
+corruption changed short commands such as =(processes)= into misspelled input,
+so serial was not reliable enough for scheduler validation.
+
+The process runner was validated over the UDP network REPL using a
+=--wifi-net-repl-service-boot-smoke --skip-boot-file= image. The boot-smoke
+path brought Wi-Fi, DHCP, router ARP, DNS, and the background UDP service up
+without relying on FAT =boot.lisp= or UART input:
+
+#+begin_example
+tools/send-net-repl.scm --host 192.168.0.107 --sequence 501 \
+  --attempts 8 --wait 3 --payload-only --read-only \
+  '(wifi-net-repl-service status)'
+=> ((enabled . #t)
+    (poll-frames . #x00000001)
+    ...)
+#+end_example
+
+Runtime process checks:
+
+#+begin_example
+tools/send-net-repl.scm --host 192.168.0.107 --payload-only --read-only \
+  '(processes)'
+=> nil
+
+tools/send-net-repl.scm --host 192.168.0.107 --payload-only \
+  "(spawn '(begin (sleep-ms 1000) (+ 40 2)))"
+=> #x00000001
+
+tools/send-net-repl.scm --host 192.168.0.107 --payload-only --read-only \
+  '(processes)'
+=> (((pid . #x00000001)
+        (state . done)
+        (wake-ms . #x00006720)
+        (steps . #x00000002)
+        (error . "")))
+
+tools/send-net-repl.scm --host 192.168.0.107 --payload-only \
+  "(spawn '(begin (sleep-ms 30000) (+ 1 2)))"
+=> #x00000002
+
+tools/send-net-repl.scm --host 192.168.0.107 --payload-only --read-only \
+  '(processes)'
+=> (((pid . #x00000001)
+        (state . done)
+        ...)
+    ((pid . #x00000002)
+        (state . sleeping)
+        (steps . #x00000001)
+        (error . "")))
+
+tools/send-net-repl.scm --host 192.168.0.107 --payload-only \
+  '(kill #x00000002)'
+=> #t
+
+tools/send-net-repl.scm --host 192.168.0.107 --payload-only --read-only \
+  '(processes)'
+=> (((pid . #x00000001)
+        (state . done)
+        ...)
+    ((pid . #x00000002)
+        (state . killed)
+        (steps . #x00000001)
+        (error . "killed")))
+#+end_example
+
+The board was left running the Wi-Fi network REPL service boot-smoke image so
+future validation can use UDP instead of the corrupt serial input path. Rebuild
+and flash with =--wifi-firmware --wifi-credentials= to return to the normal
+FAT =boot.lisp= startup image.
+
 * Next actions
 
 1. Watch for any remaining UART corruption during longer Wi-Fi association

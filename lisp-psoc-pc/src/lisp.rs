@@ -15,6 +15,7 @@ const MAX_CALL_ARGS: usize = 16;
 const MAX_EVAL_DEPTH: u8 = 128;
 const PRETTY_INDENT: usize = 4;
 const PRETTY_INLINE_LIST_LIMIT: u8 = 6;
+const MAX_PROCESSES: usize = 6;
 
 type ObjectId = u16;
 type SymbolId = u16;
@@ -151,6 +152,56 @@ const EMPTY_WIFI_NET_REPL_RESPONSE_CACHE: WifiNetReplResponseCache = WifiNetRepl
     payload_hash: 0,
     response: EMPTY_NET_REPL_RESPONSE_BYTES,
 };
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum ProcessState {
+    Free,
+    Ready,
+    Sleeping,
+    Done,
+    Error,
+    Killed,
+}
+
+#[derive(Clone, Copy)]
+struct Process {
+    pid: u32,
+    state: ProcessState,
+    body: Value,
+    cursor: Value,
+    env: Value,
+    wake_ms: u32,
+    last_value: Value,
+    error: &'static str,
+    steps: u32,
+}
+
+const EMPTY_PROCESS: Process = Process {
+    pid: 0,
+    state: ProcessState::Free,
+    body: Value::Nil,
+    cursor: Value::Nil,
+    env: Value::Nil,
+    wake_ms: 0,
+    last_value: Value::Nil,
+    error: "",
+    steps: 0,
+};
+
+#[derive(Clone, Copy)]
+struct ProcessPollReport {
+    ran: u32,
+    ready: u32,
+    sleeping: u32,
+    done: u32,
+    error: u32,
+    killed: u32,
+}
+
+enum ProcessControl {
+    Yield,
+    Sleep { duration_ms: u32 },
+}
 
 pub trait Board {
     fn led(&mut self, action: LedAction) -> bool;
@@ -2067,6 +2118,12 @@ pub enum Primitive {
     ConsoleEcho,
     Button,
     Millis,
+    Spawn,
+    Processes,
+    ProcessPoll,
+    Kill,
+    Yield,
+    SleepMs,
     Reg32,
     Poke32,
     Regs,
@@ -2194,6 +2251,12 @@ impl Primitive {
             Self::ConsoleEcho => "console-echo",
             Self::Button => "button",
             Self::Millis => "millis",
+            Self::Spawn => "spawn",
+            Self::Processes => "processes",
+            Self::ProcessPoll => "process-poll",
+            Self::Kill => "kill",
+            Self::Yield => "yield",
+            Self::SleepMs => "sleep-ms",
             Self::Reg32 => "reg32",
             Self::Poke32 => "poke32",
             Self::Regs => "regs",
@@ -2364,6 +2427,8 @@ struct SpecialSymbols {
     off: SymbolId,
     toggle: SymbolId,
     status: SymbolId,
+    yield_: SymbolId,
+    sleep_ms: SymbolId,
 }
 
 const EMPTY_SPECIALS: SpecialSymbols = SpecialSymbols {
@@ -2377,6 +2442,8 @@ const EMPTY_SPECIALS: SpecialSymbols = SpecialSymbols {
     off: 0,
     toggle: 0,
     status: 0,
+    yield_: 0,
+    sleep_ms: 0,
 };
 
 pub struct Machine {
@@ -2390,6 +2457,9 @@ pub struct Machine {
     specials: SpecialSymbols,
     active_expression: Value,
     collections: u32,
+    processes: [Process; MAX_PROCESSES],
+    next_process_pid: u32,
+    next_process_slot: usize,
     console_echo: bool,
     wifi_ssid: StringBytes,
     wifi_ssid_set: bool,
@@ -2419,6 +2489,9 @@ impl Machine {
             specials: EMPTY_SPECIALS,
             active_expression: Value::Nil,
             collections: 0,
+            processes: [EMPTY_PROCESS; MAX_PROCESSES],
+            next_process_pid: 1,
+            next_process_slot: 0,
             console_echo: true,
             wifi_ssid: EMPTY_STRING_BYTES,
             wifi_ssid_set: false,
@@ -2446,6 +2519,8 @@ impl Machine {
         self.specials.off = self.intern(b"off")?;
         self.specials.toggle = self.intern(b"toggle")?;
         self.specials.status = self.intern(b"status")?;
+        self.specials.yield_ = self.intern(b"yield")?;
+        self.specials.sleep_ms = self.intern(b"sleep-ms")?;
 
         self.bind_self_evaluating_symbol(self.specials.on)?;
         self.bind_self_evaluating_symbol(self.specials.off)?;
@@ -2487,6 +2562,12 @@ impl Machine {
         self.install_primitive(b"console-echo", Primitive::ConsoleEcho)?;
         self.install_primitive(b"button", Primitive::Button)?;
         self.install_primitive(b"millis", Primitive::Millis)?;
+        self.install_primitive(b"spawn", Primitive::Spawn)?;
+        self.install_primitive(b"processes", Primitive::Processes)?;
+        self.install_primitive(b"process-poll", Primitive::ProcessPoll)?;
+        self.install_primitive(b"kill", Primitive::Kill)?;
+        self.install_primitive(b"yield", Primitive::Yield)?;
+        self.install_primitive(b"sleep-ms", Primitive::SleepMs)?;
         self.install_primitive(b"reg32", Primitive::Reg32)?;
         self.install_primitive(b"poke32", Primitive::Poke32)?;
         self.install_primitive(b"regs", Primitive::Regs)?;
@@ -3299,6 +3380,31 @@ impl Machine {
                 self.expect_count(args, 0)?;
                 Ok(Value::Int(board.millis() as i32))
             }
+            Primitive::Spawn => {
+                self.expect_count(args, 1)?;
+                self.spawn_process(args[0], env)
+            }
+            Primitive::Processes => {
+                self.expect_count(args, 0)?;
+                self.processes_report()
+            }
+            Primitive::ProcessPoll => {
+                let max_steps = match args.len() {
+                    0 => 1,
+                    1 => self.expect_u8(args[0])?,
+                    _ => return Err(Error::new("process-poll expects zero or one argument")),
+                };
+                let now_ms = board.millis();
+                let report = self.poll_processes(board, output, now_ms, max_steps);
+                self.process_poll_report(report)
+            }
+            Primitive::Kill => {
+                self.expect_count(args, 1)?;
+                let pid = self.expect_u32(args[0])?;
+                Ok(Value::Bool(self.kill_process(pid)))
+            }
+            Primitive::Yield => Err(Error::new("yield is only valid inside a process")),
+            Primitive::SleepMs => Err(Error::new("sleep-ms is only valid inside a process")),
             Primitive::Reg32 => {
                 self.expect_count(args, 1)?;
                 let address = self.expect_word_address(args[0])?;
@@ -3835,6 +3941,344 @@ impl Machine {
         }
     }
 
+    pub fn poll_background_processes<B: Board, W: Write>(
+        &mut self,
+        board: &mut B,
+        output: &mut W,
+        now_ms: u32,
+        max_steps: u8,
+    ) {
+        self.poll_processes(board, output, now_ms, max_steps);
+    }
+
+    fn spawn_process(&mut self, program: Value, env: Value) -> LispResult<Value> {
+        let body = self.process_body_from_program(program)?;
+        let mut slot = None;
+        let mut offset = 0usize;
+        while offset < MAX_PROCESSES {
+            let index = (self.next_process_slot + offset) % MAX_PROCESSES;
+            if Self::process_slot_reusable(self.processes[index].state) {
+                slot = Some(index);
+                break;
+            }
+            offset += 1;
+        }
+
+        let index = slot.ok_or(Error::new("process table full"))?;
+        let pid = self.next_process_pid;
+        self.next_process_pid = self.next_process_pid.wrapping_add(1);
+        if self.next_process_pid == 0 {
+            self.next_process_pid = 1;
+        }
+        self.next_process_slot = (index + 1) % MAX_PROCESSES;
+        self.processes[index] = Process {
+            pid,
+            state: ProcessState::Ready,
+            body,
+            cursor: body,
+            env,
+            wake_ms: 0,
+            last_value: Value::Nil,
+            error: "",
+            steps: 0,
+        };
+
+        Ok(Value::Word(pid))
+    }
+
+    fn process_body_from_program(&mut self, program: Value) -> LispResult<Value> {
+        if let Ok(ObjectKind::Pair { car, cdr }) = self.object_kind(program) {
+            if matches!(car, Value::Symbol(symbol) if symbol == self.specials.begin) {
+                if cdr == Value::Nil {
+                    return Err(Error::new("spawn begin needs a body"));
+                }
+                return Ok(cdr);
+            }
+        }
+
+        self.alloc_pair(program, Value::Nil)
+    }
+
+    fn kill_process(&mut self, pid: u32) -> bool {
+        let mut index = 0usize;
+        while index < MAX_PROCESSES {
+            let mut process = self.processes[index];
+            if process.pid == pid && !Self::process_slot_reusable(process.state) {
+                process.state = ProcessState::Killed;
+                process.cursor = Value::Nil;
+                process.error = "killed";
+                self.processes[index] = process;
+                return true;
+            }
+            index += 1;
+        }
+        false
+    }
+
+    fn poll_processes<B: Board, W: Write>(
+        &mut self,
+        board: &mut B,
+        output: &mut W,
+        now_ms: u32,
+        max_steps: u8,
+    ) -> ProcessPollReport {
+        let mut ran = 0u32;
+        let mut remaining = max_steps;
+        while remaining > 0 {
+            let mut ran_one = false;
+            let mut scanned = 0usize;
+            while scanned < MAX_PROCESSES {
+                let index = (self.next_process_slot + scanned) % MAX_PROCESSES;
+                if self.run_process_step(index, board, output, now_ms) {
+                    self.next_process_slot = (index + 1) % MAX_PROCESSES;
+                    ran = ran.wrapping_add(1);
+                    ran_one = true;
+                    break;
+                }
+                scanned += 1;
+            }
+
+            if !ran_one {
+                break;
+            }
+            remaining -= 1;
+        }
+
+        let mut report = self.process_counts();
+        report.ran = ran;
+        report
+    }
+
+    fn run_process_step<B: Board, W: Write>(
+        &mut self,
+        index: usize,
+        board: &mut B,
+        output: &mut W,
+        now_ms: u32,
+    ) -> bool {
+        let mut process = self.processes[index];
+        match process.state {
+            ProcessState::Free
+            | ProcessState::Done
+            | ProcessState::Error
+            | ProcessState::Killed => {
+                return false;
+            }
+            ProcessState::Sleeping => {
+                if !time_reached(now_ms, process.wake_ms) {
+                    return false;
+                }
+                process.state = ProcessState::Ready;
+            }
+            ProcessState::Ready => {}
+        }
+
+        let (expression, rest) = match self.list_next(process.cursor) {
+            Ok(Some(next)) => next,
+            Ok(None) => {
+                process.state = ProcessState::Done;
+                process.cursor = Value::Nil;
+                self.processes[index] = process;
+                return false;
+            }
+            Err(error) => {
+                process.state = ProcessState::Error;
+                process.error = error.message();
+                self.processes[index] = process;
+                return true;
+            }
+        };
+
+        let previous_active_expression = self.active_expression;
+        self.active_expression = expression;
+        let control = self.process_control(expression, process.env, board, output);
+        self.active_expression = previous_active_expression;
+
+        match control {
+            Ok(Some(ProcessControl::Yield)) => {
+                process.cursor = rest;
+                process.last_value = Value::Symbol(self.specials.yield_);
+                process.steps = process.steps.wrapping_add(1);
+                process.error = "";
+                process.state = if rest == Value::Nil {
+                    ProcessState::Done
+                } else {
+                    ProcessState::Ready
+                };
+                self.processes[index] = process;
+                true
+            }
+            Ok(Some(ProcessControl::Sleep { duration_ms })) => {
+                process.cursor = rest;
+                process.last_value = Value::Word(duration_ms);
+                process.steps = process.steps.wrapping_add(1);
+                process.error = "";
+                process.wake_ms = now_ms.wrapping_add(duration_ms);
+                process.state = ProcessState::Sleeping;
+                self.processes[index] = process;
+                true
+            }
+            Ok(None) => {
+                let previous_active_expression = self.active_expression;
+                self.active_expression = expression;
+                let result = self.eval(expression, process.env, board, output, 0);
+                self.active_expression = previous_active_expression;
+
+                process.steps = process.steps.wrapping_add(1);
+                match result {
+                    Ok(value) => {
+                        process.cursor = rest;
+                        process.last_value = value;
+                        process.error = "";
+                        process.state = if rest == Value::Nil {
+                            ProcessState::Done
+                        } else {
+                            ProcessState::Ready
+                        };
+                    }
+                    Err(error) => {
+                        process.state = ProcessState::Error;
+                        process.error = error.message();
+                    }
+                }
+
+                if self.processes[index].pid == process.pid
+                    && self.processes[index].state != ProcessState::Killed
+                {
+                    self.processes[index] = process;
+                }
+                true
+            }
+            Err(error) => {
+                process.state = ProcessState::Error;
+                process.error = error.message();
+                process.steps = process.steps.wrapping_add(1);
+                self.processes[index] = process;
+                true
+            }
+        }
+    }
+
+    fn process_control<B: Board, W: Write>(
+        &mut self,
+        expression: Value,
+        env: Value,
+        board: &mut B,
+        output: &mut W,
+    ) -> LispResult<Option<ProcessControl>> {
+        if !matches!(expression, Value::Object(_)) {
+            return Ok(None);
+        }
+
+        let (operator, args) = match self.object_kind(expression)? {
+            ObjectKind::Pair { car, cdr } => (car, cdr),
+            _ => return Ok(None),
+        };
+
+        let symbol = match operator {
+            Value::Symbol(symbol) => symbol,
+            _ => return Ok(None),
+        };
+
+        if symbol == self.specials.yield_ {
+            if args != Value::Nil {
+                return Err(Error::new("yield expects no arguments"));
+            }
+            return Ok(Some(ProcessControl::Yield));
+        }
+
+        if symbol == self.specials.sleep_ms {
+            let (duration_expression, rest) = self.require_pair(args)?;
+            if rest != Value::Nil {
+                return Err(Error::new("sleep-ms expects one argument"));
+            }
+            let duration_value = self.eval(duration_expression, env, board, output, 0)?;
+            let duration_ms = self.expect_u32(duration_value)?;
+            return Ok(Some(ProcessControl::Sleep { duration_ms }));
+        }
+
+        Ok(None)
+    }
+
+    fn process_counts(&self) -> ProcessPollReport {
+        let mut report = ProcessPollReport {
+            ran: 0,
+            ready: 0,
+            sleeping: 0,
+            done: 0,
+            error: 0,
+            killed: 0,
+        };
+
+        let mut index = 0usize;
+        while index < MAX_PROCESSES {
+            match self.processes[index].state {
+                ProcessState::Free => {}
+                ProcessState::Ready => report.ready = report.ready.wrapping_add(1),
+                ProcessState::Sleeping => report.sleeping = report.sleeping.wrapping_add(1),
+                ProcessState::Done => report.done = report.done.wrapping_add(1),
+                ProcessState::Error => report.error = report.error.wrapping_add(1),
+                ProcessState::Killed => report.killed = report.killed.wrapping_add(1),
+            }
+            index += 1;
+        }
+
+        report
+    }
+
+    fn processes_report(&mut self) -> LispResult<Value> {
+        let mut list = Value::Nil;
+        let mut index = MAX_PROCESSES;
+        while index > 0 {
+            index -= 1;
+            let process = self.processes[index];
+            if process.state != ProcessState::Free {
+                let report = self.process_report(process)?;
+                list = self.alloc_pair(report, list)?;
+            }
+        }
+        Ok(list)
+    }
+
+    fn process_report(&mut self, process: Process) -> LispResult<Value> {
+        let pid = self.word_entry(b"pid", process.pid)?;
+        let state = self.symbol_entry(b"state", Self::process_state_name(process.state))?;
+        let wake_ms = self.word_entry(b"wake-ms", process.wake_ms)?;
+        let steps = self.word_entry(b"steps", process.steps)?;
+        let error = self.string_entry(b"error", process.error.as_bytes())?;
+        let entries = [pid, state, wake_ms, steps, error];
+        self.make_list_from_values(&entries)
+    }
+
+    fn process_poll_report(&mut self, report: ProcessPollReport) -> LispResult<Value> {
+        let ran = self.word_entry(b"ran", report.ran)?;
+        let ready = self.word_entry(b"ready", report.ready)?;
+        let sleeping = self.word_entry(b"sleeping", report.sleeping)?;
+        let done = self.word_entry(b"done", report.done)?;
+        let error = self.word_entry(b"error", report.error)?;
+        let killed = self.word_entry(b"killed", report.killed)?;
+        let entries = [ran, ready, sleeping, done, error, killed];
+        self.make_list_from_values(&entries)
+    }
+
+    fn process_state_name(state: ProcessState) -> &'static [u8] {
+        match state {
+            ProcessState::Free => b"free",
+            ProcessState::Ready => b"ready",
+            ProcessState::Sleeping => b"sleeping",
+            ProcessState::Done => b"done",
+            ProcessState::Error => b"error",
+            ProcessState::Killed => b"killed",
+        }
+    }
+
+    fn process_slot_reusable(state: ProcessState) -> bool {
+        matches!(
+            state,
+            ProcessState::Free | ProcessState::Done | ProcessState::Error | ProcessState::Killed
+        )
+    }
+
     fn load_file_in_env<B: Board, W: Write>(
         &mut self,
         path: StringBytes,
@@ -4301,6 +4745,11 @@ impl Machine {
         self.entry(name, value)
     }
 
+    fn string_entry(&mut self, name: &[u8], value: &[u8]) -> LispResult<Value> {
+        let value = self.alloc_string(value)?;
+        self.entry(name, value)
+    }
+
     fn bool_entry(&mut self, name: &[u8], value: bool) -> LispResult<Value> {
         self.entry(name, Value::Bool(value))
     }
@@ -4351,6 +4800,12 @@ impl Machine {
             b"console-echo",
             b"button",
             b"millis",
+            b"spawn",
+            b"processes",
+            b"process-poll",
+            b"kill",
+            b"yield",
+            b"sleep-ms",
             b"reg32",
             b"poke32",
             b"regs",
@@ -8410,6 +8865,7 @@ impl Machine {
 
         self.mark_value(self.active_expression);
         self.mark_value(env);
+        self.mark_process_roots();
 
         let mut freed = 0usize;
         index = 0;
@@ -8436,6 +8892,20 @@ impl Machine {
 
         self.collections = self.collections.wrapping_add(1);
         freed
+    }
+
+    fn mark_process_roots(&mut self) {
+        let mut index = 0usize;
+        while index < MAX_PROCESSES {
+            let process = self.processes[index];
+            if process.state != ProcessState::Free {
+                self.mark_value(process.body);
+                self.mark_value(process.cursor);
+                self.mark_value(process.env);
+                self.mark_value(process.last_value);
+            }
+            index += 1;
+        }
     }
 
     fn mark_value(&mut self, value: Value) {
@@ -8885,6 +9355,10 @@ fn is_delimiter(byte: u8) -> bool {
 
 fn is_country_code_byte(byte: u8) -> bool {
     byte.is_ascii_uppercase() || byte.is_ascii_digit()
+}
+
+fn time_reached(now_ms: u32, target_ms: u32) -> bool {
+    now_ms.wrapping_sub(target_ms) < 0x8000_0000
 }
 
 fn parse_decimal(token: &[u8]) -> LispResult<Option<i32>> {
