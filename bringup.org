@@ -5451,6 +5451,81 @@ response.checksum.ok=#t
 payload.text=error: file too long for string
 #+end_example
 
+* 2026-06-28 Save reloadable Lisp definitions
+
+Added =(save-defs path)= as the simple persistence primitive from the Lisp
+machine checklist. It serializes reloadable global definitions into one FAT
+source file:
+
+- primitive bindings and built-in constants are skipped silently;
+- plain data values are saved as =(define name value)= or
+  =(define name (quote value))= when quoting is required;
+- top-level closures whose captured environment is =nil= are saved as
+  =(define name (lambda ...))=;
+- captured closures and other non-reloadable values are counted as skipped;
+- output is capped at the 512-byte FAT source-file buffer and reports
+  =too-large= instead of writing a truncated file.
+
+The implementation writes the generated source through a single FAT file write
+rather than a series of string-sized appends. The earlier multi-chunk version
+did eventually complete, but took several minutes and missed the host receive
+window. The one-write path returned within the 60-second validation window.
+
+Validation used the quiet Wi-Fi image and FAT =boot.lisp=-started UDP service:
+
+#+begin_example
+tools/send-net-repl.scm --host 192.168.0.107 --sequence 191 --attempts 1 --wait 3 '(define saved-a 7)'
+payload.text==> saved-a
+
+tools/send-net-repl.scm --host 192.168.0.107 --sequence 192 --attempts 1 --wait 3 '(define saved-list (quote (1 2 3)))'
+payload.text==> saved-list
+
+tools/send-net-repl.scm --host 192.168.0.107 --sequence 193 --attempts 1 --wait 3 '(define (saved-add x) (+ x saved-a))'
+payload.text==> saved-add
+
+tools/send-net-repl.scm --host 192.168.0.107 --sequence 194 --attempts 1 --wait 60 '(save-defs "defs.lisp")'
+payload.text==> ((status . ready)
+    (ready . #t)
+    (saved . 3)
+    (skipped . 0)
+    (bytes . 122)
+    (chunks . 1)
+    (truncated . #f)
+    (write.status . ready))
+#+end_example
+
+Reload validation overwrote the globals, loaded the saved file, then checked the
+restored value, quoted list, and function:
+
+#+begin_example
+tools/send-net-repl.scm --host 192.168.0.107 --sequence 196 --attempts 1 --wait 60 '(load "defs.lisp")'
+payload.text==> saved-add
+
+tools/send-net-repl.scm --host 192.168.0.107 --sequence 197 --attempts 1 --wait 3 '(list saved-a saved-list (saved-add 5))'
+payload.text==> (7
+    (1
+        2
+        3)
+    12)
+#+end_example
+
+Captured closures are not serialized as bogus source:
+
+#+begin_example
+tools/send-net-repl.scm --host 192.168.0.107 --sequence 198 --attempts 1 --wait 3 '(let ((n 4)) (define captured (lambda () n)))'
+payload.text==> captured
+
+tools/send-net-repl.scm --host 192.168.0.107 --sequence 199 --attempts 1 --wait 60 '(save-defs "defs.lisp")'
+payload.text==> ((status . ready)
+    (ready . #t)
+    (saved . 3)
+    (skipped . 1)
+    (bytes . 122)
+    (chunks . 1)
+    (truncated . #f)
+    (write.status . ready))
+#+end_example
+
 Transport decision for now: keep UDP as the working board-control path because
 DHCP, ARP, DNS, and framed UDP replies are already live. A future standard
 console should likely be raw TCP first, with minimal telnet option handling on

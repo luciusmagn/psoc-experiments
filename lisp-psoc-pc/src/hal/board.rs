@@ -324,6 +324,23 @@ impl lisp::Board for PsocBoard<'_> {
         }
     }
 
+    fn save_file_bytes(
+        &mut self,
+        path: lisp::StringBytes,
+        content: lisp::FileBytes,
+    ) -> lisp::StoreWriteReport {
+        let report =
+            lisp_fat::write_file_bytes(self.p, path, &content.bytes[..content.len as usize]);
+        lisp::StoreWriteReport {
+            ready: matches!(report.status, lisp_fat::FatStatus::Ready),
+            status: fat_status(report.status),
+            path_len: report.path_len,
+            content_len: report.content_len,
+            directory_sector: 0,
+            data_sector: 0,
+        }
+    }
+
     fn append_file(
         &mut self,
         path: lisp::StringBytes,

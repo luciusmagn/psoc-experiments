@@ -162,6 +162,7 @@ pub trait Board {
     fn sd_write_fill(&mut self, sector: u32, fill_word: u32) -> SdWriteReport;
     fn format_store(&mut self) -> StoreFormatReport;
     fn save_file(&mut self, path: StringBytes, content: StringBytes) -> StoreWriteReport;
+    fn save_file_bytes(&mut self, path: StringBytes, content: FileBytes) -> StoreWriteReport;
     fn append_file(&mut self, path: StringBytes, content: StringBytes) -> StoreWriteReport;
     fn read_file(&mut self, path: StringBytes) -> StoreReadReport;
     fn list_files(&mut self) -> StoreListReport;
@@ -479,7 +480,7 @@ pub struct StoreWriteReport {
     pub ready: bool,
     pub status: &'static [u8],
     pub path_len: u8,
-    pub content_len: u8,
+    pub content_len: u16,
     pub directory_sector: u32,
     pub data_sector: u32,
 }
@@ -1879,6 +1880,39 @@ impl Write for NetReplResponseWriter {
     }
 }
 
+struct FileBytesWriter {
+    len: usize,
+    truncated: bool,
+    bytes: [u8; MAX_FILE_BYTES],
+}
+
+impl FileBytesWriter {
+    fn new() -> Self {
+        Self {
+            len: 0,
+            truncated: false,
+            bytes: [0; MAX_FILE_BYTES],
+        }
+    }
+}
+
+impl Write for FileBytesWriter {
+    fn write_str(&mut self, value: &str) -> fmt::Result {
+        let bytes = value.as_bytes();
+        let mut index = 0usize;
+        while index < bytes.len() {
+            if self.len >= MAX_FILE_BYTES {
+                self.truncated = true;
+                return Ok(());
+            }
+            self.bytes[self.len] = bytes[index];
+            self.len += 1;
+            index += 1;
+        }
+        Ok(())
+    }
+}
+
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub enum Value {
     Nil,
@@ -1936,6 +1970,7 @@ pub enum Primitive {
     FormatStore,
     SaveFile,
     AppendFile,
+    SaveDefs,
     ReadFile,
     Load,
     Ls,
@@ -2056,6 +2091,7 @@ impl Primitive {
             Self::FormatStore => "format-store",
             Self::SaveFile => "save-file",
             Self::AppendFile => "append-file",
+            Self::SaveDefs => "save-defs",
             Self::ReadFile => "read-file",
             Self::Load => "load",
             Self::Ls => "ls",
@@ -2342,6 +2378,7 @@ impl Machine {
         self.install_primitive(b"format-store", Primitive::FormatStore)?;
         self.install_primitive(b"save-file", Primitive::SaveFile)?;
         self.install_primitive(b"append-file", Primitive::AppendFile)?;
+        self.install_primitive(b"save-defs", Primitive::SaveDefs)?;
         self.install_primitive(b"read-file", Primitive::ReadFile)?;
         self.install_primitive(b"load", Primitive::Load)?;
         self.install_primitive(b"ls", Primitive::Ls)?;
@@ -2618,6 +2655,26 @@ impl Machine {
         };
         self.symbol_count += 1;
         Ok(id as SymbolId)
+    }
+
+    fn symbol_name_eq(&self, symbol: SymbolId, name: &[u8]) -> bool {
+        let index = symbol as usize;
+        if index >= MAX_SYMBOLS {
+            return false;
+        }
+        let entry = self.symbols[index];
+        if !entry.occupied || entry.len as usize != name.len() {
+            return false;
+        }
+
+        let mut byte_index = 0usize;
+        while byte_index < name.len() {
+            if entry.bytes[byte_index] != name[byte_index] {
+                return false;
+            }
+            byte_index += 1;
+        }
+        true
     }
 
     fn bind_global(&mut self, symbol: SymbolId, value: Value) -> LispResult<()> {
@@ -3176,6 +3233,11 @@ impl Machine {
                 let content = self.expect_string(args[1])?;
                 self.store_write_report(board.append_file(path, content))
             }
+            Primitive::SaveDefs => {
+                self.expect_count(args, 1)?;
+                let path = self.expect_string(args[0])?;
+                self.save_defs(path, board)
+            }
             Primitive::ReadFile => {
                 self.expect_count(args, 1)?;
                 let path = self.expect_string(args[0])?;
@@ -3632,6 +3694,189 @@ impl Machine {
         result.map(LoadFileOutcome::Loaded)
     }
 
+    fn save_defs<B: Board>(&mut self, path: StringBytes, board: &mut B) -> LispResult<Value> {
+        let mut writer = FileBytesWriter::new();
+        writer
+            .write_str("(begin\n")
+            .map_err(|_| Error::new("save-defs format failed"))?;
+
+        let mut saved = 0u16;
+        let mut skipped = 0u16;
+        let mut index = 0usize;
+        while index < MAX_GLOBALS {
+            let binding = self.globals[index];
+            if binding.occupied && !self.is_intrinsic_global(binding) {
+                if self.write_saved_definition(&mut writer, binding.symbol, binding.value)? {
+                    saved = saved.saturating_add(1);
+                } else {
+                    skipped = skipped.saturating_add(1);
+                }
+            }
+            index += 1;
+        }
+
+        writer
+            .write_str(")\n")
+            .map_err(|_| Error::new("save-defs format failed"))?;
+
+        if writer.truncated {
+            return self.save_defs_report(
+                b"too-large",
+                false,
+                saved,
+                skipped,
+                writer.len as u16,
+                0,
+                true,
+                STATUS_NOT_RUN,
+            );
+        }
+
+        let content = FileBytes {
+            len: writer.len as u16,
+            bytes: writer.bytes,
+        };
+        let report = board.save_file_bytes(path, content);
+        if !report.ready {
+            return self.save_defs_report(
+                b"write-failed",
+                false,
+                saved,
+                skipped,
+                writer.len as u16,
+                1,
+                false,
+                report.status,
+            );
+        }
+
+        self.save_defs_report(
+            b"ready",
+            true,
+            saved,
+            skipped,
+            writer.len as u16,
+            1,
+            false,
+            report.status,
+        )
+    }
+
+    fn write_saved_definition<W: Write>(
+        &self,
+        output: &mut W,
+        symbol: SymbolId,
+        value: Value,
+    ) -> LispResult<bool> {
+        if let Value::Object(id) = value {
+            if let ObjectKind::Closure { params, body, env } = self.object_kind_by_id(id)? {
+                if env != Value::Nil || !self.value_is_saveable_data(params, 0)? {
+                    return Ok(false);
+                }
+                if !self.value_is_saveable_data(body, 0)? {
+                    return Ok(false);
+                }
+
+                output
+                    .write_str("    (define ")
+                    .and_then(|_| self.write_symbol(symbol, output))
+                    .and_then(|_| output.write_str(" (lambda "))
+                    .and_then(|_| self.write_value(params, output))
+                    .map_err(|_| Error::new("save-defs format failed"))?;
+
+                let mut cursor = body;
+                while let Some((expression, rest)) = self.list_next(cursor)? {
+                    output
+                        .write_char(' ')
+                        .and_then(|_| self.write_value(expression, output))
+                        .map_err(|_| Error::new("save-defs format failed"))?;
+                    cursor = rest;
+                }
+
+                output
+                    .write_str("))\n")
+                    .map_err(|_| Error::new("save-defs format failed"))?;
+                return Ok(true);
+            }
+        }
+
+        if !self.value_is_saveable_data(value, 0)? {
+            return Ok(false);
+        }
+
+        output
+            .write_str("    (define ")
+            .and_then(|_| self.write_symbol(symbol, output))
+            .and_then(|_| output.write_char(' '))
+            .map_err(|_| Error::new("save-defs format failed"))?;
+
+        if self.value_needs_quote(value) {
+            output
+                .write_str("(quote ")
+                .and_then(|_| self.write_value(value, output))
+                .and_then(|_| output.write_char(')'))
+                .map_err(|_| Error::new("save-defs format failed"))?;
+        } else {
+            self.write_value(value, output)
+                .map_err(|_| Error::new("save-defs format failed"))?;
+        }
+
+        output
+            .write_str(")\n")
+            .map_err(|_| Error::new("save-defs format failed"))?;
+        Ok(true)
+    }
+
+    fn is_intrinsic_global(&self, binding: GlobalBinding) -> bool {
+        if matches!(binding.value, Value::Primitive(_)) {
+            return true;
+        }
+
+        self.is_reserved_symbol(binding.symbol)
+    }
+
+    fn is_reserved_symbol(&self, symbol: SymbolId) -> bool {
+        symbol == self.specials.quote
+            || symbol == self.specials.if_
+            || symbol == self.specials.define
+            || symbol == self.specials.lambda
+            || symbol == self.specials.begin
+            || symbol == self.specials.let_
+            || symbol == self.specials.on
+            || symbol == self.specials.off
+            || symbol == self.specials.toggle
+            || symbol == self.specials.status
+            || self.symbol_name_eq(symbol, b"true")
+            || self.symbol_name_eq(symbol, b"false")
+    }
+
+    fn value_is_saveable_data(&self, value: Value, depth: u8) -> LispResult<bool> {
+        if depth > MAX_EVAL_DEPTH {
+            return Ok(false);
+        }
+
+        match value {
+            Value::Nil | Value::Bool(_) | Value::Int(_) | Value::Word(_) | Value::Symbol(_) => {
+                Ok(true)
+            }
+            Value::Primitive(_) => Ok(false),
+            Value::Object(id) => match self.object_kind_by_id(id)? {
+                ObjectKind::Pair { car, cdr } => Ok(self.value_is_saveable_data(car, depth + 1)?
+                    && self.value_is_saveable_data(cdr, depth + 1)?),
+                ObjectKind::String { .. } => Ok(true),
+                ObjectKind::Closure { .. } | ObjectKind::Env { .. } | ObjectKind::Free => Ok(false),
+            },
+        }
+    }
+
+    fn value_needs_quote(&self, value: Value) -> bool {
+        match value {
+            Value::Symbol(_) => true,
+            Value::Object(id) => matches!(self.object_kind_by_id(id), Ok(ObjectKind::Pair { .. })),
+            _ => false,
+        }
+    }
+
     fn primitive_subtract(&self, args: &[Value]) -> LispResult<Value> {
         if args.is_empty() {
             return Err(Error::new("- expects at least one argument"));
@@ -3948,6 +4193,7 @@ impl Machine {
             b"format-store",
             b"save-file",
             b"append-file",
+            b"save-defs",
             b"read-file",
             b"load",
             b"ls",
@@ -4285,6 +4531,38 @@ impl Machine {
             data_start_sector,
             data_sector_count,
             failed_sector,
+        ];
+        self.make_list_from_values(&entries)
+    }
+
+    fn save_defs_report(
+        &mut self,
+        status: &'static [u8],
+        ready: bool,
+        saved: u16,
+        skipped: u16,
+        bytes: u16,
+        chunks: u8,
+        truncated: bool,
+        write_status: &'static [u8],
+    ) -> LispResult<Value> {
+        let status = self.symbol_entry(b"status", status)?;
+        let ready = self.bool_entry(b"ready", ready)?;
+        let saved = self.int_entry(b"saved", saved as i32)?;
+        let skipped = self.int_entry(b"skipped", skipped as i32)?;
+        let bytes = self.int_entry(b"bytes", bytes as i32)?;
+        let chunks = self.int_entry(b"chunks", chunks as i32)?;
+        let truncated = self.bool_entry(b"truncated", truncated)?;
+        let write_status = self.symbol_entry(b"write.status", write_status)?;
+        let entries = [
+            status,
+            ready,
+            saved,
+            skipped,
+            bytes,
+            chunks,
+            truncated,
+            write_status,
         ];
         self.make_list_from_values(&entries)
     }

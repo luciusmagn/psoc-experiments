@@ -78,7 +78,7 @@ pub struct FormatReport {
 pub struct FileWriteReport {
     pub status: FatStatus,
     pub path_len: u8,
-    pub content_len: u8,
+    pub content_len: u16,
 }
 
 pub struct FileReadReport {
@@ -310,7 +310,20 @@ pub fn write_file(
     path: lisp::StringBytes,
     content: lisp::StringBytes,
 ) -> FileWriteReport {
-    write_file_with_mode(p, path, content, Mode::ReadWriteCreateOrTruncate)
+    write_file_bytes_with_mode(
+        p,
+        path,
+        &content.bytes[..content.len as usize],
+        Mode::ReadWriteCreateOrTruncate,
+    )
+}
+
+pub fn write_file_bytes(
+    p: &Peripherals,
+    path: lisp::StringBytes,
+    content: &[u8],
+) -> FileWriteReport {
+    write_file_bytes_with_mode(p, path, content, Mode::ReadWriteCreateOrTruncate)
 }
 
 pub fn append_file(
@@ -318,26 +331,31 @@ pub fn append_file(
     path: lisp::StringBytes,
     content: lisp::StringBytes,
 ) -> FileWriteReport {
-    write_file_with_mode(p, path, content, Mode::ReadWriteCreateOrAppend)
+    write_file_bytes_with_mode(
+        p,
+        path,
+        &content.bytes[..content.len as usize],
+        Mode::ReadWriteCreateOrAppend,
+    )
 }
 
-fn write_file_with_mode(
+fn write_file_bytes_with_mode(
     p: &Peripherals,
     path: lisp::StringBytes,
-    content: lisp::StringBytes,
+    content: &[u8],
     mode: Mode,
 ) -> FileWriteReport {
     let short_name = match path_short_name(path) {
         Ok(short_name) => short_name,
-        Err(status) => return file_write_report(status, path, content),
+        Err(status) => return file_write_report(status, path, 0),
     };
-    if content.len as usize > lisp::MAX_STRING_BYTES {
-        return file_write_report(FatStatus::ContentTooLong, path, content);
+    if content.len() > lisp::MAX_FILE_BYTES {
+        return file_write_report(FatStatus::ContentTooLong, path, 0);
     }
 
     let (manager, volume, root) = match open_root(p) {
         Ok(opened) => opened,
-        Err(status) => return file_write_report(status, path, content),
+        Err(status) => return file_write_report(status, path, 0),
     };
 
     let file = match manager.open_file_in_dir(root, short_name, mode) {
@@ -345,26 +363,25 @@ fn write_file_with_mode(
         Err(error) => {
             close_dir_ignore_error(&manager, root);
             close_volume_ignore_error(&manager, volume);
-            return file_write_report(file_open_error_status(error), path, content);
+            return file_write_report(file_open_error_status(error), path, 0);
         }
     };
 
-    let content_bytes = &content.bytes[..content.len as usize];
-    if manager.write(file, content_bytes).is_err() {
+    if manager.write(file, content).is_err() {
         manager.close_file(file).ok();
         close_dir_ignore_error(&manager, root);
         close_volume_ignore_error(&manager, volume);
-        return file_write_report(FatStatus::FileWriteFailed, path, content);
+        return file_write_report(FatStatus::FileWriteFailed, path, 0);
     }
 
     if manager.close_file(file).is_err() {
         close_dir_ignore_error(&manager, root);
         close_volume_ignore_error(&manager, volume);
-        return file_write_report(FatStatus::FileCloseFailed, path, content);
+        return file_write_report(FatStatus::FileCloseFailed, path, 0);
     }
 
     let close_status = close_root(manager, volume, root);
-    file_write_report(close_status, path, content)
+    file_write_report(close_status, path, content.len())
 }
 
 pub fn read_file(p: &Peripherals, path: lisp::StringBytes) -> FileReadReport {
@@ -1128,13 +1145,13 @@ fn lisp_extension_dot_index(path: &[u8]) -> Option<usize> {
 fn file_write_report(
     status: FatStatus,
     path: lisp::StringBytes,
-    content: lisp::StringBytes,
+    content_len: usize,
 ) -> FileWriteReport {
     FileWriteReport {
         status,
         path_len: path.len,
         content_len: if matches!(status, FatStatus::Ready) {
-            content.len
+            content_len as u16
         } else {
             0
         },
