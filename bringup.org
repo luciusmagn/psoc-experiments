@@ -4323,10 +4323,79 @@ Observed shape after disabling TX glomming:
     (last.event.datalen . #x0000000c))
 #+end_example
 
-The repo-local sender now defaults to 200 ms per byte. The earlier 100 ms
-default once dropped a closing parenthesis, leaving the REPL in a continuation
-prompt. Keep using =(wifi-sdio-init)= as the clean recovery path after stale F2
-state because it power-cycles =WL_REG_ON=.
+The repo-local sender later moved to a 1s open-settle delay and 500 ms per
+byte default pacing. Keep using =(wifi-sdio-init)= as the clean recovery path
+after stale F2 state because it power-cycles =WL_REG_ON=.
+
+* 2026-06-28 Inserted 32GB microSD and credential cache
+
+The user inserted a 32GB microSD into the microSD slot on the QSPI/microSD
+breakaway board. Live console checks with the currently flashed firmware:
+
+#+begin_example
+(sd-status)
+=> ((CD_L . low)
+    (inserted . #t)
+    (GPIO.PRT13.IN . #x0000010f)
+    (GPIO.PRT13.CFG . #x6080eeee))
+
+(sd-init)
+=> ((status . ready-sdhc)
+    (CMD8 . #x000001aa)
+    (ACMD41.OCR . #xc0ff8000)
+    (attempts . 2)
+    (last-error))
+
+(fat-info)
+=> ((status . ready)
+    (ready . #t)
+    (MBR.sig . #x0000aa55)
+    (partition0.type . #x0000000c)
+    (partition0.lba . #x00000800)
+    (partition0.sectors . #x039a3800)
+    (root-entry-count . 0)
+    (entries))
+#+end_example
+
+The raw Lisp store was formatted and a small boot file was written and loaded:
+
+#+begin_example
+(format-store)
+=> ((status . ready)
+    (ready . #t)
+    (directory-sector . #x00000100)
+    (data-start-sector . #x00000101)
+    (data-sector-count . 5)
+    (failed-sector . #x00000000))
+
+(save-file "boot.lisp" "(+ 20 22)")
+=> ((status . ready)
+    (ready . #t)
+    (path-len . 9)
+    (content-len . 9)
+    (directory-sector . #x00000100)
+    (data-sector . #x00000101))
+
+(load "boot.lisp")
+=> 42
+#+end_example
+
+This proves card detect, SDHC init, FAT32 metadata read, raw-store format,
+raw-store write, raw-store read, and evaluator load on the newly inserted
+card. The FAT32 partition was already valid and root-empty, so it was not
+reformatted during this pass.
+
+Local Wi-Fi credentials were refreshed with:
+
+#+begin_example
+tools/prepare-wifi-credentials.scm --all
+#+end_example
+
+The script wrote 32 non-enterprise PSK profiles into ignored =.local/wifi/=
+state and did not print credential values. Do not send secrets through normal
+UART Lisp forms because the console echoes input into the serial log. The join
+path should use ignored local credential artifacts or a no-echo credential
+entry path.
 
 * Next actions
 

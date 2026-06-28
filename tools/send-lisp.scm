@@ -14,9 +14,11 @@
   (say "usage: tools/send-lisp.scm [--device DEVICE] [--delay-ms MS] FORM")
   (say "")
   (say "Sends one Lisp form to the firmware console.")
-  (say "Default pacing is 200 ms per byte; the form is not printed."))
+  (say "Default pacing is 500 ms per byte after a 1s open-settle delay.")
+  (say "The form is not printed."))
 
-(define default-character-delay-ms 200)
+(define default-character-delay-ms 500)
+(define open-settle-delay-ms 1000)
 
 (load-shared-object "libc.so.6")
 (define usleep (foreign-procedure "usleep" (unsigned-int) int))
@@ -67,6 +69,9 @@
   (when (> ms 0)
     (usleep (* ms 1000))))
 
+(define (max-left left right)
+  (if (> left right) left right))
+
 (define (put-char-byte port char)
   (let ((byte (char->integer char)))
     (when (> byte 255)
@@ -86,6 +91,7 @@
                device
                (file-options no-fail)
                (buffer-mode none))))
+    (sleep-ms (max-left open-settle-delay-ms delay-ms))
     (let loop ((index 0))
       (when (< index (string-length form))
         (put-char-byte port (string-ref form index))
