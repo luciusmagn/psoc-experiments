@@ -63,6 +63,8 @@ tools/send-net-repl.scm --host BOARD_IP --payload-only --read-only --color '(wif
 
 Use =--wait 60= for FAT-backed forms such as =ls=, =cat=, =read-file=,
 =save-file=, =append-file=, =save-defs=, and =load=.
+Simple FAT status and short file reads usually answer within a few seconds on
+the current SD path, but writes and larger reads still need the longer wait.
 Use =--payload-only= for a cleaner REPL-like display. Each client invocation
 uses its own ignored request/response files under =.local/net-repl/=; use
 explicit unique sequences when comparing concurrent UDP requests.

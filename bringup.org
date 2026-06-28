@@ -6083,6 +6083,72 @@ future validation can use UDP instead of the corrupt serial input path. Rebuild
 and flash with =--wifi-firmware --wifi-credentials= to return to the normal
 FAT =boot.lisp= startup image.
 
+* 2026-06-28 Faster SD/FAT startup
+
+Normal startup depends on reading FAT =boot.lisp= before Wi-Fi starts. The SD
+driver re-identifies the card for each sector access, and the identification
+path used a fixed one-second bus ramp delay before CMD0. That made FAT-backed
+startup and network validation look wedged even when the card and filesystem
+were healthy.
+
+Measured before changing the delay, using the validated UDP REPL service image:
+
+#+begin_example
+tools/send-net-repl.scm --host 192.168.0.107 --sequence 601 \
+  --attempts 1 --wait 60 --payload-only --read-only '(fat-info)'
+=> ((status . ready) ...)
+elapsed_seconds=63 status=0
+#+end_example
+
+The fixed SD bus ramp delay is now 10 ms. This does not make FAT asynchronous;
+it only removes the unnecessary one-second wait from every card identification
+attempt. Longer-term, SD should keep a selected-card session or expose
+incremental process-friendly I/O.
+
+Validation with =--wifi-net-repl-service-boot-smoke --skip-boot-file=:
+
+#+begin_example
+tools/send-net-repl.scm --host 192.168.0.107 --sequence 605 \
+  --attempts 1 --wait 1 --payload-only --read-only '(fat-info)'
+=> ((status . ready) ...)
+elapsed_seconds=4 status=0
+
+tools/send-net-repl.scm --host 192.168.0.107 --sequence 606 \
+  --attempts 1 --wait 1 --payload-only --read-only \
+  '(read-file "boot.lisp")'
+=> ((status . ready)
+    ...
+    (content . "(begin (wifi-network-bootstrap) (wifi-net-repl-service on))"))
+elapsed_seconds=4 status=0
+#+end_example
+
+Validation with the normal =--wifi-firmware --wifi-credentials= image:
+
+#+begin_example
+tools/build-flash-lisp.scm --wifi-firmware --wifi-credentials
+
+tools/send-net-repl.scm --host 192.168.0.107 --sequence 610 \
+  --attempts 8 --wait 3 --payload-only --read-only \
+  '(wifi-net-repl-service status)'
+=> ((enabled . #t) ...)
+
+tools/send-net-repl.scm --host 192.168.0.107 --sequence 612 \
+  --attempts 1 --wait 1 --payload-only --read-only \
+  '(read-file "boot.lisp")'
+=> ((status . ready) ...)
+read_elapsed_seconds=4 status=0
+
+tools/send-net-repl.scm --host 192.168.0.107 --sequence 613 \
+  --attempts 1 --wait 1 --payload-only --read-only '(fat-info)'
+=> ((status . ready) ...)
+fat_elapsed_seconds=4 status=0
+#+end_example
+
+The normal image now reaches the UDP service from FAT =boot.lisp= again, but
+Wi-Fi bootstrap can still take close to a minute. The remaining startup delay
+is therefore not just FAT; Wi-Fi association/DHCP/ARP startup still needs
+better progress reporting or process-friendly incremental work.
+
 * Next actions
 
 1. Watch for any remaining UART corruption during longer Wi-Fi association
