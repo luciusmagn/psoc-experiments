@@ -5652,6 +5652,67 @@ tools/send-net-repl.scm --host 192.168.0.107 --sequence 302 --attempts 5 --wait 
 payload.text==> 37
 #+end_example
 
+* 2026-06-28 Minimal HTTP GET
+
+Added =(http-get "http://...")= as the first high-level networking form on top
+of the raw TCP path. It currently supports plain HTTP on port 80 only. The
+implementation parses =http://host/path= URLs, accepts optional =:80=, sends an
+HTTP/1.0 GET with =Connection: close=, captures a 96-byte response preview, and
+sends RST/ACK cleanup. Dotted IPv4 hosts skip DNS, which gives a separate HTTP
+smoke test when DNS is noisy.
+
+DNS on the TP-Link network was intermittent immediately after the first flash,
+so =http-get= now retries DNS up to three times before failing. With that
+change, both direct-IP HTTP and DNS-backed HTTP validated from the board over
+the UDP network REPL.
+
+Direct router HTTP validation:
+
+#+begin_example
+tools/send-net-repl.scm --host 192.168.0.107 --sequence 341 --attempts 1 --wait 60 '(http-get "http://192.168.0.1/")'
+payload.text==> ((status . ready)
+    (step . done)
+    (code . #x000000c8)
+    (remote.ip . #xc0a80001)
+    (source.port . #x0000c002)
+    (bytes . #x000000be)
+    (polls . #x00000002)
+    (dns . not-run)
+    (syn . ready)
+    (get . ready)
+    (response . ready)
+    (parse . ready)
+    (reset . ready)
+    (preview . "HTTP/1.1 200 OK\r\nContent-Type: text/html; charset=utf-8\r\nContent-Length: 62211\r\nSet-Cookie: JSES"))
+#+end_example
+
+DNS-backed external HTTP validation:
+
+#+begin_example
+tools/send-net-repl.scm --host 192.168.0.107 --sequence 342 --attempts 1 --wait 60 '(http-get "http://example.com/")'
+payload.text==> ((status . ready)
+    (step . done)
+    (code . #x000000c8)
+    (remote.ip . #x6814179a)
+    (source.port . #x0000c003)
+    (bytes . #x0000033c)
+    (polls . #x00000002)
+    (dns . ready)
+    (syn . ready)
+    (get . ready)
+    (response . ready)
+    (parse . ready)
+    (reset . ready)
+    (preview . "HTTP/1.1 200 OK\r\nDate: Sun, 28 Jun 2026 16:45:42 GMT\r\nContent-Type: text/html\r\nConnection: close"))
+#+end_example
+
+The UDP REPL remained alive after HTTP:
+
+#+begin_example
+tools/send-net-repl.scm --host 192.168.0.107 --sequence 343 --attempts 5 --wait 3 '(+ 7 8)'
+payload.text==> 15
+#+end_example
+
 Transport decision for now: keep UDP as the working board-control path because
 DHCP, ARP, DNS, and framed UDP replies are already live. A future standard
 console should likely be raw TCP first, with minimal telnet option handling on
@@ -5671,8 +5732,8 @@ serial-over-LAN is too heavy for this firmware target.
    unattended Wi-Fi tests.
 6. Exercise ACK plus host retry behavior under induced packet loss and decide
    whether an ACK should clear or preserve the single-entry response cache.
-7. Debug DNS timeout on the current TP-Link network, then build a minimal HTTP
-   GET on top of the validated TCP SYN/SYN-ACK/RST path.
+7. Extend HTTP from a first response preview into a streamed or file-backed
+   body reader, probably saving larger responses to FAT.
 8. Add generic CDC ioctl/iovar helpers for firmware version, join, and link
    status.
 9. Start Wi-Fi from a known-good Infineon or Zephyr sample before trying

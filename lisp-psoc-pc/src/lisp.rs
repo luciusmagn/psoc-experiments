@@ -219,6 +219,7 @@ pub trait Board {
     fn wifi_dns_query(&mut self, name: StringBytes) -> WifiSdioDnsQueryReport;
     fn wifi_tcp_syn(&mut self, name: StringBytes, port: u16) -> WifiSdioTcpSynReport;
     fn wifi_tcp_syn_ip(&mut self, remote_ip_address: u32, port: u16) -> WifiSdioTcpSynReport;
+    fn http_get(&mut self, url: StringBytes) -> WifiSdioHttpGetReport;
     fn wifi_net_repl_poll(&mut self, poll_frames: u8) -> WifiNetReplRequestReport;
     fn wifi_net_repl_reply(
         &mut self,
@@ -1227,6 +1228,24 @@ pub struct WifiSdioTcpSynReport {
 }
 
 #[derive(Clone, Copy)]
+pub struct WifiSdioHttpGetReport {
+    pub status: &'static [u8],
+    pub step: &'static [u8],
+    pub remote_ip_address: u32,
+    pub source_port: u16,
+    pub dns_status: &'static [u8],
+    pub syn_status: &'static [u8],
+    pub get_status: &'static [u8],
+    pub response_status: &'static [u8],
+    pub response_parse_status: &'static [u8],
+    pub response_polls: u8,
+    pub response_payload_bytes: u16,
+    pub http_status_code: u16,
+    pub response_preview: StringBytes,
+    pub reset_status: &'static [u8],
+}
+
+#[derive(Clone, Copy)]
 pub struct WifiNetReplRequestReport {
     pub status: &'static [u8],
     pub step: &'static [u8],
@@ -2059,6 +2078,7 @@ pub enum Primitive {
     WifiDnsQuery,
     WifiTcpSyn,
     WifiTcpSynIp,
+    HttpGet,
     WifiNetReplOnce,
     WifiNetReplService,
     WifiNetworkBootstrap,
@@ -2182,6 +2202,7 @@ impl Primitive {
             Self::WifiDnsQuery => "wifi-dns-query",
             Self::WifiTcpSyn => "wifi-tcp-syn",
             Self::WifiTcpSynIp => "wifi-tcp-syn-ip",
+            Self::HttpGet => "http-get",
             Self::WifiNetReplOnce => "wifi-net-repl-once",
             Self::WifiNetReplService => "wifi-net-repl-service",
             Self::WifiNetworkBootstrap => "wifi-network-bootstrap",
@@ -2477,6 +2498,7 @@ impl Machine {
         self.install_primitive(b"wifi-dns-query", Primitive::WifiDnsQuery)?;
         self.install_primitive(b"wifi-tcp-syn", Primitive::WifiTcpSyn)?;
         self.install_primitive(b"wifi-tcp-syn-ip", Primitive::WifiTcpSynIp)?;
+        self.install_primitive(b"http-get", Primitive::HttpGet)?;
         self.install_primitive(b"wifi-net-repl-once", Primitive::WifiNetReplOnce)?;
         self.install_primitive(b"wifi-net-repl-service", Primitive::WifiNetReplService)?;
         self.install_primitive(b"wifi-network-bootstrap", Primitive::WifiNetworkBootstrap)?;
@@ -3488,6 +3510,11 @@ impl Machine {
                 let port = self.expect_u16(args[1])?;
                 self.wifi_sdio_tcp_syn_report(board.wifi_tcp_syn_ip(remote_ip_address, port))
             }
+            Primitive::HttpGet => {
+                self.expect_count(args, 1)?;
+                let url = self.expect_string(args[0])?;
+                self.wifi_sdio_http_get_report(board.http_get(url))
+            }
             Primitive::WifiNetReplOnce => {
                 let poll_frames = match args.len() {
                     0 => 1,
@@ -4309,6 +4336,7 @@ impl Machine {
             b"wifi-dns-query",
             b"wifi-tcp-syn",
             b"wifi-tcp-syn-ip",
+            b"http-get",
             b"wifi-net-repl-once",
             b"wifi-net-repl-service",
             b"wifi-network-bootstrap",
@@ -6071,6 +6099,42 @@ impl Machine {
             response_parse_status,
             response_polls,
             reset_status,
+        ];
+        self.make_list_from_values(&entries)
+    }
+
+    fn wifi_sdio_http_get_report(&mut self, report: WifiSdioHttpGetReport) -> LispResult<Value> {
+        let status = self.symbol_entry(b"status", report.status)?;
+        let step = self.symbol_entry(b"step", report.step)?;
+        let code = self.word_entry(b"code", report.http_status_code as u32)?;
+        let remote_ip_address = self.word_entry(b"remote.ip", report.remote_ip_address)?;
+        let source_port = self.word_entry(b"source.port", report.source_port as u32)?;
+        let response_payload_bytes =
+            self.word_entry(b"bytes", report.response_payload_bytes as u32)?;
+        let response_polls = self.word_entry(b"polls", report.response_polls as u32)?;
+        let dns_status = self.symbol_entry(b"dns", report.dns_status)?;
+        let syn_status = self.symbol_entry(b"syn", report.syn_status)?;
+        let get_status = self.symbol_entry(b"get", report.get_status)?;
+        let response_status = self.symbol_entry(b"response", report.response_status)?;
+        let response_parse_status = self.symbol_entry(b"parse", report.response_parse_status)?;
+        let reset_status = self.symbol_entry(b"reset", report.reset_status)?;
+        let preview_value = self.string_value(report.response_preview)?;
+        let preview = self.entry(b"preview", preview_value)?;
+        let entries = [
+            status,
+            step,
+            code,
+            remote_ip_address,
+            source_port,
+            response_payload_bytes,
+            response_polls,
+            dns_status,
+            syn_status,
+            get_status,
+            response_status,
+            response_parse_status,
+            reset_status,
+            preview,
         ];
         self.make_list_from_values(&entries)
     }

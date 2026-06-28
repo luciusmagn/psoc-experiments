@@ -634,6 +634,14 @@ impl lisp::Board for PsocBoard<'_> {
         ))
     }
 
+    fn http_get(&mut self, url: lisp::StringBytes) -> lisp::WifiSdioHttpGetReport {
+        wifi_sdio_http_get_report(wifi_sdio::http_get(
+            self.p,
+            &mut self.state.wifi_control_state,
+            &url.bytes[..url.len as usize],
+        ))
+    }
+
     fn wifi_net_repl_poll(&mut self, poll_frames: u8) -> lisp::WifiNetReplRequestReport {
         wifi_sdio_net_repl_request_report(wifi_sdio::net_repl_poll(
             self.p,
@@ -1510,7 +1518,31 @@ fn wifi_sdio_tcp_parse_status(status: wifi_sdio::WifiSdioTcpParseStatus) -> &'st
         wifi_sdio::WifiSdioTcpParseStatus::WrongPorts => b"wrong-ports",
         wifi_sdio::WifiSdioTcpParseStatus::WrongSequence => b"wrong-sequence",
         wifi_sdio::WifiSdioTcpParseStatus::MissingSynAck => b"missing-syn-ack",
+        wifi_sdio::WifiSdioTcpParseStatus::NoPayload => b"no-payload",
         wifi_sdio::WifiSdioTcpParseStatus::Reset => b"reset",
+    }
+}
+
+fn wifi_sdio_http_get_status(status: wifi_sdio::WifiSdioHttpGetStatus) -> &'static [u8] {
+    match status {
+        wifi_sdio::WifiSdioHttpGetStatus::Ready => b"ready",
+        wifi_sdio::WifiSdioHttpGetStatus::BadUrl => b"bad-url",
+        wifi_sdio::WifiSdioHttpGetStatus::RequestTooLong => b"request-too-long",
+        wifi_sdio::WifiSdioHttpGetStatus::NoLease => b"no-lease",
+        wifi_sdio::WifiSdioHttpGetStatus::LeaseMissingAddress => b"lease-missing-address",
+        wifi_sdio::WifiSdioHttpGetStatus::RouterMacMissing => b"router-mac-missing",
+        wifi_sdio::WifiSdioHttpGetStatus::LocalMacMissing => b"local-mac-missing",
+        wifi_sdio::WifiSdioHttpGetStatus::DnsFailed => b"dns-failed",
+        wifi_sdio::WifiSdioHttpGetStatus::HtRequestFailed => b"ht-request-failed",
+        wifi_sdio::WifiSdioHttpGetStatus::SynSendFailed => b"syn-send-failed",
+        wifi_sdio::WifiSdioHttpGetStatus::SynPollFailed => b"syn-poll-failed",
+        wifi_sdio::WifiSdioHttpGetStatus::SynTimeout => b"syn-timeout",
+        wifi_sdio::WifiSdioHttpGetStatus::SynRejected => b"syn-rejected",
+        wifi_sdio::WifiSdioHttpGetStatus::GetSendFailed => b"get-send-failed",
+        wifi_sdio::WifiSdioHttpGetStatus::ResponsePollFailed => b"response-poll-failed",
+        wifi_sdio::WifiSdioHttpGetStatus::ResponseTimeout => b"response-timeout",
+        wifi_sdio::WifiSdioHttpGetStatus::ResponseRejected => b"response-rejected",
+        wifi_sdio::WifiSdioHttpGetStatus::ResetFailed => b"reset-failed",
     }
 }
 
@@ -2512,6 +2544,30 @@ fn wifi_sdio_tcp_syn_report(report: wifi_sdio::WifiSdioTcpSynReport) -> lisp::Wi
         reset_last_error: report.reset_last_error.map(wifi_sdio_command_error_report),
         host_normal_int: report.host_normal_int,
         host_error_int: report.host_error_int,
+    }
+}
+
+fn wifi_sdio_http_get_report(
+    report: wifi_sdio::WifiSdioHttpGetReport,
+) -> lisp::WifiSdioHttpGetReport {
+    lisp::WifiSdioHttpGetReport {
+        status: wifi_sdio_http_get_status(report.status),
+        step: report.step,
+        remote_ip_address: report.remote_ip_address,
+        source_port: report.source_port,
+        dns_status: wifi_sdio_dns_query_status(report.dns_status),
+        syn_status: wifi_sdio_tcp_poll_status(report.syn_poll_status),
+        get_status: wifi_sdio_f2_control_status(report.get_request_status),
+        response_status: wifi_sdio_tcp_poll_status(report.response_poll_status),
+        response_parse_status: wifi_sdio_tcp_parse_status(report.response_parse_status),
+        response_polls: report.response_polls,
+        response_payload_bytes: report.response_payload_bytes,
+        http_status_code: report.http_status_code,
+        response_preview: lisp_string_bytes(
+            &report.response_preview,
+            report.response_preview_length,
+        ),
+        reset_status: wifi_sdio_f2_control_status(report.reset_status),
     }
 }
 
