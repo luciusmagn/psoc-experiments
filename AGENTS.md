@@ -199,6 +199,9 @@ afterward.
 Use `tools/send-net-repl.scm --host BOARD_IP '(form ...)'` for host-side framed
 UDP REPL requests. It writes ignored binary request/response files under
 `.local/net-repl/`, calls `nc`, and prints response metadata plus payload text.
+Current firmware replies with `LPS2`, sequence, response checksum, and payload;
+the script verifies the checksum and still accepts legacy `LPS1` replies while
+older flashed images are being replaced.
 Use a longer receive window such as `--wait 15` for FAT-backed forms like
 `save-file`, `read-file`, and `cat`.
 Use `tools/send-net-repl.scm --color` only when ANSI payload coloring is wanted;

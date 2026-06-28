@@ -15,6 +15,9 @@
 (define default-attempts 5)
 (define default-wait-seconds 1)
 (define max-request-bytes 96)
+(define fnv-offset-basis #x811c9dc5)
+(define fnv-prime #x01000193)
+(define u32-modulus #x100000000)
 (define request-path ".local/net-repl/request.bin")
 (define response-path ".local/net-repl/response.bin")
 
@@ -186,6 +189,22 @@
       ((string=? out "") (loop (cdr items) (byte-hex (car items))))
       (else (loop (cdr items) (string-append out " " (byte-hex (car items))))))))
 
+(define (u32-hex value)
+  (let ((text (make-string 8)))
+    (let loop ((index 7) (remaining value))
+      (when (>= index 0)
+        (string-set! text index (hex-digit (modulo remaining 16)))
+        (loop (- index 1) (quotient remaining 16))))
+    text))
+
+(define (checksum-bytes bytes)
+  (let loop ((items bytes) (hash fnv-offset-basis))
+    (if (null? items)
+        hash
+        (loop (cdr items)
+              (modulo (* (bitwise-xor hash (car items)) fnv-prime)
+                      u32-modulus)))))
+
 (define (write-ansi code)
   (put-char (current-output-port) (integer->char 27))
   (display "[")
@@ -313,20 +332,60 @@
   (unless (read-only-form? form)
     (die "read-only mode allows only status, ls, fat-info, sd-status, cat, and read-file forms")))
 
-(define (take-after-header bytes)
-  (let loop ((items bytes) (index 0))
-    (cond
-      ((null? items) '())
-      ((< index 8) (loop (cdr items) (+ index 1)))
-      (else items))))
-
-(define (valid-response? bytes sequence)
+(define (legacy-response? bytes sequence)
   (and (>= (length bytes) 8)
        (= (list-ref bytes 0) (char->integer #\L))
        (= (list-ref bytes 1) (char->integer #\P))
        (= (list-ref bytes 2) (char->integer #\S))
        (= (list-ref bytes 3) (char->integer #\1))
        (= (read-u32-be bytes 4) sequence)))
+
+(define (checked-response? bytes sequence)
+  (and (>= (length bytes) 12)
+       (= (list-ref bytes 0) (char->integer #\L))
+       (= (list-ref bytes 1) (char->integer #\P))
+       (= (list-ref bytes 2) (char->integer #\S))
+       (= (list-ref bytes 3) (char->integer #\2))
+       (= (read-u32-be bytes 4) sequence)))
+
+(define (response-header-bytes bytes)
+  (if (and (>= (length bytes) 4)
+           (= (list-ref bytes 0) (char->integer #\L))
+           (= (list-ref bytes 1) (char->integer #\P))
+           (= (list-ref bytes 2) (char->integer #\S))
+           (= (list-ref bytes 3) (char->integer #\2)))
+      12
+      8))
+
+(define (take-after-count bytes count)
+  (let loop ((items bytes) (index 0))
+    (cond
+      ((null? items) '())
+      ((< index count) (loop (cdr items) (+ index 1)))
+      (else items))))
+
+(define (take-after-header bytes)
+  (take-after-count bytes (response-header-bytes bytes)))
+
+(define (response-checksum bytes)
+  (if (checked-response? bytes (read-u32-be bytes 4))
+      (read-u32-be bytes 8)
+      #f))
+
+(define (response-checksum-valid? bytes sequence)
+  (cond
+    ((checked-response? bytes sequence)
+     (= (read-u32-be bytes 8) (checksum-bytes (take-after-header bytes))))
+    ((legacy-response? bytes sequence) #t)
+    (else #f)))
+
+(define (valid-response? bytes sequence)
+  (and (or (checked-response? bytes sequence)
+           (legacy-response? bytes sequence))
+       (response-checksum-valid? bytes sequence)))
+
+(define (response-format bytes)
+  (if (= (response-header-bytes bytes) 12) "LPS2" "LPS1"))
 
 (define (send-attempt host port wait-seconds request response)
   (when (file-exists? response)
@@ -393,7 +452,16 @@
        (let ((payload (take-after-header response)))
          (say (string-append "attempt=" (number->string attempt)))
          (say (string-append "response.bytes=" (number->string (length response))))
+         (say (string-append "response.format=" (response-format response)))
          (say (string-append "response.hex=" (bytes-hex response)))
+         (let ((expected-checksum (response-checksum response)))
+           (when expected-checksum
+             (say (string-append "response.checksum=#x"
+                                 (u32-hex expected-checksum)))
+             (say (string-append "response.checksum.ok="
+                                 (if (response-checksum-valid? response sequence)
+                                     "#t"
+                                     "#f")))))
          (say (string-append "payload.bytes=" (number->string (length payload))))
          (display-payload-line payload color?)
          (exit 0)))

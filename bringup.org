@@ -5306,6 +5306,46 @@ tools/send-net-repl.scm --host 192.168.0.107 --sequence 96 --wait 3 'dup-counter
 payload.text==> 2
 #+end_example
 
+* 2026-06-28 Network REPL response checksum
+
+Changed the current framed UDP response from =LPS1= to =LPS2=. The request
+format remains =LPS0= plus a big-endian sequence and one Lisp expression. The
+response now contains:
+
+- =LPS2=
+- the same big-endian 32-bit sequence number
+- a big-endian 32-bit FNV-1a checksum of the payload bytes
+- the pretty-printed result or error payload
+
+=tools/send-net-repl.scm= verifies =LPS2= response checksums before accepting a
+reply. It still accepts legacy =LPS1= responses without checksums so the same
+client can talk to an older flashed image during transition.
+
+Validation against the previous running image showed the compatibility path:
+
+#+begin_example
+tools/send-net-repl.scm --host 192.168.0.107 --sequence 100 --wait 3 '(+ 20 22)'
+response.format=LPS1
+payload.text==> 42
+#+end_example
+
+After building and flashing the quiet Wi-Fi image, the board returned checked
+responses from the FAT =boot.lisp=-started UDP service:
+
+#+begin_example
+tools/send-net-repl.scm --host 192.168.0.107 --sequence 110 --wait 3 --color '(+ 20 22)'
+response.format=LPS2
+response.checksum=#xeb69a6d2
+response.checksum.ok=#t
+payload.text==> 42
+
+tools/send-net-repl.scm --host 192.168.0.107 --sequence 111 --wait 3 '(wifi-net-repl-service status)'
+response.format=LPS2
+response.checksum=#xebad72c0
+response.checksum.ok=#t
+payload.text==> ((enabled . #t) ...)
+#+end_example
+
 Transport decision for now: keep UDP as the working board-control path because
 DHCP, ARP, DNS, and framed UDP replies are already live. A future standard
 console should likely be raw TCP first, with minimal telnet option handling on
@@ -5323,7 +5363,7 @@ serial-over-LAN is too heavy for this firmware target.
    for obsolete =target/psoc6_2m.cfg=.
 5. Fix UART/REPL input reliability; boot smoke is only a workaround for
    unattended Wi-Fi tests.
-6. Add ACK/retry and a response checksum to the framed UDP protocol.
+6. Add explicit ACK/retry behavior to the framed UDP protocol.
 7. Add TCP or minimal HTTP GET after DNS to prove longer network exchanges.
    Use raw TCP before considering minimal telnet negotiation.
 8. Add generic CDC ioctl/iovar helpers for firmware version, join, and link

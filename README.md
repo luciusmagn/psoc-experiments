@@ -77,8 +77,11 @@ then reports sanitized response status and the first answer. These high-level
 network forms are stepping stones toward a framed network REPL protocol that is
 less dependent on the flaky serial RX path. `(wifi-net-repl-once)` polls UDP
 port 4665 for one framed request. The request payload is `LPS0`, a big-endian
-32-bit sequence number, and one Lisp expression. The reply payload is `LPS1`,
-the same sequence number, and the pretty-printed result or error text.
+32-bit sequence number, and one Lisp expression. The current reply payload is
+`LPS2`, the same sequence number, a big-endian 32-bit FNV-1a checksum of the
+reply text, and the pretty-printed result or error text. The host client still
+accepts legacy `LPS1` responses without a checksum while older images are
+being replaced.
 Requests are capped at 96 bytes and replies at 512 bytes.
 `(wifi-net-repl-service status)`, `(wifi-net-repl-service on)`,
 `(wifi-net-repl-service on 1)`, and `(wifi-net-repl-service off)` control the
@@ -144,13 +147,13 @@ tools/flash-lisp.scm
 
 `--wifi-net-repl-boot-smoke` implies `--wifi-dns-boot-smoke` and then silently
 runs `(wifi-net-repl-once 240)` at boot. Send `LPS0` plus a sequence and Lisp
-form to UDP port 4665 while it waits; the board replies with `LPS1`. Flash a
+form to UDP port 4665 while it waits; the board replies with `LPS2`. Flash a
 non-smoke image afterward.
 
 Use `tools/send-net-repl.scm --host BOARD_IP '(+ 40 2)'` to send one framed UDP
 request from the host. The script writes the binary request under ignored
-`.local/net-repl/`, calls `nc`, parses the `LPS1` response, and prints response
-lengths, hex, and payload text.
+`.local/net-repl/`, calls `nc`, parses the `LPS2` response, verifies the reply
+checksum, and prints response lengths, hex, checksum state, and payload text.
 
 `tools/send-net-repl.scm --color` wraps payload text in ANSI color. Plain output
 is the default so logs and scripts do not receive escape codes. Use

@@ -134,14 +134,15 @@ const DNS_TYPE_A: u16 = 1;
 const DNS_CLASS_IN: u16 = 1;
 pub const NET_REPL_REQUEST_PAYLOAD_MAX_BYTES: usize = 96;
 pub const NET_REPL_RESPONSE_PAYLOAD_MAX_BYTES: usize = 512;
-const NET_REPL_FRAME_HEADER_BYTES: usize = 8;
+const NET_REPL_REQUEST_FRAME_HEADER_BYTES: usize = 8;
+const NET_REPL_RESPONSE_FRAME_HEADER_BYTES: usize = 12;
 const NET_REPL_ETHERNET_FRAME_MAX_BYTES: usize = ETHERNET_HEADER_BYTES
     + IPV4_HEADER_BYTES
     + UDP_HEADER_BYTES
-    + NET_REPL_FRAME_HEADER_BYTES
+    + NET_REPL_RESPONSE_FRAME_HEADER_BYTES
     + NET_REPL_RESPONSE_PAYLOAD_MAX_BYTES;
 const NET_REPL_REQUEST_MAGIC: u32 = 0x4c50_5330;
-const NET_REPL_RESPONSE_MAGIC: u32 = 0x4c50_5331;
+const NET_REPL_RESPONSE_MAGIC: u32 = 0x4c50_5332;
 const NET_REPL_UDP_PORT: u16 = 4665;
 const NET_REPL_IP_IDENTIFICATION: u16 = 0x4c52;
 const NET_REPL_DEFAULT_POLL_FRAMES: u8 = 1;
@@ -9791,7 +9792,7 @@ fn build_net_repl_reply_frame(
     copy_bytes_to_slice(source_mac, frame, ETHERNET_ADDRESS_BYTES);
     write_slice_be_u16(frame, 12, IPV4_ETHERTYPE);
 
-    let udp_payload_bytes = NET_REPL_FRAME_HEADER_BYTES + payload.len();
+    let udp_payload_bytes = NET_REPL_RESPONSE_FRAME_HEADER_BYTES + payload.len();
     let ip_offset = ETHERNET_HEADER_BYTES;
     let ip_total_length = (IPV4_HEADER_BYTES + UDP_HEADER_BYTES + udp_payload_bytes) as u16;
     frame[ip_offset] = 0x45;
@@ -9817,7 +9818,12 @@ fn build_net_repl_reply_frame(
     let payload_offset = udp_offset + UDP_HEADER_BYTES;
     write_slice_be_u32(frame, payload_offset, NET_REPL_RESPONSE_MAGIC);
     write_slice_be_u32(frame, payload_offset + 4, sequence);
-    copy_bytes_to_slice(payload, frame, payload_offset + NET_REPL_FRAME_HEADER_BYTES);
+    write_slice_be_u32(frame, payload_offset + 8, checksum_bytes(payload));
+    copy_bytes_to_slice(
+        payload,
+        frame,
+        payload_offset + NET_REPL_RESPONSE_FRAME_HEADER_BYTES,
+    );
 
     let ethernet_length = ETHERNET_HEADER_BYTES + ip_total_length as usize;
     if ethernet_length < ETHERNET_MIN_FRAME_BYTES {
@@ -10489,7 +10495,7 @@ fn parse_net_repl_frame(
 
     let payload_offset = udp_offset + UDP_HEADER_BYTES;
     let payload_end = udp_offset + udp_length;
-    if payload_offset + NET_REPL_FRAME_HEADER_BYTES > payload_end {
+    if payload_offset + NET_REPL_REQUEST_FRAME_HEADER_BYTES > payload_end {
         packet.status = WifiSdioNetReplParseStatus::PayloadTooShort;
         return packet;
     }
@@ -10498,7 +10504,7 @@ fn parse_net_repl_frame(
         return packet;
     }
 
-    let repl_payload_offset = payload_offset + NET_REPL_FRAME_HEADER_BYTES;
+    let repl_payload_offset = payload_offset + NET_REPL_REQUEST_FRAME_HEADER_BYTES;
     let repl_payload_length = payload_end - repl_payload_offset;
     if repl_payload_length > NET_REPL_REQUEST_PAYLOAD_MAX_BYTES {
         packet.status = WifiSdioNetReplParseStatus::PayloadTooLarge;
