@@ -5040,6 +5040,35 @@ The request payload was =(+ 8 9)=. The response header =LPS1= matched sequence
 After validation, rebuilt with =--wifi-firmware --wifi-credentials= and flashed
 the quiet non-smoke image. OpenOCD verified the quiet image.
 
+* 2026-06-28 Host framed UDP REPL client
+
+Added =tools/send-net-repl.scm= as the first repo-local host client for the
+framed UDP endpoint. It builds the binary =LPS0= request under
+=.local/net-repl/request.bin=, calls GNU =nc= with a bounded =timeout= wrapper,
+then parses =.local/net-repl/response.bin= for an =LPS1= response with the
+expected sequence number. It prints request/response lengths, response hex, and
+payload text.
+
+The script takes the board address explicitly or from =PSOC_NET_REPL_HOST=:
+
+#+begin_example
+tools/send-net-repl.scm --host 192.168.0.107 --sequence 2 '(+ 8 9)'
+#+end_example
+
+Validated the script against a local UDP responder that returned =LPS1= for
+sequence =100=:
+
+#+begin_example
+tools/send-net-repl.scm --host 127.0.0.1 --sequence 100 --attempts 1 --wait 1 '(+ 40 2)'
+request.bytes=16
+sequence=100
+attempt=1
+response.bytes=14
+response.hex=4c 50 53 31 00 00 00 64 3d 3e 20 34 32 0a
+payload.bytes=6
+payload.text==> 42
+#+end_example
+
 * Next actions
 
 1. Watch for any remaining UART corruption during longer Wi-Fi association
@@ -5051,13 +5080,12 @@ the quiet non-smoke image. OpenOCD verified the quiet image.
    for obsolete =target/psoc6_2m.cfg=.
 5. Fix UART/REPL input reliability; boot smoke is only a workaround for
    unattended Wi-Fi tests.
-6. Add a host-side framed UDP client script with retry/timeout behavior.
-7. Move the network REPL endpoint from manual/boot-smoke polling toward an
+6. Move the network REPL endpoint from manual/boot-smoke polling toward an
    explicit service loop or a =boot.lisp= workflow.
-8. Add ACK/retry, duplicate sequence handling, and a response checksum to the
+7. Add ACK/retry, duplicate sequence handling, and a response checksum to the
    framed UDP protocol.
-9. Add TCP or minimal HTTP GET after DNS to prove longer network exchanges.
-10. Add generic CDC ioctl/iovar helpers for firmware version, join, and link
+8. Add TCP or minimal HTTP GET after DNS to prove longer network exchanges.
+9. Add generic CDC ioctl/iovar helpers for firmware version, join, and link
    status.
-11. Start Wi-Fi from a known-good Infineon or Zephyr sample before trying
+10. Start Wi-Fi from a known-good Infineon or Zephyr sample before trying
    to hand-port the full CYW4343W network stack.

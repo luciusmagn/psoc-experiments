@@ -142,6 +142,11 @@ runs `(wifi-net-repl-once 240)` at boot. Send `LPS0` plus a sequence and Lisp
 form to UDP port 4665 while it waits; the board replies with `LPS1`. Flash a
 non-smoke image afterward.
 
+Use `tools/send-net-repl.scm --host BOARD_IP '(+ 40 2)'` to send one framed UDP
+request from the host. The script writes the binary request under ignored
+`.local/net-repl/`, calls `nc`, parses the `LPS1` response, and prints response
+lengths, hex, and payload text.
+
 For microSD-backed Lisp files, the active `save-file`, `read-file`, `load`,
 `ls`, and `cat` forms use the FAT root directory. The firmware accepts Lisp
 paths such as `boot.lisp`; on disk these are stored as 8.3 short names such as

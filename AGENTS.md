@@ -188,6 +188,10 @@ REPL request smoke test while UART is unreliable. It implies
 extends `WIFI_ARP_BOOT_SMOKE_MARKER` with the network-REPL wait status. Flash a
 non-smoke image immediately afterward.
 
+Use `tools/send-net-repl.scm --host BOARD_IP '(form ...)'` for host-side framed
+UDP REPL requests. It writes ignored binary request/response files under
+`.local/net-repl/`, calls `nc`, and prints response metadata plus payload text.
+
 Use `tools/build-lisp.scm --storage-boot-smoke` or
 `tools/build-flash-lisp.scm --storage-boot-smoke` only for unattended FAT
 storage smoke tests while UART RX is unreliable. It skips automatic
