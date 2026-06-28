@@ -137,6 +137,7 @@ pub const NET_REPL_RESPONSE_PAYLOAD_MAX_BYTES: usize = 512;
 const NET_REPL_LEGACY_REQUEST_FRAME_HEADER_BYTES: usize = 8;
 const NET_REPL_CHECKED_REQUEST_FRAME_HEADER_BYTES: usize = 12;
 const NET_REPL_RESPONSE_FRAME_HEADER_BYTES: usize = 12;
+const NET_REPL_ACK_FRAME_HEADER_BYTES: usize = 12;
 const NET_REPL_ETHERNET_FRAME_MAX_BYTES: usize = ETHERNET_HEADER_BYTES
     + IPV4_HEADER_BYTES
     + UDP_HEADER_BYTES
@@ -145,6 +146,7 @@ const NET_REPL_ETHERNET_FRAME_MAX_BYTES: usize = ETHERNET_HEADER_BYTES
 const NET_REPL_LEGACY_REQUEST_MAGIC: u32 = 0x4c50_5330;
 const NET_REPL_CHECKED_REQUEST_MAGIC: u32 = 0x4c50_5333;
 const NET_REPL_RESPONSE_MAGIC: u32 = 0x4c50_5332;
+const NET_REPL_ACK_MAGIC: u32 = 0x4c50_5334;
 const NET_REPL_UDP_PORT: u16 = 4665;
 const NET_REPL_IP_IDENTIFICATION: u16 = 0x4c52;
 const NET_REPL_DEFAULT_POLL_FRAMES: u8 = 1;
@@ -653,6 +655,7 @@ pub enum WifiSdioDnsParseStatus {
 #[derive(Clone, Copy)]
 pub enum WifiSdioNetReplRequestStatus {
     Ready,
+    Ack,
     NoLease,
     LeaseMissingAddress,
     HtRequestFailed,
@@ -666,6 +669,7 @@ pub enum WifiSdioNetReplRequestStatus {
 pub enum WifiSdioNetReplParseStatus {
     NotRun,
     Ready,
+    Ack,
     EmptyFrame,
     NonDataChannel,
     BdcHeaderTooShort,
@@ -1965,6 +1969,7 @@ pub struct WifiSdioNetReplRequestReport {
     pub sequence: u32,
     pub payload_length: u8,
     pub payload_hash: u32,
+    pub ack_response_hash: u32,
     pub payload: [u8; NET_REPL_REQUEST_PAYLOAD_MAX_BYTES],
     pub ack_status: WifiSdioInterruptAckStatus,
     pub ack_last_error: Option<CommandError>,
@@ -6824,6 +6829,10 @@ pub fn net_repl_poll(
             report.status = WifiSdioNetReplRequestStatus::Ready;
             report.step = b"done";
         }
+        WifiSdioNetReplRequestStatus::Ack => {
+            report.status = WifiSdioNetReplRequestStatus::Ack;
+            report.step = b"ack";
+        }
         status => {
             report.status = status;
         }
@@ -7047,6 +7056,7 @@ struct ParsedNetReplRequest {
     sequence: u32,
     payload_length: u8,
     payload_hash: u32,
+    ack_response_hash: u32,
     payload: [u8; NET_REPL_REQUEST_PAYLOAD_MAX_BYTES],
 }
 
@@ -7370,6 +7380,10 @@ fn poll_net_repl_request(
                 result.status = WifiSdioNetReplRequestStatus::Ready;
                 return result;
             }
+            WifiSdioNetReplParseStatus::Ack => {
+                result.status = WifiSdioNetReplRequestStatus::Ack;
+                return result;
+            }
             WifiSdioNetReplParseStatus::NonDataChannel => {
                 result.non_data_frames = result.non_data_frames.saturating_add(1);
             }
@@ -7496,6 +7510,7 @@ fn empty_parsed_net_repl_request() -> ParsedNetReplRequest {
         sequence: 0,
         payload_length: 0,
         payload_hash: 0,
+        ack_response_hash: 0,
         payload: [0; NET_REPL_REQUEST_PAYLOAD_MAX_BYTES],
     }
 }
@@ -7545,6 +7560,7 @@ fn copy_net_repl_poll_to_report(
     report.sequence = poll.packet.sequence;
     report.payload_length = poll.packet.payload_length;
     report.payload_hash = poll.packet.payload_hash;
+    report.ack_response_hash = poll.packet.ack_response_hash;
     report.payload = poll.packet.payload;
     report.ack_status = poll.ack_status;
     report.ack_last_error = poll.ack_last_error;
@@ -10503,6 +10519,18 @@ fn parse_net_repl_frame(
         return packet;
     }
     let request_magic = read_slice_be_u32(bytes, payload_offset);
+    if request_magic == NET_REPL_ACK_MAGIC {
+        if payload_offset + NET_REPL_ACK_FRAME_HEADER_BYTES > payload_end {
+            packet.status = WifiSdioNetReplParseStatus::PayloadTooShort;
+            return packet;
+        }
+        copy_net_repl_source(bytes, ethernet_offset, ip_offset, udp_offset, &mut packet);
+        packet.sequence = read_slice_be_u32(bytes, payload_offset + 4);
+        packet.ack_response_hash = read_slice_be_u32(bytes, payload_offset + 8);
+        packet.status = WifiSdioNetReplParseStatus::Ack;
+        return packet;
+    }
+
     let request_checksum = match request_magic {
         NET_REPL_LEGACY_REQUEST_MAGIC => None,
         NET_REPL_CHECKED_REQUEST_MAGIC => {
@@ -10536,14 +10564,7 @@ fn parse_net_repl_frame(
         }
     }
 
-    copy_bytes_to_slice(
-        &bytes[ethernet_offset + ETHERNET_ADDRESS_BYTES
-            ..ethernet_offset + ETHERNET_ADDRESS_BYTES * 2],
-        &mut packet.source_mac,
-        0,
-    );
-    packet.source_ip_address = read_slice_be_u32(bytes, ip_offset + 12);
-    packet.source_port = read_slice_be_u16(bytes, udp_offset);
+    copy_net_repl_source(bytes, ethernet_offset, ip_offset, udp_offset, &mut packet);
     packet.sequence = read_slice_be_u32(bytes, payload_offset + 4);
     packet.payload_length = repl_payload_length as u8;
     copy_bytes_to_slice(
@@ -10554,6 +10575,23 @@ fn parse_net_repl_frame(
     packet.payload_hash = payload_hash;
     packet.status = WifiSdioNetReplParseStatus::Ready;
     packet
+}
+
+fn copy_net_repl_source(
+    bytes: &[u8],
+    ethernet_offset: usize,
+    ip_offset: usize,
+    udp_offset: usize,
+    packet: &mut ParsedNetReplRequest,
+) {
+    copy_bytes_to_slice(
+        &bytes[ethernet_offset + ETHERNET_ADDRESS_BYTES
+            ..ethernet_offset + ETHERNET_ADDRESS_BYTES * 2],
+        &mut packet.source_mac,
+        0,
+    );
+    packet.source_ip_address = read_slice_be_u32(bytes, ip_offset + 12);
+    packet.source_port = read_slice_be_u16(bytes, udp_offset);
 }
 
 fn skip_dns_name(bytes: &[u8], _dns_offset: usize, dns_end: usize, offset: usize) -> Option<usize> {
@@ -14465,6 +14503,7 @@ fn empty_net_repl_request_report(p: &Peripherals) -> WifiSdioNetReplRequestRepor
         sequence: 0,
         payload_length: 0,
         payload_hash: 0,
+        ack_response_hash: 0,
         payload: [0; NET_REPL_REQUEST_PAYLOAD_MAX_BYTES],
         ack_status: WifiSdioInterruptAckStatus::NotRun,
         ack_last_error: None,

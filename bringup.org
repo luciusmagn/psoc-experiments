@@ -5526,6 +5526,67 @@ payload.text==> ((status . ready)
     (write.status . ready))
 #+end_example
 
+* 2026-06-28 Network REPL ACK frame
+
+Added an optional host-to-board ACK frame for the framed UDP REPL:
+
+- request: =LPS3=, sequence, request checksum, Lisp expression;
+- response: =LPS2=, sequence, response checksum, pretty-printed result;
+- ACK: =LPS4=, sequence, response checksum.
+
+ACK frames are protocol accounting only. The board parses them in the Wi-Fi
+frame path, records =acks-received=, =last.ack.sequence=, and
+=last.ack.response-hash= in =(wifi-net-repl-service status)=, and does not
+pass the frame to the Lisp reader or evaluator. Older board images ignore the
+unknown =LPS4= frame as non-REPL traffic.
+
+=tools/send-net-repl.scm= now sends =LPS4= after it has accepted a verified
+response. The existing request retry behavior remains the recovery path; the
+single-entry response cache still prevents duplicate side effects for repeated
+sequence/hash requests.
+
+Validation built and flashed the quiet Wi-Fi image:
+
+#+begin_example
+tools/build-lisp.scm --wifi-firmware --wifi-credentials
+tools/flash-lisp.scm
+#+end_example
+
+After =boot.lisp= started the network service, a checked request returned a
+checked response and the client sent the ACK:
+
+#+begin_example
+tools/send-net-repl.scm --host 192.168.0.107 --sequence 210 --attempts 10 --wait 3 '(+ 20 22)'
+request.format=LPS3
+response.format=LPS2
+response.checksum.ok=#t
+payload.text==> 42
+ack.format=LPS4
+ack.response-checksum=#xeb69a6d2
+#+end_example
+
+The next status query confirmed that the board had consumed the ACK without
+evaluating it:
+
+#+begin_example
+tools/send-net-repl.scm --host 192.168.0.107 --sequence 211 --attempts 10 --wait 3 '(wifi-net-repl-service status)'
+payload.text==> ((enabled . #t)
+    (poll-frames . #x00000001)
+    (polls . #x0000046a)
+    (requests-handled . #x00000001)
+    (acks-received . #x00000001)
+    (last.status . ack)
+    (last.request.status . ack)
+    (last.reply.status . not-run)
+    (last.eval.status . not-run)
+    (last.sequence . #x000000d2)
+    (last.response.length . #x00000006)
+    (last.response.hash . #xeb69a6d2)
+    (last.response.truncated . #f)
+    (last.ack.sequence . #x000000d2)
+    (last.ack.response-hash . #xeb69a6d2))
+#+end_example
+
 Transport decision for now: keep UDP as the working board-control path because
 DHCP, ARP, DNS, and framed UDP replies are already live. A future standard
 console should likely be raw TCP first, with minimal telnet option handling on
@@ -5543,7 +5604,8 @@ serial-over-LAN is too heavy for this firmware target.
    for obsolete =target/psoc6_2m.cfg=.
 5. Fix UART/REPL input reliability; boot smoke is only a workaround for
    unattended Wi-Fi tests.
-6. Add explicit ACK/retry behavior to the framed UDP protocol.
+6. Exercise ACK plus host retry behavior under induced packet loss and decide
+   whether an ACK should clear or preserve the single-entry response cache.
 7. Add TCP or minimal HTTP GET after DNS to prove longer network exchanges.
    Use raw TCP before considering minimal telnet negotiation.
 8. Add generic CDC ioctl/iovar helpers for firmware version, join, and link

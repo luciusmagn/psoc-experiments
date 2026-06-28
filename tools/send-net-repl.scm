@@ -20,6 +20,7 @@
 (define u32-modulus #x100000000)
 (define request-path ".local/net-repl/request.bin")
 (define response-path ".local/net-repl/response.bin")
+(define ack-path ".local/net-repl/ack.bin")
 
 (define (usage)
   (say "usage: tools/send-net-repl.scm --host HOST [--port PORT] [--sequence N] [--attempts N] [--wait SECONDS] [--color] [--read-only] [--legacy-request] FORM")
@@ -27,6 +28,7 @@
   (say "Sends one framed UDP Lisp request to the board network REPL endpoint.")
   (say "The Lisp form is written to an ignored binary request file, not printed in the shell command.")
   (say "The default request frame is LPS3 with a request checksum.")
+  (say "After a verified response, the client sends an LPS4 ACK with the response checksum.")
   (say "--legacy-request sends the older LPS0 request frame for older flashed images.")
   (say "--color wraps the payload text in ANSI color. The default is plain output.")
   (say "--read-only refuses forms outside the conservative host-side read-only allowlist.")
@@ -180,6 +182,16 @@
      (when (not legacy-request?)
        (put-u32-be port (checksum-bytes (ascii-byte-list form))))
      (put-ascii port form)))
+  (run (string-append "chmod 600 " (shell-quote path))))
+
+(define (write-ack path sequence response-hash)
+  (run (string-append "mkdir -p " (shell-quote (dirname path))))
+  (call-with-port
+   (open-file-output-port path (file-options no-fail replace) (buffer-mode none))
+   (lambda (port)
+     (put-ascii port "LPS4")
+     (put-u32-be port sequence)
+     (put-u32-be port response-hash)))
   (run (string-append "chmod 600 " (shell-quote path))))
 
 (define (read-bytes path)
@@ -393,6 +405,9 @@
       (read-u32-be bytes 8)
       #f))
 
+(define (response-payload-checksum bytes)
+  (checksum-bytes (take-after-header bytes)))
+
 (define (response-checksum-valid? bytes sequence)
   (cond
     ((checked-response? bytes sequence)
@@ -430,6 +445,20 @@
     (say command)
     (system command)))
 
+(define (send-ack host port ack-file)
+  (let ((command
+         (string-append
+          "timeout 2 nc -u -w 1 "
+          (shell-quote host)
+          " "
+          (number->string port)
+          " < "
+          (shell-quote ack-file)
+          " > /dev/null")))
+    (display "+ ")
+    (say command)
+    (system command)))
+
 (define-values (host port sequence attempts wait-seconds color? read-only? legacy-request? parts)
   (parse (command-line-tail)
          (env "PSOC_NET_REPL_HOST")
@@ -461,6 +490,7 @@
 
 (define request-file (repo-path request-path))
 (define response-file (repo-path response-path))
+(define ack-file (repo-path ack-path))
 
 (define request-frame-header-bytes (if legacy-request? 8 12))
 (define request-checksum (and (not legacy-request?) (checksum-bytes (ascii-byte-list form))))
@@ -493,6 +523,11 @@
                                      "#f")))))
          (say (string-append "payload.bytes=" (number->string (length payload))))
          (display-payload-line payload color?)
+         (let ((ack-checksum (response-payload-checksum response)))
+           (write-ack ack-file sequence ack-checksum)
+           (say "ack.format=LPS4")
+           (say (string-append "ack.response-checksum=#x" (u32-hex ack-checksum)))
+           (send-ack host port ack-file))
          (exit 0)))
       ((>= attempt attempts)
        (if (null? response)

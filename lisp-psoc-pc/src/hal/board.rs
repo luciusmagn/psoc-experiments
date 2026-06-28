@@ -1451,6 +1451,7 @@ fn wifi_sdio_net_repl_request_status(
 ) -> &'static [u8] {
     match status {
         wifi_sdio::WifiSdioNetReplRequestStatus::Ready => b"ready",
+        wifi_sdio::WifiSdioNetReplRequestStatus::Ack => b"ack",
         wifi_sdio::WifiSdioNetReplRequestStatus::NoLease => b"no-lease",
         wifi_sdio::WifiSdioNetReplRequestStatus::LeaseMissingAddress => b"lease-missing-address",
         wifi_sdio::WifiSdioNetReplRequestStatus::HtRequestFailed => b"ht-request-failed",
@@ -1465,6 +1466,7 @@ fn wifi_sdio_net_repl_parse_status(status: wifi_sdio::WifiSdioNetReplParseStatus
     match status {
         wifi_sdio::WifiSdioNetReplParseStatus::NotRun => b"not-run",
         wifi_sdio::WifiSdioNetReplParseStatus::Ready => b"ready",
+        wifi_sdio::WifiSdioNetReplParseStatus::Ack => b"ack",
         wifi_sdio::WifiSdioNetReplParseStatus::EmptyFrame => b"empty-frame",
         wifi_sdio::WifiSdioNetReplParseStatus::NonDataChannel => b"non-data-channel",
         wifi_sdio::WifiSdioNetReplParseStatus::BdcHeaderTooShort => b"bdc-header-too-short",
@@ -2425,6 +2427,7 @@ fn wifi_sdio_net_repl_request_report(
         sequence: report.sequence,
         payload_length: report.payload_length,
         payload_hash: report.payload_hash,
+        ack_response_hash: report.ack_response_hash,
         payload: report.payload,
         ack_status: wifi_sdio_interrupt_ack_status(report.ack_status),
         ack_last_error: report.ack_last_error.map(wifi_sdio_command_error_report),

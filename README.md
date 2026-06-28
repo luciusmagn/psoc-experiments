@@ -83,7 +83,11 @@ request bytes, and one Lisp expression. The firmware still accepts legacy
 tooling. The current reply payload is `LPS2`, the same sequence number, a
 big-endian 32-bit FNV-1a checksum of the reply text, and the pretty-printed
 result or error text. The host client still accepts legacy `LPS1` responses
-without a checksum while older images are being replaced.
+without a checksum while older images are being replaced. After a verified
+response, the host client sends an optional `LPS4` ACK with the same sequence
+number and the response checksum. The board records ACK counts and the last ACK
+hash in `(wifi-net-repl-service status)` without evaluating anything from the
+ACK frame.
 Requests are capped at 96 bytes and replies at 512 bytes.
 `(wifi-net-repl-service status)`, `(wifi-net-repl-service on)`,
 `(wifi-net-repl-service on 1)`, and `(wifi-net-repl-service off)` control the
@@ -155,8 +159,8 @@ image afterward.
 Use `tools/send-net-repl.scm --host BOARD_IP '(+ 40 2)'` to send one framed UDP
 request from the host. The script writes a checked `LPS3` binary request under
 ignored `.local/net-repl/`, calls `nc`, parses the `LPS2` response, verifies the
-reply checksum, and prints request/response lengths, formats, checksum state,
-and payload text. Use `--legacy-request` to send an older `LPS0` request frame.
+reply checksum, sends an `LPS4` ACK, and prints request/response/ACK metadata
+plus payload text. Use `--legacy-request` to send an older `LPS0` request frame.
 
 `tools/send-net-repl.scm --color` wraps payload text in ANSI color. Plain output
 is the default so logs and scripts do not receive escape codes. Use

@@ -202,8 +202,10 @@ UDP REPL requests. It writes ignored binary request/response files under
 The script sends `LPS3`, sequence, request checksum, and payload by default.
 Use `--legacy-request` only when talking to an older flashed image that still
 expects `LPS0` requests. Current firmware replies with `LPS2`, sequence,
-response checksum, and payload; the script verifies the checksum and still
-accepts legacy `LPS1` replies while older flashed images are being replaced.
+response checksum, and payload; the script verifies the checksum, sends an
+optional `LPS4` ACK with the response checksum, and still accepts legacy `LPS1`
+replies while older flashed images are being replaced. The board records ACK
+counts in `(wifi-net-repl-service status)` and does not evaluate ACK frames.
 Use a longer receive window for FAT-backed forms like `save-file`,
 `append-file`, `save-defs`, `read-file`, `load`, and `cat`; use `--wait 60`
 when validating larger files over the UDP REPL. `save-defs` writes reloadable

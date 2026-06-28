@@ -75,6 +75,7 @@ const STATUS_NOT_RUN: &[u8] = b"not-run";
 const STATUS_STEP_FAILED: &[u8] = b"step-failed";
 const STATUS_TIMEOUT: &[u8] = b"timeout";
 const STATUS_DUPLICATE: &[u8] = b"duplicate";
+const STATUS_ACK: &[u8] = b"ack";
 const STEP_DONE: &[u8] = b"done";
 const WIFI_NET_REPL_SERVICE_DEFAULT_POLL_FRAMES: u8 = 1;
 
@@ -95,6 +96,7 @@ struct WifiNetReplServiceState {
     poll_frames: u8,
     polls: u32,
     requests_handled: u32,
+    acks_received: u32,
     last_status: &'static [u8],
     last_request_status: &'static [u8],
     last_reply_status: &'static [u8],
@@ -103,6 +105,8 @@ struct WifiNetReplServiceState {
     last_response_length: u16,
     last_response_hash: u32,
     last_response_truncated: bool,
+    last_ack_sequence: u32,
+    last_ack_response_hash: u32,
 }
 
 const EMPTY_WIFI_NET_REPL_SERVICE_STATE: WifiNetReplServiceState = WifiNetReplServiceState {
@@ -110,6 +114,7 @@ const EMPTY_WIFI_NET_REPL_SERVICE_STATE: WifiNetReplServiceState = WifiNetReplSe
     poll_frames: WIFI_NET_REPL_SERVICE_DEFAULT_POLL_FRAMES,
     polls: 0,
     requests_handled: 0,
+    acks_received: 0,
     last_status: STATUS_NOT_RUN,
     last_request_status: STATUS_NOT_RUN,
     last_reply_status: STATUS_NOT_RUN,
@@ -118,6 +123,8 @@ const EMPTY_WIFI_NET_REPL_SERVICE_STATE: WifiNetReplServiceState = WifiNetReplSe
     last_response_length: 0,
     last_response_hash: 0,
     last_response_truncated: false,
+    last_ack_sequence: 0,
+    last_ack_response_hash: 0,
 };
 
 #[derive(Clone, Copy)]
@@ -1200,6 +1207,7 @@ pub struct WifiNetReplRequestReport {
     pub sequence: u32,
     pub payload_length: u8,
     pub payload_hash: u32,
+    pub ack_response_hash: u32,
     pub payload: [u8; NET_REPL_REQUEST_PAYLOAD_BYTES],
     pub ack_status: &'static [u8],
     pub ack_last_error: Option<WifiSdioCommandErrorReport>,
@@ -5978,6 +5986,17 @@ impl Machine {
         poll_frames: u8,
     ) -> WifiNetReplCycleReport {
         let request = board.wifi_net_repl_poll(poll_frames);
+        if request.status == STATUS_ACK {
+            return WifiNetReplCycleReport {
+                status: STATUS_ACK,
+                request,
+                reply: None,
+                eval_status: STATUS_NOT_RUN,
+                response_length: 0,
+                response_hash: 0,
+                response_truncated: false,
+            };
+        }
         if !status_ready(request.status) {
             return WifiNetReplCycleReport {
                 status: request.status,
@@ -6065,6 +6084,18 @@ impl Machine {
             return;
         }
 
+        if cycle.request.status == STATUS_ACK {
+            self.wifi_net_repl_service.acks_received =
+                self.wifi_net_repl_service.acks_received.saturating_add(1);
+            self.wifi_net_repl_service.last_status = STATUS_ACK;
+            self.wifi_net_repl_service.last_request_status = STATUS_ACK;
+            self.wifi_net_repl_service.last_reply_status = STATUS_NOT_RUN;
+            self.wifi_net_repl_service.last_eval_status = STATUS_NOT_RUN;
+            self.wifi_net_repl_service.last_ack_sequence = cycle.request.sequence;
+            self.wifi_net_repl_service.last_ack_response_hash = cycle.request.ack_response_hash;
+            return;
+        }
+
         if cycle.reply.is_some() {
             self.wifi_net_repl_service.requests_handled = self
                 .wifi_net_repl_service
@@ -6122,6 +6153,7 @@ impl Machine {
         let poll_frames = self.word_entry(b"poll-frames", service.poll_frames as u32)?;
         let polls = self.word_entry(b"polls", service.polls)?;
         let requests_handled = self.word_entry(b"requests-handled", service.requests_handled)?;
+        let acks_received = self.word_entry(b"acks-received", service.acks_received)?;
         let last_status = self.symbol_entry(b"last.status", service.last_status)?;
         let last_request_status =
             self.symbol_entry(b"last.request.status", service.last_request_status)?;
@@ -6135,12 +6167,16 @@ impl Machine {
             self.word_entry(b"last.response.hash", service.last_response_hash)?;
         let last_response_truncated =
             self.bool_entry(b"last.response.truncated", service.last_response_truncated)?;
+        let last_ack_sequence = self.word_entry(b"last.ack.sequence", service.last_ack_sequence)?;
+        let last_ack_response_hash =
+            self.word_entry(b"last.ack.response-hash", service.last_ack_response_hash)?;
 
         let entries = [
             enabled,
             poll_frames,
             polls,
             requests_handled,
+            acks_received,
             last_status,
             last_request_status,
             last_reply_status,
@@ -6149,6 +6185,8 @@ impl Machine {
             last_response_length,
             last_response_hash,
             last_response_truncated,
+            last_ack_sequence,
+            last_ack_response_hash,
         ];
         self.make_list_from_values(&entries)
     }
@@ -6234,6 +6272,8 @@ impl Machine {
             self.word_entry(b"request.payload-length", request.payload_length as u32)?;
         let request_payload_hash =
             self.word_entry(b"request.payload-hash", request.payload_hash)?;
+        let request_ack_response_hash =
+            self.word_entry(b"request.ack.response-hash", request.ack_response_hash)?;
         let request_ht_status = self.symbol_entry(b"request.ht.status", request.ht_status)?;
         let request_ack_status = self.symbol_entry(b"request.ack.status", request.ack_status)?;
         let request_host_normal_int =
@@ -6371,6 +6411,7 @@ impl Machine {
             request_sequence,
             request_payload_length,
             request_payload_hash,
+            request_ack_response_hash,
             request_ht_status,
             request_ack_status,
             request_host_normal_int,
