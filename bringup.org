@@ -30,7 +30,7 @@ Working serial capture:
 
 #+begin_example
 lisp> (help)
-=> (help quote if define lambda begin let + - * / mod = < <= > >= not eq? nil? atom? pair? number? symbol? bool? string? cons car cdr list led heartbeat button millis reg32 poke32 regs sd-status sd-pins sd-pinmux sd-clock sd-init sd-read sd-read0 sd-write-fill format-store save-file read-file load ls cat fat-info wifi-sdio-init wifi-cmd52-read wifi-cmd52-write wifi-enable-functions wifi-setup-backplane wifi-cmd53-read wifi-backplane-read wifi-backplane-write8 wifi-backplane-write32 wifi-backplane-write32-bytes wifi-socram-probe wifi-socram-block-probe wifi-load-firmware wifi-start-firmware wifi-f2-read-header wifi-f2-read-frame wifi-ack-interrupts wifi-interrupt-state wifi-keep-awake wifi-host-reset-lines wifi-abort-read wifi-core-state wifi-reset-core sdhc-regs heap gc reboot)
+=> (help quote if define lambda begin let + - * / mod = < <= > >= not eq? nil? atom? pair? number? symbol? bool? string? print cons car cdr list led heartbeat button millis reg32 poke32 regs sd-status sd-pins sd-pinmux sd-clock sd-init sd-read sd-read0 sd-write-fill format-store save-file read-file load ls cat fat-info wifi-sdio-init wifi-cmd52-read wifi-cmd52-write wifi-enable-functions wifi-setup-backplane wifi-cmd53-read wifi-backplane-read wifi-backplane-write8 wifi-backplane-write32 wifi-backplane-write32-bytes wifi-socram-probe wifi-socram-block-probe wifi-load-firmware wifi-start-firmware wifi-f2-read-header wifi-f2-read-frame wifi-ack-interrupts wifi-interrupt-state wifi-keep-awake wifi-host-reset-lines wifi-abort-read wifi-core-state wifi-reset-core sdhc-regs heap gc reboot)
 
 lisp> (+ 1 2 3)
 => 6
@@ -5227,6 +5227,39 @@ Board validation used the quiet image started from microSD =boot.lisp=:
 #+begin_example
 tools/send-net-repl.scm --host 192.168.0.107 --sequence 72 --wait 3 --read-only --color '(wifi-net-repl-service status)'
 payload.text=<green status payload>
+#+end_example
+
+* 2026-06-28 Lisp print primitive
+
+Added =(print ...)= as a Lisp primitive for scripts and future interactive
+programs that need to write progress to whichever REPL output stream is active.
+It evaluates its arguments normally, writes readable Lisp values separated by
+spaces, appends a newline, and returns the last printed value. With no
+arguments it writes a blank line and returns =nil=.
+
+The primitive uses the same value printer as the REPL result path, so strings
+remain quoted/escaped and long or nested lists keep the existing pretty
+printing behavior. Because the evaluator already threads a =core::fmt::Write=
+through serial, boot-file loading, FAT formatting, and the UDP REPL, no HAL
+change was required.
+
+Expected shape:
+
+#+begin_example
+lisp> (print "boot" (+ 1 2))
+"boot" 3
+=> 3
+#+end_example
+
+Validation on the quiet Wi-Fi image started from FAT =boot.lisp=:
+
+#+begin_example
+tools/send-net-repl.scm --host 192.168.0.107 --sequence 80 --wait 3 --color '(help)'
+payload.text=... print ...
+
+tools/send-net-repl.scm --host 192.168.0.107 --sequence 81 --wait 3 --color '(print "boot" (+ 1 2))'
+payload.text="boot" 3
+=> 3
 #+end_example
 
 Transport decision for now: keep UDP as the working board-control path because

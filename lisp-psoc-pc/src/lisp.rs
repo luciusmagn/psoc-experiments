@@ -1878,6 +1878,7 @@ pub enum Primitive {
     SymbolPredicate,
     BoolPredicate,
     StringPredicate,
+    Print,
     Cons,
     Car,
     Cdr,
@@ -1996,6 +1997,7 @@ impl Primitive {
             Self::SymbolPredicate => "symbol?",
             Self::BoolPredicate => "bool?",
             Self::StringPredicate => "string?",
+            Self::Print => "print",
             Self::Cons => "cons",
             Self::Car => "car",
             Self::Cdr => "cdr",
@@ -2278,6 +2280,7 @@ impl Machine {
         self.install_primitive(b"symbol?", Primitive::SymbolPredicate)?;
         self.install_primitive(b"bool?", Primitive::BoolPredicate)?;
         self.install_primitive(b"string?", Primitive::StringPredicate)?;
+        self.install_primitive(b"print", Primitive::Print)?;
         self.install_primitive(b"cons", Primitive::Cons)?;
         self.install_primitive(b"car", Primitive::Car)?;
         self.install_primitive(b"cdr", Primitive::Cdr)?;
@@ -3020,6 +3023,7 @@ impl Machine {
                         if matches!(self.object_kind_by_id(id), Ok(ObjectKind::String { .. }))
                 )))
             }
+            Primitive::Print => self.primitive_print(args, output),
             Primitive::Cons => {
                 self.expect_count(args, 2)?;
                 self.alloc_pair(args[0], args[1])
@@ -3537,6 +3541,30 @@ impl Machine {
         Ok(Value::Int(result))
     }
 
+    fn primitive_print<W: Write>(&self, args: &[Value], output: &mut W) -> LispResult<Value> {
+        let mut index = 0usize;
+        while index < args.len() {
+            if index > 0 {
+                output
+                    .write_char(' ')
+                    .map_err(|_| Error::new("print output failed"))?;
+            }
+            self.write_repl_value(args[index], output)
+                .map_err(|_| Error::new("print output failed"))?;
+            index += 1;
+        }
+
+        output
+            .write_char('\n')
+            .map_err(|_| Error::new("print output failed"))?;
+
+        if args.is_empty() {
+            Ok(Value::Nil)
+        } else {
+            Ok(args[args.len() - 1])
+        }
+    }
+
     fn load_file_in_env<B: Board, W: Write>(
         &mut self,
         path: StringBytes,
@@ -3851,6 +3879,7 @@ impl Machine {
             b"symbol?",
             b"bool?",
             b"string?",
+            b"print",
             b"cons",
             b"car",
             b"cdr",
