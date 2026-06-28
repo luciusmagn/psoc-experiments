@@ -1254,6 +1254,7 @@ pub enum Primitive {
     List,
     Led,
     Heartbeat,
+    ConsoleEcho,
     Button,
     Millis,
     Reg32,
@@ -1351,6 +1352,7 @@ impl Primitive {
             Self::List => "list",
             Self::Led => "led",
             Self::Heartbeat => "heartbeat",
+            Self::ConsoleEcho => "console-echo",
             Self::Button => "button",
             Self::Millis => "millis",
             Self::Reg32 => "reg32",
@@ -1521,6 +1523,7 @@ pub struct Machine {
     specials: SpecialSymbols,
     active_expression: Value,
     collections: u32,
+    console_echo: bool,
 }
 
 #[derive(Clone, Copy)]
@@ -1543,6 +1546,7 @@ impl Machine {
             specials: EMPTY_SPECIALS,
             active_expression: Value::Nil,
             collections: 0,
+            console_echo: true,
         }
     }
 
@@ -1600,6 +1604,7 @@ impl Machine {
         self.install_primitive(b"list", Primitive::List)?;
         self.install_primitive(b"led", Primitive::Led)?;
         self.install_primitive(b"heartbeat", Primitive::Heartbeat)?;
+        self.install_primitive(b"console-echo", Primitive::ConsoleEcho)?;
         self.install_primitive(b"button", Primitive::Button)?;
         self.install_primitive(b"millis", Primitive::Millis)?;
         self.install_primitive(b"reg32", Primitive::Reg32)?;
@@ -1732,6 +1737,10 @@ impl Machine {
 
     pub fn write_value_to<W: Write>(&self, value: Value, output: &mut W) -> fmt::Result {
         self.write_value(value, output)
+    }
+
+    pub fn console_echo_enabled(&self) -> bool {
+        self.console_echo
     }
 
     fn reset_heap(&mut self) {
@@ -2287,6 +2296,19 @@ impl Machine {
                 self.expect_count(args, 1)?;
                 let enabled = self.on_off(args[0])?;
                 Ok(Value::Bool(board.heartbeat(enabled)))
+            }
+            Primitive::ConsoleEcho => {
+                self.expect_count(args, 1)?;
+                match args[0] {
+                    Value::Symbol(symbol) if symbol == self.specials.status => {
+                        Ok(Value::Bool(self.console_echo))
+                    }
+                    value => {
+                        let enabled = self.on_off(value)?;
+                        self.console_echo = enabled;
+                        Ok(Value::Bool(self.console_echo))
+                    }
+                }
             }
             Primitive::Button => {
                 self.expect_count(args, 1)?;
@@ -2941,6 +2963,7 @@ impl Machine {
             b"list",
             b"led",
             b"heartbeat",
+            b"console-echo",
             b"button",
             b"millis",
             b"reg32",

@@ -92,14 +92,18 @@ fn main() -> ! {
                 0x08 | 0x7f => {
                     if line_len > 0 {
                         line_len -= 1;
-                        console.write_bytes(b"\x08 \x08");
+                        if machine.console_echo_enabled() {
+                            console.write_bytes(b"\x08 \x08");
+                        }
                     }
                 }
                 b if b.is_ascii_graphic() || b == b' ' => {
                     if line_len < line.len() {
                         line[line_len] = b;
                         line_len += 1;
-                        console.write_byte(b);
+                        if machine.console_echo_enabled() {
+                            console.write_byte(b);
+                        }
                     } else {
                         console.write_byte(b'\x07');
                     }

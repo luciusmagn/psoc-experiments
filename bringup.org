@@ -4393,9 +4393,37 @@ tools/prepare-wifi-credentials.scm --all
 
 The script wrote 32 non-enterprise PSK profiles into ignored =.local/wifi/=
 state and did not print credential values. Do not send secrets through normal
-UART Lisp forms because the console echoes input into the serial log. The join
-path should use ignored local credential artifacts or a no-echo credential
-entry path.
+echoed UART Lisp forms. Use the no-echo console path for credential-bearing
+forms.
+
+* 2026-06-28 Console echo control
+
+Added a Lisp-side console echo switch so credential-bearing forms can be sent
+without mirroring the input line into =.local/logs/serial-console.log=.
+
+Validated on the board after flashing a Wi-Fi-firmware build:
+
+#+begin_example
+(console-echo status)
+=> #t
+
+(console-echo off)
+=> #f
+
+;; The input line was not echoed while echo was off.
+(+ 40 2)
+=> 42
+
+(console-echo on)
+=> #t
+
+(console-echo status)
+=> #t
+#+end_example
+
+This only suppresses typed character and backspace echo. Evaluation results,
+prompts, and command errors still print, which keeps unattended scripts
+observable while avoiding credential input in the serial log.
 
 * Next actions
 
