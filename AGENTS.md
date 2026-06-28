@@ -180,6 +180,14 @@ is unreliable. It implies `--wifi-arp-boot-smoke`, resolves `example.com`, and
 extends `WIFI_ARP_BOOT_SMOKE_MARKER` with DNS status and answer fields for SWD
 inspection. Flash a non-smoke image immediately afterward.
 
+Use `tools/build-lisp.scm --wifi-net-repl-boot-smoke` or
+`tools/build-flash-lisp.scm --wifi-net-repl-boot-smoke` only for unattended
+Wi-Fi association, DHCP lease acquisition, router ARP, DNS, and one framed UDP
+REPL request smoke test while UART is unreliable. It implies
+`--wifi-dns-boot-smoke`, runs `(wifi-net-repl-once 240)` silently at boot, and
+extends `WIFI_ARP_BOOT_SMOKE_MARKER` with the network-REPL wait status. Flash a
+non-smoke image immediately afterward.
+
 Use `tools/build-lisp.scm --storage-boot-smoke` or
 `tools/build-flash-lisp.scm --storage-boot-smoke` only for unattended FAT
 storage smoke tests while UART RX is unreliable. It skips automatic

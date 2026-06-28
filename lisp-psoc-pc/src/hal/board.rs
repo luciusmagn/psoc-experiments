@@ -583,6 +583,27 @@ impl lisp::Board for PsocBoard<'_> {
         ))
     }
 
+    fn wifi_net_repl_poll(&mut self, poll_frames: u8) -> lisp::WifiNetReplRequestReport {
+        wifi_sdio_net_repl_request_report(wifi_sdio::net_repl_poll(
+            self.p,
+            &mut self.state.wifi_control_state,
+            poll_frames,
+        ))
+    }
+
+    fn wifi_net_repl_reply(
+        &mut self,
+        sequence: u32,
+        payload: lisp::NetReplResponseBytes,
+    ) -> lisp::WifiNetReplReplyReport {
+        wifi_sdio_net_repl_reply_report(wifi_sdio::net_repl_reply(
+            self.p,
+            &mut self.state.wifi_control_state,
+            sequence,
+            &payload.bytes[..payload.len as usize],
+        ))
+    }
+
     fn wifi_load_clm(&mut self) -> lisp::WifiSdioClmLoadReport {
         wifi_sdio_clm_load_report(wifi_sdio::load_clm(
             self.p,
@@ -1389,6 +1410,55 @@ fn wifi_sdio_dns_parse_status(status: wifi_sdio::WifiSdioDnsParseStatus) -> &'st
         wifi_sdio::WifiSdioDnsParseStatus::DnsError => b"dns-error",
         wifi_sdio::WifiSdioDnsParseStatus::TruncatedName => b"truncated-name",
         wifi_sdio::WifiSdioDnsParseStatus::NoAnswer => b"no-answer",
+    }
+}
+
+fn wifi_sdio_net_repl_request_status(
+    status: wifi_sdio::WifiSdioNetReplRequestStatus,
+) -> &'static [u8] {
+    match status {
+        wifi_sdio::WifiSdioNetReplRequestStatus::Ready => b"ready",
+        wifi_sdio::WifiSdioNetReplRequestStatus::NoLease => b"no-lease",
+        wifi_sdio::WifiSdioNetReplRequestStatus::LeaseMissingAddress => b"lease-missing-address",
+        wifi_sdio::WifiSdioNetReplRequestStatus::HtRequestFailed => b"ht-request-failed",
+        wifi_sdio::WifiSdioNetReplRequestStatus::AckFailed => b"ack-failed",
+        wifi_sdio::WifiSdioNetReplRequestStatus::FrameReadFailed => b"frame-read-failed",
+        wifi_sdio::WifiSdioNetReplRequestStatus::InvalidFrame => b"invalid-frame",
+        wifi_sdio::WifiSdioNetReplRequestStatus::Timeout => b"timeout",
+    }
+}
+
+fn wifi_sdio_net_repl_parse_status(status: wifi_sdio::WifiSdioNetReplParseStatus) -> &'static [u8] {
+    match status {
+        wifi_sdio::WifiSdioNetReplParseStatus::NotRun => b"not-run",
+        wifi_sdio::WifiSdioNetReplParseStatus::Ready => b"ready",
+        wifi_sdio::WifiSdioNetReplParseStatus::EmptyFrame => b"empty-frame",
+        wifi_sdio::WifiSdioNetReplParseStatus::NonDataChannel => b"non-data-channel",
+        wifi_sdio::WifiSdioNetReplParseStatus::BdcHeaderTooShort => b"bdc-header-too-short",
+        wifi_sdio::WifiSdioNetReplParseStatus::EthernetTooShort => b"ethernet-too-short",
+        wifi_sdio::WifiSdioNetReplParseStatus::WrongEtherType => b"wrong-ethertype",
+        wifi_sdio::WifiSdioNetReplParseStatus::NotIpv4 => b"not-ipv4",
+        wifi_sdio::WifiSdioNetReplParseStatus::NotUdp => b"not-udp",
+        wifi_sdio::WifiSdioNetReplParseStatus::WrongAddress => b"wrong-address",
+        wifi_sdio::WifiSdioNetReplParseStatus::WrongPort => b"wrong-port",
+        wifi_sdio::WifiSdioNetReplParseStatus::UdpTooShort => b"udp-too-short",
+        wifi_sdio::WifiSdioNetReplParseStatus::PayloadTooShort => b"payload-too-short",
+        wifi_sdio::WifiSdioNetReplParseStatus::WrongMagic => b"wrong-magic",
+        wifi_sdio::WifiSdioNetReplParseStatus::PayloadTooLarge => b"payload-too-large",
+    }
+}
+
+fn wifi_sdio_net_repl_reply_status(status: wifi_sdio::WifiSdioNetReplReplyStatus) -> &'static [u8] {
+    match status {
+        wifi_sdio::WifiSdioNetReplReplyStatus::Ready => b"ready",
+        wifi_sdio::WifiSdioNetReplReplyStatus::NoLease => b"no-lease",
+        wifi_sdio::WifiSdioNetReplReplyStatus::LeaseMissingAddress => b"lease-missing-address",
+        wifi_sdio::WifiSdioNetReplReplyStatus::NoPeer => b"no-peer",
+        wifi_sdio::WifiSdioNetReplReplyStatus::HtRequestFailed => b"ht-request-failed",
+        wifi_sdio::WifiSdioNetReplReplyStatus::MacReadFailed => b"mac-read-failed",
+        wifi_sdio::WifiSdioNetReplReplyStatus::MacMissing => b"mac-missing",
+        wifi_sdio::WifiSdioNetReplReplyStatus::PayloadTooLarge => b"payload-too-large",
+        wifi_sdio::WifiSdioNetReplReplyStatus::SendFailed => b"send-failed",
     }
 }
 
@@ -2288,6 +2358,82 @@ fn wifi_sdio_dns_query_report(
             .request_last_error
             .map(wifi_sdio_command_error_report),
         frame_last_error: report.frame_last_error.map(wifi_sdio_command_error_report),
+        host_normal_int: report.host_normal_int,
+        host_error_int: report.host_error_int,
+    }
+}
+
+fn wifi_sdio_net_repl_request_report(
+    report: wifi_sdio::WifiSdioNetReplRequestReport,
+) -> lisp::WifiNetReplRequestReport {
+    lisp::WifiNetReplRequestReport {
+        status: wifi_sdio_net_repl_request_status(report.status),
+        step: report.step,
+        lease_valid: report.lease_valid,
+        local_ip_address: report.local_ip_address,
+        ht_status: wifi_sdio_ht_request_status(report.ht_status),
+        ht_attempts: report.ht_attempts,
+        ht_write_response: report.ht_write_response,
+        ht_read_value: report.ht_read_value,
+        ht_read_response: report.ht_read_response,
+        ht_available: report.ht_available,
+        parse_status: wifi_sdio_net_repl_parse_status(report.parse_status),
+        poll_limit: report.poll_limit,
+        polls: report.polls,
+        frames_read: report.frames_read,
+        non_data_frames: report.non_data_frames,
+        non_repl_frames: report.non_repl_frames,
+        source_ip_address: report.source_ip_address,
+        source_port: report.source_port,
+        source_mac_hash: report.source_mac_hash,
+        sequence: report.sequence,
+        payload_length: report.payload_length,
+        payload_hash: report.payload_hash,
+        payload: report.payload,
+        ack_status: wifi_sdio_interrupt_ack_status(report.ack_status),
+        ack_last_error: report.ack_last_error.map(wifi_sdio_command_error_report),
+        ht_last_error: report.ht_last_error.map(wifi_sdio_command_error_report),
+        frame_last_error: report.frame_last_error.map(wifi_sdio_command_error_report),
+        host_normal_int: report.host_normal_int,
+        host_error_int: report.host_error_int,
+    }
+}
+
+fn wifi_sdio_net_repl_reply_report(
+    report: wifi_sdio::WifiSdioNetReplReplyReport,
+) -> lisp::WifiNetReplReplyReport {
+    lisp::WifiNetReplReplyReport {
+        status: wifi_sdio_net_repl_reply_status(report.status),
+        step: report.step,
+        lease_valid: report.lease_valid,
+        local_ip_address: report.local_ip_address,
+        peer_valid: report.peer_valid,
+        peer_ip_address: report.peer_ip_address,
+        peer_port: report.peer_port,
+        peer_mac_hash: report.peer_mac_hash,
+        sequence: report.sequence,
+        ht_status: wifi_sdio_ht_request_status(report.ht_status),
+        ht_attempts: report.ht_attempts,
+        ht_write_response: report.ht_write_response,
+        ht_read_value: report.ht_read_value,
+        ht_read_response: report.ht_read_response,
+        ht_available: report.ht_available,
+        mac_status: wifi_sdio_link_get_status(report.mac_status),
+        mac_hash: report.mac_hash,
+        mac_present: report.mac_nonzero,
+        mac_cdc_status: report.mac_cdc_status,
+        mac_cdc_length: report.mac_cdc_length,
+        payload_length: report.payload_length,
+        payload_hash: report.payload_hash,
+        ethernet_length: report.ethernet_length,
+        ethernet_hash: report.ethernet_hash,
+        send_status: wifi_sdio_f2_control_status(report.send_status),
+        send_packet_length: report.send_packet_length,
+        send_write_response: report.send_write_response,
+        ack_status: wifi_sdio_interrupt_ack_status(report.ack_status),
+        ht_last_error: report.ht_last_error.map(wifi_sdio_command_error_report),
+        mac_last_error: report.mac_last_error.map(wifi_sdio_command_error_report),
+        send_last_error: report.send_last_error.map(wifi_sdio_command_error_report),
         host_normal_int: report.host_normal_int,
         host_error_int: report.host_error_int,
     }

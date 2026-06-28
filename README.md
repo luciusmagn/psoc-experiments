@@ -75,9 +75,13 @@ only sanitized status fields and a MAC hash. `(wifi-dns-query "example.com")`
 sends a UDP DNS A-record query through the stored lease and router ARP state,
 then reports sanitized response status and the first answer. These high-level
 network forms are stepping stones toward a framed network REPL protocol that is
-less dependent on the flaky serial RX path. `(wifi-network-bootstrap)` runs
-local association, DHCP, lease status, and router ARP resolution as one compact
-high-level form.
+less dependent on the flaky serial RX path. `(wifi-net-repl-once)` polls UDP
+port 4665 for one framed request. The request payload is `LPS0`, a big-endian
+32-bit sequence number, and one Lisp expression. The reply payload is `LPS1`,
+the same sequence number, and the pretty-printed result or error text.
+Requests are capped at 96 bytes and replies at 384 bytes. `(wifi-network-bootstrap)`
+runs local association, DHCP, lease status, and router ARP resolution as one
+compact high-level form.
 
 For unattended Wi-Fi association and link-status smoke testing on the flaky
 UART RX path:
@@ -124,6 +128,19 @@ tools/flash-lisp.scm
 `example.com` through DNS at boot. It extends the same
 `WIFI_ARP_BOOT_SMOKE_MARKER` words with DNS status and answer fields for SWD
 inspection. Flash a non-smoke image afterward.
+
+For unattended Wi-Fi association, DHCP, router ARP, DNS, and one framed UDP REPL
+request smoke test:
+
+```sh
+tools/build-lisp.scm --wifi-net-repl-boot-smoke
+tools/flash-lisp.scm
+```
+
+`--wifi-net-repl-boot-smoke` implies `--wifi-dns-boot-smoke` and then silently
+runs `(wifi-net-repl-once 240)` at boot. Send `LPS0` plus a sequence and Lisp
+form to UDP port 4665 while it waits; the board replies with `LPS1`. Flash a
+non-smoke image afterward.
 
 For microSD-backed Lisp files, the active `save-file`, `read-file`, `load`,
 `ls`, and `cat` forms use the FAT root directory. The firmware accepts Lisp

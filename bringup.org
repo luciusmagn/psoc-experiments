@@ -4976,6 +4976,70 @@ the quiet non-smoke image. The first quiet flash attempt hit a CMSIS-DAP command
 mismatch during programming; retrying =tools/flash-lisp.scm= immediately
 completed programming and OpenOCD verify.
 
+* 2026-06-28 Framed UDP network REPL request
+
+Added =(wifi-net-repl-once)= as the first framed network REPL endpoint. It uses
+UDP port =4665= and one request/response frame:
+
+- request: =LPS0=, a big-endian 32-bit sequence number, then one Lisp
+  expression.
+- response: =LPS1=, the same sequence number, then the pretty-printed result or
+  error text.
+
+The HAL owns the peer MAC address internally after parsing a request. Lisp sees
+only source IP, source port, sequence number, payload length/hash, response
+length/hash, and status fields. Request payloads are capped at 96 bytes to match
+the current Lisp string/input size; replies are capped at 384 bytes and report a
+truncation flag.
+
+The endpoint accepts unicast packets for the leased IP and limited broadcast
+packets, which lets a host discover the board without first reading the serial
+console. Replies are unicast to the request source IP/port and the Ethernet
+source MAC from the incoming frame.
+
+Added =--wifi-net-repl-boot-smoke= to the Chez build scripts and Cargo features.
+It implies the DNS smoke path, then silently evaluates:
+
+#+begin_example
+(wifi-net-repl-once 240)
+#+end_example
+
+The first broadcast-only attempt did not receive a reply before the firmware
+left the wait window. The SWD marker showed that the firmware did reach the
+network-REPL smoke stage:
+
+#+begin_example
+0x08001000: 41525030 0000000b 00000001 00000001 00000001 00000001 00000001 00000001
+0x08001020: 00000001 00000001 00000001 00000001 0000041e c0a8006b c0a80001 a1c99d37
+0x08001040: 00000001 00000001 00000001 00000001 ac4293f3 000000e1 00000002 000000f0
+0x08001060: 00000001 00000000 00000000 00000000 00000000 00000000 00000000 00000000
+#+end_example
+
+Marker interpretation:
+
+- word 1: stage =11=, completed the network-REPL smoke call.
+- word 20: first DNS answer IP =#xac4293f3=.
+- word 21: first DNS answer TTL =225= seconds.
+- word 22: DNS answer count =2=.
+- word 23: network-REPL smoke poll count =240=.
+- word 24: silent =eval_line= returned =Ok=.
+
+After resetting the same smoke image and sending repeated packets to both the
+leased IP =192.168.0.107= and subnet broadcast =192.168.0.255=, the board
+replied to sequence =2=:
+
+#+begin_example
+attempt 140: reply from 192.168.0.107:4665 length=14
+4c 50 53 31 00 00 00 02 3d 3e 20 31 37 0a
+b'LPS1\x00\x00\x00\x02=> 17\n'
+#+end_example
+
+The request payload was =(+ 8 9)=. The response header =LPS1= matched sequence
+=2= and the response body was the pretty-printed Lisp result ~=> 17~.
+
+After validation, rebuilt with =--wifi-firmware --wifi-credentials= and flashed
+the quiet non-smoke image. OpenOCD verified the quiet image.
+
 * Next actions
 
 1. Watch for any remaining UART corruption during longer Wi-Fi association
@@ -4987,10 +5051,13 @@ completed programming and OpenOCD verify.
    for obsolete =target/psoc6_2m.cfg=.
 5. Fix UART/REPL input reliability; boot smoke is only a workaround for
    unattended Wi-Fi tests.
-6. Build a small framed UDP command channel on top of the DHCP, ARP, and DNS
-   state so the REPL can move toward a reliable network transport.
-7. Add TCP or minimal HTTP GET after DNS to prove longer network exchanges.
-8. Add generic CDC ioctl/iovar helpers for firmware version, join, and link
+6. Add a host-side framed UDP client script with retry/timeout behavior.
+7. Move the network REPL endpoint from manual/boot-smoke polling toward an
+   explicit service loop or a =boot.lisp= workflow.
+8. Add ACK/retry, duplicate sequence handling, and a response checksum to the
+   framed UDP protocol.
+9. Add TCP or minimal HTTP GET after DNS to prove longer network exchanges.
+10. Add generic CDC ioctl/iovar helpers for firmware version, join, and link
    status.
-9. Start Wi-Fi from a known-good Infineon or Zephyr sample before trying
+11. Start Wi-Fi from a known-good Infineon or Zephyr sample before trying
    to hand-port the full CYW4343W network stack.

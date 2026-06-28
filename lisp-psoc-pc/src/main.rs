@@ -35,9 +35,13 @@ const WIFI_BOOT_SMOKE_FORMS: [&[u8]; 4] = [
 #[cfg(feature = "wifi-arp-boot-smoke")]
 const WIFI_ARP_BOOT_SMOKE_MAGIC: u32 = 0x4152_5030;
 #[cfg(feature = "wifi-arp-boot-smoke")]
-const WIFI_NETWORK_BOOT_SMOKE_MARKER_WORDS: usize = 24;
+const WIFI_NETWORK_BOOT_SMOKE_MARKER_WORDS: usize = 32;
 #[cfg(feature = "wifi-dns-boot-smoke")]
 const WIFI_DNS_BOOT_SMOKE_NAME: &[u8] = b"example.com";
+#[cfg(feature = "wifi-net-repl-boot-smoke")]
+const WIFI_NET_REPL_BOOT_SMOKE_FORM: &[u8] = b"(wifi-net-repl-once 240)";
+#[cfg(feature = "wifi-net-repl-boot-smoke")]
+const WIFI_NET_REPL_BOOT_SMOKE_POLL_FRAMES: u32 = 240;
 #[cfg(feature = "wifi-arp-boot-smoke")]
 #[no_mangle]
 pub static mut WIFI_ARP_BOOT_SMOKE_MARKER: [u32; WIFI_NETWORK_BOOT_SMOKE_MARKER_WORDS] =
@@ -290,7 +294,27 @@ fn run_wifi_boot_smoke<B: lisp::Board, W: Write>(
         write_wifi_arp_boot_smoke_marker(1, 9);
     }
 
+    #[cfg(feature = "wifi-net-repl-boot-smoke")]
+    {
+        let mut output = SilentWriter;
+        write_wifi_arp_boot_smoke_marker(1, 10);
+        write_wifi_arp_boot_smoke_marker(23, WIFI_NET_REPL_BOOT_SMOKE_POLL_FRAMES);
+        let result = _machine.eval_line(WIFI_NET_REPL_BOOT_SMOKE_FORM, board, &mut output);
+        write_wifi_arp_boot_smoke_marker(24, bool_word(result.is_ok()));
+        write_wifi_arp_boot_smoke_marker(1, 11);
+    }
+
     Ok(())
+}
+
+#[cfg(feature = "wifi-net-repl-boot-smoke")]
+struct SilentWriter;
+
+#[cfg(feature = "wifi-net-repl-boot-smoke")]
+impl Write for SilentWriter {
+    fn write_str(&mut self, _value: &str) -> fmt::Result {
+        Ok(())
+    }
 }
 
 #[cfg(feature = "wifi-arp-boot-smoke")]

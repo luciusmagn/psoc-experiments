@@ -132,6 +132,20 @@ const DNS_POLL_FRAMES: u8 = 32;
 const DNS_POLL_DELAY_MS: u32 = 250;
 const DNS_TYPE_A: u16 = 1;
 const DNS_CLASS_IN: u16 = 1;
+pub const NET_REPL_REQUEST_PAYLOAD_MAX_BYTES: usize = 96;
+pub const NET_REPL_RESPONSE_PAYLOAD_MAX_BYTES: usize = 384;
+const NET_REPL_FRAME_HEADER_BYTES: usize = 8;
+const NET_REPL_ETHERNET_FRAME_MAX_BYTES: usize = ETHERNET_HEADER_BYTES
+    + IPV4_HEADER_BYTES
+    + UDP_HEADER_BYTES
+    + NET_REPL_FRAME_HEADER_BYTES
+    + NET_REPL_RESPONSE_PAYLOAD_MAX_BYTES;
+const NET_REPL_REQUEST_MAGIC: u32 = 0x4c50_5330;
+const NET_REPL_RESPONSE_MAGIC: u32 = 0x4c50_5331;
+const NET_REPL_UDP_PORT: u16 = 4665;
+const NET_REPL_IP_IDENTIFICATION: u16 = 0x4c52;
+const NET_REPL_DEFAULT_POLL_FRAMES: u8 = 1;
+const NET_REPL_POLL_DELAY_MS: u32 = 50;
 const WLC_UP_IOCTL: u32 = 2;
 const WLC_GET_VERSION_IOCTL: u32 = 1;
 const WLC_GET_BSSID_IOCTL: u32 = 23;
@@ -631,6 +645,50 @@ pub enum WifiSdioDnsParseStatus {
     DnsError,
     TruncatedName,
     NoAnswer,
+}
+
+#[derive(Clone, Copy)]
+pub enum WifiSdioNetReplRequestStatus {
+    Ready,
+    NoLease,
+    LeaseMissingAddress,
+    HtRequestFailed,
+    AckFailed,
+    FrameReadFailed,
+    InvalidFrame,
+    Timeout,
+}
+
+#[derive(Clone, Copy)]
+pub enum WifiSdioNetReplParseStatus {
+    NotRun,
+    Ready,
+    EmptyFrame,
+    NonDataChannel,
+    BdcHeaderTooShort,
+    EthernetTooShort,
+    WrongEtherType,
+    NotIpv4,
+    NotUdp,
+    WrongAddress,
+    WrongPort,
+    UdpTooShort,
+    PayloadTooShort,
+    WrongMagic,
+    PayloadTooLarge,
+}
+
+#[derive(Clone, Copy)]
+pub enum WifiSdioNetReplReplyStatus {
+    Ready,
+    NoLease,
+    LeaseMissingAddress,
+    NoPeer,
+    HtRequestFailed,
+    MacReadFailed,
+    MacMissing,
+    PayloadTooLarge,
+    SendFailed,
 }
 
 #[derive(Clone, Copy)]
@@ -1264,6 +1322,11 @@ pub struct WifiSdioControlState {
     dhcp_lease_transaction_id: u32,
     router_mac_valid: bool,
     router_mac: [u8; ETHERNET_ADDRESS_BYTES],
+    net_repl_peer_valid: bool,
+    net_repl_peer_mac: [u8; ETHERNET_ADDRESS_BYTES],
+    net_repl_peer_ip_address: u32,
+    net_repl_peer_port: u16,
+    net_repl_peer_sequence: u32,
 }
 
 impl WifiSdioControlState {
@@ -1284,6 +1347,11 @@ impl WifiSdioControlState {
             dhcp_lease_transaction_id: 0,
             router_mac_valid: false,
             router_mac: [0; ETHERNET_ADDRESS_BYTES],
+            net_repl_peer_valid: false,
+            net_repl_peer_mac: [0; ETHERNET_ADDRESS_BYTES],
+            net_repl_peer_ip_address: 0,
+            net_repl_peer_port: 0,
+            net_repl_peer_sequence: 0,
         }
     }
 
@@ -1358,6 +1426,7 @@ impl WifiSdioControlState {
         self.dhcp_lease_seconds = 0;
         self.dhcp_lease_transaction_id = 0;
         self.clear_router_mac();
+        self.clear_net_repl_peer();
     }
 
     fn store_dhcp_lease(&mut self, packet: &ParsedDhcpPacket) {
@@ -1380,6 +1449,22 @@ impl WifiSdioControlState {
     fn store_router_mac(&mut self, mac: &[u8; ETHERNET_ADDRESS_BYTES]) {
         self.router_mac_valid = true;
         self.router_mac = *mac;
+    }
+
+    fn clear_net_repl_peer(&mut self) {
+        self.net_repl_peer_valid = false;
+        self.net_repl_peer_mac = [0; ETHERNET_ADDRESS_BYTES];
+        self.net_repl_peer_ip_address = 0;
+        self.net_repl_peer_port = 0;
+        self.net_repl_peer_sequence = 0;
+    }
+
+    fn store_net_repl_peer(&mut self, packet: &ParsedNetReplRequest) {
+        self.net_repl_peer_valid = true;
+        self.net_repl_peer_mac = packet.source_mac;
+        self.net_repl_peer_ip_address = packet.source_ip_address;
+        self.net_repl_peer_port = packet.source_port;
+        self.net_repl_peer_sequence = packet.sequence;
     }
 }
 
@@ -1834,6 +1919,74 @@ pub struct WifiSdioDnsQueryReport {
     pub ht_last_error: Option<CommandError>,
     pub request_last_error: Option<CommandError>,
     pub frame_last_error: Option<CommandError>,
+    pub host_normal_int: u16,
+    pub host_error_int: u16,
+}
+
+pub struct WifiSdioNetReplRequestReport {
+    pub status: WifiSdioNetReplRequestStatus,
+    pub step: &'static [u8],
+    pub lease_valid: bool,
+    pub local_ip_address: u32,
+    pub ht_status: WifiSdioHtRequestStatus,
+    pub ht_attempts: u16,
+    pub ht_write_response: u32,
+    pub ht_read_value: u8,
+    pub ht_read_response: u32,
+    pub ht_available: bool,
+    pub parse_status: WifiSdioNetReplParseStatus,
+    pub poll_limit: u8,
+    pub polls: u8,
+    pub frames_read: u8,
+    pub non_data_frames: u8,
+    pub non_repl_frames: u8,
+    pub source_ip_address: u32,
+    pub source_port: u16,
+    pub source_mac_hash: u32,
+    pub sequence: u32,
+    pub payload_length: u8,
+    pub payload_hash: u32,
+    pub payload: [u8; NET_REPL_REQUEST_PAYLOAD_MAX_BYTES],
+    pub ack_status: WifiSdioInterruptAckStatus,
+    pub ack_last_error: Option<CommandError>,
+    pub ht_last_error: Option<CommandError>,
+    pub frame_last_error: Option<CommandError>,
+    pub host_normal_int: u16,
+    pub host_error_int: u16,
+}
+
+pub struct WifiSdioNetReplReplyReport {
+    pub status: WifiSdioNetReplReplyStatus,
+    pub step: &'static [u8],
+    pub lease_valid: bool,
+    pub local_ip_address: u32,
+    pub peer_valid: bool,
+    pub peer_ip_address: u32,
+    pub peer_port: u16,
+    pub peer_mac_hash: u32,
+    pub sequence: u32,
+    pub ht_status: WifiSdioHtRequestStatus,
+    pub ht_attempts: u16,
+    pub ht_write_response: u32,
+    pub ht_read_value: u8,
+    pub ht_read_response: u32,
+    pub ht_available: bool,
+    pub mac_status: WifiSdioLinkGetStatus,
+    pub mac_hash: u32,
+    pub mac_nonzero: bool,
+    pub mac_cdc_status: u32,
+    pub mac_cdc_length: u32,
+    pub payload_length: u16,
+    pub payload_hash: u32,
+    pub ethernet_length: u16,
+    pub ethernet_hash: u32,
+    pub send_status: WifiSdioF2ControlStatus,
+    pub send_packet_length: u16,
+    pub send_write_response: u32,
+    pub ack_status: WifiSdioInterruptAckStatus,
+    pub ht_last_error: Option<CommandError>,
+    pub mac_last_error: Option<CommandError>,
+    pub send_last_error: Option<CommandError>,
     pub host_normal_int: u16,
     pub host_error_int: u16,
 }
@@ -6605,6 +6758,170 @@ pub fn dns_query(
     finish_dns_query_report(p, report)
 }
 
+pub fn net_repl_poll(
+    p: &Peripherals,
+    state: &mut WifiSdioControlState,
+    poll_frames: u8,
+) -> WifiSdioNetReplRequestReport {
+    let mut report = empty_net_repl_request_report(p);
+    report.lease_valid = state.dhcp_lease_valid;
+    report.local_ip_address = state.dhcp_ip_address;
+    report.poll_limit = if poll_frames == 0 {
+        NET_REPL_DEFAULT_POLL_FRAMES
+    } else {
+        poll_frames
+    };
+
+    if !state.dhcp_lease_valid {
+        report.status = WifiSdioNetReplRequestStatus::NoLease;
+        return finish_net_repl_request_report(p, report);
+    }
+    if state.dhcp_ip_address == 0 {
+        report.status = WifiSdioNetReplRequestStatus::LeaseMissingAddress;
+        return finish_net_repl_request_report(p, report);
+    }
+
+    report.step = b"ht";
+    let ht = request_ht(p);
+    report.ht_status = ht.status;
+    report.ht_attempts = ht.attempts;
+    report.ht_write_response = ht.write_response;
+    report.ht_read_value = ht.read_value;
+    report.ht_read_response = ht.read_response;
+    report.ht_available = ht.ht_available;
+    report.ht_last_error = ht.last_error;
+    if !matches!(ht.status, WifiSdioHtRequestStatus::Ready) {
+        report.status = WifiSdioNetReplRequestStatus::HtRequestFailed;
+        return finish_net_repl_request_report(p, report);
+    }
+
+    report.step = b"request";
+    let poll = poll_net_repl_request(p, state, report.poll_limit, state.dhcp_ip_address);
+    copy_net_repl_poll_to_report(&poll, &mut report);
+    match poll.status {
+        WifiSdioNetReplRequestStatus::Ready => {
+            state.store_net_repl_peer(&poll.packet);
+            report.status = WifiSdioNetReplRequestStatus::Ready;
+            report.step = b"done";
+        }
+        status => {
+            report.status = status;
+        }
+    }
+
+    finish_net_repl_request_report(p, report)
+}
+
+pub fn net_repl_reply(
+    p: &Peripherals,
+    state: &mut WifiSdioControlState,
+    sequence: u32,
+    payload: &[u8],
+) -> WifiSdioNetReplReplyReport {
+    let mut report = empty_net_repl_reply_report(p);
+    report.lease_valid = state.dhcp_lease_valid;
+    report.local_ip_address = state.dhcp_ip_address;
+    report.peer_valid = state.net_repl_peer_valid;
+    report.peer_ip_address = state.net_repl_peer_ip_address;
+    report.peer_port = state.net_repl_peer_port;
+    report.peer_mac_hash = checksum_bytes(&state.net_repl_peer_mac);
+    report.sequence = sequence;
+    report.payload_length = payload.len() as u16;
+    report.payload_hash = checksum_bytes(payload);
+
+    if !state.dhcp_lease_valid {
+        report.status = WifiSdioNetReplReplyStatus::NoLease;
+        return finish_net_repl_reply_report(p, report);
+    }
+    if state.dhcp_ip_address == 0 {
+        report.status = WifiSdioNetReplReplyStatus::LeaseMissingAddress;
+        return finish_net_repl_reply_report(p, report);
+    }
+    if !state.net_repl_peer_valid {
+        report.status = WifiSdioNetReplReplyStatus::NoPeer;
+        return finish_net_repl_reply_report(p, report);
+    }
+    if payload.len() > NET_REPL_RESPONSE_PAYLOAD_MAX_BYTES {
+        report.status = WifiSdioNetReplReplyStatus::PayloadTooLarge;
+        return finish_net_repl_reply_report(p, report);
+    }
+
+    report.step = b"ht";
+    let ht = request_ht(p);
+    report.ht_status = ht.status;
+    report.ht_attempts = ht.attempts;
+    report.ht_write_response = ht.write_response;
+    report.ht_read_value = ht.read_value;
+    report.ht_read_response = ht.read_response;
+    report.ht_available = ht.ht_available;
+    report.ht_last_error = ht.last_error;
+    if !matches!(ht.status, WifiSdioHtRequestStatus::Ready) {
+        report.status = WifiSdioNetReplReplyStatus::HtRequestFailed;
+        return finish_net_repl_reply_report(p, report);
+    }
+
+    report.step = b"mac";
+    let mut mac_payload = [0u8; CUR_ETHERADDR_PAYLOAD_BYTES];
+    copy_bytes_to_slice(CUR_ETHERADDR_IOVAR_NAME, &mut mac_payload, 0);
+    let mac = link_control_get_payload(
+        p,
+        state,
+        WLC_GET_VAR_IOCTL,
+        &mac_payload,
+        ETHERNET_ADDRESS_BYTES,
+    );
+    report.mac_status = mac.status;
+    report.mac_cdc_status = mac.cdc_status;
+    report.mac_cdc_length = mac.cdc_length;
+    if !matches!(mac.status, WifiSdioLinkGetStatus::Ready) {
+        report.status = WifiSdioNetReplReplyStatus::MacReadFailed;
+        return finish_net_repl_reply_report(p, report);
+    }
+    report.mac_hash = checksum_bytes(&mac.bytes[..ETHERNET_ADDRESS_BYTES]);
+    report.mac_nonzero = !slice_all_eq(&mac.bytes[..ETHERNET_ADDRESS_BYTES], 0);
+    if !report.mac_nonzero {
+        report.status = WifiSdioNetReplReplyStatus::MacMissing;
+        return finish_net_repl_reply_report(p, report);
+    }
+
+    let mut mac_bytes = [0u8; ETHERNET_ADDRESS_BYTES];
+    copy_bytes_to_slice(&mac.bytes[..ETHERNET_ADDRESS_BYTES], &mut mac_bytes, 0);
+    let mut ethernet_frame = [0u8; NET_REPL_ETHERNET_FRAME_MAX_BYTES];
+    let ethernet_length = match build_net_repl_reply_frame(
+        &mut ethernet_frame,
+        &state.net_repl_peer_mac,
+        &mac_bytes,
+        state.dhcp_ip_address,
+        state.net_repl_peer_ip_address,
+        state.net_repl_peer_port,
+        sequence,
+        payload,
+    ) {
+        Some(length) => length,
+        None => {
+            report.status = WifiSdioNetReplReplyStatus::PayloadTooLarge;
+            return finish_net_repl_reply_report(p, report);
+        }
+    };
+    report.ethernet_length = ethernet_length as u16;
+    report.ethernet_hash = checksum_bytes(&ethernet_frame[..ethernet_length]);
+
+    report.step = b"reply";
+    let send = send_data_packet(p, state, &ethernet_frame[..ethernet_length]);
+    report.send_status = send.status;
+    report.send_packet_length = send.packet_length;
+    report.send_write_response = send.write_response;
+    report.send_last_error = send.write_last_error;
+    if !matches!(send.status, WifiSdioF2ControlStatus::Ready) {
+        report.status = WifiSdioNetReplReplyStatus::SendFailed;
+        return finish_net_repl_reply_report(p, report);
+    }
+
+    report.status = WifiSdioNetReplReplyStatus::Ready;
+    report.step = b"done";
+    finish_net_repl_reply_report(p, report)
+}
+
 struct LinkControlGet {
     status: WifiSdioLinkGetStatus,
     cdc_status: u32,
@@ -6652,6 +6969,19 @@ struct DnsPollResult {
     packet: ParsedDnsPacket,
 }
 
+struct NetReplPollResult {
+    status: WifiSdioNetReplRequestStatus,
+    last_parse_status: WifiSdioNetReplParseStatus,
+    polls: u8,
+    frames_read: u8,
+    non_data_frames: u8,
+    non_repl_frames: u8,
+    ack_status: WifiSdioInterruptAckStatus,
+    ack_last_error: Option<CommandError>,
+    frame_last_error: Option<CommandError>,
+    packet: ParsedNetReplRequest,
+}
+
 #[derive(Clone, Copy)]
 struct ParsedDhcpPacket {
     status: WifiSdioDhcpParseStatus,
@@ -6679,6 +7009,18 @@ struct ParsedDnsPacket {
     answer_ip_address: u32,
     answer_ttl_seconds: u32,
     answer_valid: bool,
+}
+
+#[derive(Clone, Copy)]
+struct ParsedNetReplRequest {
+    status: WifiSdioNetReplParseStatus,
+    source_mac: [u8; ETHERNET_ADDRESS_BYTES],
+    source_ip_address: u32,
+    source_port: u16,
+    sequence: u32,
+    payload_length: u8,
+    payload_hash: u32,
+    payload: [u8; NET_REPL_REQUEST_PAYLOAD_MAX_BYTES],
 }
 
 fn poll_dhcp_response(
@@ -6906,6 +7248,77 @@ fn poll_dns_response(
     result
 }
 
+fn poll_net_repl_request(
+    p: &Peripherals,
+    state: &mut WifiSdioControlState,
+    poll_frames: u8,
+    local_ip_address: u32,
+) -> NetReplPollResult {
+    let mut result = empty_net_repl_poll_result();
+    let limit = if poll_frames == 0 {
+        NET_REPL_DEFAULT_POLL_FRAMES
+    } else {
+        poll_frames
+    };
+    let mut frame_bytes = [0u8; WHD_IOCTL_MAX_TX_PACKET_BYTES];
+
+    while result.polls < limit {
+        result.polls = result.polls.saturating_add(1);
+
+        let ack = ack_interrupts(p);
+        result.ack_status = ack.status;
+        result.ack_last_error = ack.last_error;
+        if !matches!(ack.status, WifiSdioInterruptAckStatus::Ready) {
+            result.status = WifiSdioNetReplRequestStatus::AckFailed;
+            return result;
+        }
+
+        clear_bytes(&mut frame_bytes);
+        let (frame, copied) =
+            f2_read_frame_copy_all(p, WHD_IOCTL_MAX_TX_PACKET_BYTES as u16, &mut frame_bytes);
+        if frame.channel < 3 {
+            state.update_credit(frame.bus_data_credit);
+        }
+        result.frame_last_error = frame.last_error;
+
+        if is_empty_frame_response(&frame) {
+            result.last_parse_status = WifiSdioNetReplParseStatus::EmptyFrame;
+            delay_ms(NET_REPL_POLL_DELAY_MS);
+            continue;
+        }
+        if !matches!(frame.status, WifiSdioF2FrameStatus::Ready) {
+            result.status = WifiSdioNetReplRequestStatus::FrameReadFailed;
+            return result;
+        }
+        result.frames_read = result.frames_read.saturating_add(1);
+        if !frame.valid {
+            result.status = WifiSdioNetReplRequestStatus::InvalidFrame;
+            return result;
+        }
+
+        let packet = parse_net_repl_frame(&frame, &frame_bytes, copied, local_ip_address);
+        result.last_parse_status = packet.status;
+        result.packet = packet;
+        match packet.status {
+            WifiSdioNetReplParseStatus::Ready => {
+                result.status = WifiSdioNetReplRequestStatus::Ready;
+                return result;
+            }
+            WifiSdioNetReplParseStatus::NonDataChannel => {
+                result.non_data_frames = result.non_data_frames.saturating_add(1);
+            }
+            _ => {
+                result.non_repl_frames = result.non_repl_frames.saturating_add(1);
+            }
+        }
+
+        delay_ms(NET_REPL_POLL_DELAY_MS);
+    }
+
+    result.status = WifiSdioNetReplRequestStatus::Timeout;
+    result
+}
+
 fn empty_dhcp_poll_result() -> DhcpPollResult {
     DhcpPollResult {
         status: WifiSdioDhcpPollStatus::NotRun,
@@ -6951,6 +7364,21 @@ fn empty_dns_poll_result() -> DnsPollResult {
     }
 }
 
+fn empty_net_repl_poll_result() -> NetReplPollResult {
+    NetReplPollResult {
+        status: WifiSdioNetReplRequestStatus::Timeout,
+        last_parse_status: WifiSdioNetReplParseStatus::NotRun,
+        polls: 0,
+        frames_read: 0,
+        non_data_frames: 0,
+        non_repl_frames: 0,
+        ack_status: WifiSdioInterruptAckStatus::NotRun,
+        ack_last_error: None,
+        frame_last_error: None,
+        packet: empty_parsed_net_repl_request(),
+    }
+}
+
 fn empty_parsed_dhcp_packet() -> ParsedDhcpPacket {
     ParsedDhcpPacket {
         status: WifiSdioDhcpParseStatus::NotRun,
@@ -6983,6 +7411,19 @@ fn empty_parsed_dns_packet() -> ParsedDnsPacket {
     }
 }
 
+fn empty_parsed_net_repl_request() -> ParsedNetReplRequest {
+    ParsedNetReplRequest {
+        status: WifiSdioNetReplParseStatus::NotRun,
+        source_mac: [0; ETHERNET_ADDRESS_BYTES],
+        source_ip_address: 0,
+        source_port: 0,
+        sequence: 0,
+        payload_length: 0,
+        payload_hash: 0,
+        payload: [0; NET_REPL_REQUEST_PAYLOAD_MAX_BYTES],
+    }
+}
+
 fn copy_arp_poll_to_report(poll: &ArpPollResult, report: &mut WifiSdioArpRouterReport) {
     report.reply_poll_status = poll.status;
     report.reply_parse_status = poll.last_parse_status;
@@ -7008,6 +7449,27 @@ fn copy_dns_poll_to_report(poll: &DnsPollResult, report: &mut WifiSdioDnsQueryRe
     report.answer_ip_address = poll.packet.answer_ip_address;
     report.answer_ttl_seconds = poll.packet.answer_ttl_seconds;
     report.answer_valid = poll.packet.answer_valid;
+    report.ack_status = poll.ack_status;
+    report.ack_last_error = poll.ack_last_error;
+    report.frame_last_error = poll.frame_last_error;
+}
+
+fn copy_net_repl_poll_to_report(
+    poll: &NetReplPollResult,
+    report: &mut WifiSdioNetReplRequestReport,
+) {
+    report.parse_status = poll.last_parse_status;
+    report.polls = poll.polls;
+    report.frames_read = poll.frames_read;
+    report.non_data_frames = poll.non_data_frames;
+    report.non_repl_frames = poll.non_repl_frames;
+    report.source_ip_address = poll.packet.source_ip_address;
+    report.source_port = poll.packet.source_port;
+    report.source_mac_hash = checksum_bytes(&poll.packet.source_mac);
+    report.sequence = poll.packet.sequence;
+    report.payload_length = poll.packet.payload_length;
+    report.payload_hash = poll.packet.payload_hash;
+    report.payload = poll.packet.payload;
     report.ack_status = poll.ack_status;
     report.ack_last_error = poll.ack_last_error;
     report.frame_last_error = poll.frame_last_error;
@@ -9212,6 +9674,62 @@ fn build_dns_udp_frame(
     }
 }
 
+fn build_net_repl_reply_frame(
+    frame: &mut [u8; NET_REPL_ETHERNET_FRAME_MAX_BYTES],
+    destination_mac: &[u8; ETHERNET_ADDRESS_BYTES],
+    source_mac: &[u8; ETHERNET_ADDRESS_BYTES],
+    source_ip_address: u32,
+    destination_ip_address: u32,
+    destination_port: u16,
+    sequence: u32,
+    payload: &[u8],
+) -> Option<usize> {
+    if payload.len() > NET_REPL_RESPONSE_PAYLOAD_MAX_BYTES {
+        return None;
+    }
+
+    clear_bytes(frame);
+
+    copy_bytes_to_slice(destination_mac, frame, 0);
+    copy_bytes_to_slice(source_mac, frame, ETHERNET_ADDRESS_BYTES);
+    write_slice_be_u16(frame, 12, IPV4_ETHERTYPE);
+
+    let udp_payload_bytes = NET_REPL_FRAME_HEADER_BYTES + payload.len();
+    let ip_offset = ETHERNET_HEADER_BYTES;
+    let ip_total_length = (IPV4_HEADER_BYTES + UDP_HEADER_BYTES + udp_payload_bytes) as u16;
+    frame[ip_offset] = 0x45;
+    frame[ip_offset + 1] = 0;
+    write_slice_be_u16(frame, ip_offset + 2, ip_total_length);
+    write_slice_be_u16(frame, ip_offset + 4, NET_REPL_IP_IDENTIFICATION);
+    write_slice_be_u16(frame, ip_offset + 6, 0);
+    frame[ip_offset + 8] = 64;
+    frame[ip_offset + 9] = IPV4_PROTOCOL_UDP;
+    write_slice_be_u16(frame, ip_offset + 10, 0);
+    write_slice_be_u32(frame, ip_offset + 12, source_ip_address);
+    write_slice_be_u32(frame, ip_offset + 16, destination_ip_address);
+    let ip_checksum = ipv4_header_checksum(&frame[ip_offset..ip_offset + IPV4_HEADER_BYTES]);
+    write_slice_be_u16(frame, ip_offset + 10, ip_checksum);
+
+    let udp_offset = ip_offset + IPV4_HEADER_BYTES;
+    let udp_length = (UDP_HEADER_BYTES + udp_payload_bytes) as u16;
+    write_slice_be_u16(frame, udp_offset, NET_REPL_UDP_PORT);
+    write_slice_be_u16(frame, udp_offset + 2, destination_port);
+    write_slice_be_u16(frame, udp_offset + 4, udp_length);
+    write_slice_be_u16(frame, udp_offset + 6, 0);
+
+    let payload_offset = udp_offset + UDP_HEADER_BYTES;
+    write_slice_be_u32(frame, payload_offset, NET_REPL_RESPONSE_MAGIC);
+    write_slice_be_u32(frame, payload_offset + 4, sequence);
+    copy_bytes_to_slice(payload, frame, payload_offset + NET_REPL_FRAME_HEADER_BYTES);
+
+    let ethernet_length = ETHERNET_HEADER_BYTES + ip_total_length as usize;
+    if ethernet_length < ETHERNET_MIN_FRAME_BYTES {
+        Some(ETHERNET_MIN_FRAME_BYTES)
+    } else {
+        Some(ethernet_length)
+    }
+}
+
 fn build_dhcp_discover_frame(
     frame: &mut [u8; DHCP_ETHERNET_FRAME_BYTES],
     mac: &[u8; ETHERNET_ADDRESS_BYTES],
@@ -9735,6 +10253,115 @@ fn parse_dns_frame(
     }
 
     packet.status = WifiSdioDnsParseStatus::NoAnswer;
+    packet
+}
+
+fn parse_net_repl_frame(
+    frame: &WifiSdioF2FrameReport,
+    bytes: &[u8],
+    copied: u16,
+    expected_local_ip_address: u32,
+) -> ParsedNetReplRequest {
+    let mut packet = empty_parsed_net_repl_request();
+    if frame.channel != SDPCM_DATA_CHANNEL {
+        packet.status = WifiSdioNetReplParseStatus::NonDataChannel;
+        return packet;
+    }
+
+    let copied = copied as usize;
+    let bdc_offset = frame.header_length as usize;
+    if bdc_offset + BDC_HEADER_BYTES > copied {
+        packet.status = WifiSdioNetReplParseStatus::BdcHeaderTooShort;
+        return packet;
+    }
+
+    let bdc_data_offset_words = bytes[bdc_offset + 3] as usize;
+    let ethernet_offset = bdc_offset + BDC_HEADER_BYTES + bdc_data_offset_words * BDC_HEADER_BYTES;
+    if ethernet_offset + ETHERNET_HEADER_BYTES > copied {
+        packet.status = WifiSdioNetReplParseStatus::EthernetTooShort;
+        return packet;
+    }
+
+    if read_slice_be_u16(bytes, ethernet_offset + 12) != IPV4_ETHERTYPE {
+        packet.status = WifiSdioNetReplParseStatus::WrongEtherType;
+        return packet;
+    }
+
+    let ip_offset = ethernet_offset + ETHERNET_HEADER_BYTES;
+    if ip_offset + IPV4_HEADER_BYTES > copied {
+        packet.status = WifiSdioNetReplParseStatus::NotIpv4;
+        return packet;
+    }
+    let version = bytes[ip_offset] >> 4;
+    let header_words = bytes[ip_offset] & 0x0f;
+    let ip_header_bytes = header_words as usize * 4;
+    if version != 4 || ip_header_bytes < IPV4_HEADER_BYTES || ip_offset + ip_header_bytes > copied {
+        packet.status = WifiSdioNetReplParseStatus::NotIpv4;
+        return packet;
+    }
+    if bytes[ip_offset + 9] != IPV4_PROTOCOL_UDP {
+        packet.status = WifiSdioNetReplParseStatus::NotUdp;
+        return packet;
+    }
+
+    let destination_ip_address = read_slice_be_u32(bytes, ip_offset + 16);
+    if destination_ip_address != expected_local_ip_address && destination_ip_address != 0xffff_ffff
+    {
+        packet.status = WifiSdioNetReplParseStatus::WrongAddress;
+        return packet;
+    }
+
+    let udp_offset = ip_offset + ip_header_bytes;
+    if udp_offset + UDP_HEADER_BYTES > copied {
+        packet.status = WifiSdioNetReplParseStatus::UdpTooShort;
+        return packet;
+    }
+    let destination_port = read_slice_be_u16(bytes, udp_offset + 2);
+    if destination_port != NET_REPL_UDP_PORT {
+        packet.status = WifiSdioNetReplParseStatus::WrongPort;
+        return packet;
+    }
+    let udp_length = read_slice_be_u16(bytes, udp_offset + 4) as usize;
+    if udp_length < UDP_HEADER_BYTES || udp_offset + udp_length > copied {
+        packet.status = WifiSdioNetReplParseStatus::UdpTooShort;
+        return packet;
+    }
+
+    let payload_offset = udp_offset + UDP_HEADER_BYTES;
+    let payload_end = udp_offset + udp_length;
+    if payload_offset + NET_REPL_FRAME_HEADER_BYTES > payload_end {
+        packet.status = WifiSdioNetReplParseStatus::PayloadTooShort;
+        return packet;
+    }
+    if read_slice_be_u32(bytes, payload_offset) != NET_REPL_REQUEST_MAGIC {
+        packet.status = WifiSdioNetReplParseStatus::WrongMagic;
+        return packet;
+    }
+
+    let repl_payload_offset = payload_offset + NET_REPL_FRAME_HEADER_BYTES;
+    let repl_payload_length = payload_end - repl_payload_offset;
+    if repl_payload_length > NET_REPL_REQUEST_PAYLOAD_MAX_BYTES {
+        packet.status = WifiSdioNetReplParseStatus::PayloadTooLarge;
+        return packet;
+    }
+
+    copy_bytes_to_slice(
+        &bytes[ethernet_offset + ETHERNET_ADDRESS_BYTES
+            ..ethernet_offset + ETHERNET_ADDRESS_BYTES * 2],
+        &mut packet.source_mac,
+        0,
+    );
+    packet.source_ip_address = read_slice_be_u32(bytes, ip_offset + 12);
+    packet.source_port = read_slice_be_u16(bytes, udp_offset);
+    packet.sequence = read_slice_be_u32(bytes, payload_offset + 4);
+    packet.payload_length = repl_payload_length as u8;
+    copy_bytes_to_slice(
+        &bytes[repl_payload_offset..payload_end],
+        &mut packet.payload,
+        0,
+    );
+    packet.payload_hash = checksum_bytes(&packet.payload[..repl_payload_length]);
+    packet.status = WifiSdioNetReplParseStatus::Ready;
     packet
 }
 
@@ -13616,6 +14243,100 @@ fn finish_dns_query_report(
     p: &Peripherals,
     mut report: WifiSdioDnsQueryReport,
 ) -> WifiSdioDnsQueryReport {
+    let core = &p.SDHC0.core;
+    report.host_normal_int = core.normal_int_stat_r.read().bits();
+    report.host_error_int = core.error_int_stat_r.read().bits();
+    report
+}
+
+fn empty_net_repl_request_report(p: &Peripherals) -> WifiSdioNetReplRequestReport {
+    let core = &p.SDHC0.core;
+    WifiSdioNetReplRequestReport {
+        status: WifiSdioNetReplRequestStatus::NoLease,
+        step: b"start",
+        lease_valid: false,
+        local_ip_address: 0,
+        ht_status: WifiSdioHtRequestStatus::Timeout,
+        ht_attempts: 0,
+        ht_write_response: 0,
+        ht_read_value: 0,
+        ht_read_response: 0,
+        ht_available: false,
+        parse_status: WifiSdioNetReplParseStatus::NotRun,
+        poll_limit: NET_REPL_DEFAULT_POLL_FRAMES,
+        polls: 0,
+        frames_read: 0,
+        non_data_frames: 0,
+        non_repl_frames: 0,
+        source_ip_address: 0,
+        source_port: 0,
+        source_mac_hash: 0,
+        sequence: 0,
+        payload_length: 0,
+        payload_hash: 0,
+        payload: [0; NET_REPL_REQUEST_PAYLOAD_MAX_BYTES],
+        ack_status: WifiSdioInterruptAckStatus::NotRun,
+        ack_last_error: None,
+        ht_last_error: None,
+        frame_last_error: None,
+        host_normal_int: core.normal_int_stat_r.read().bits(),
+        host_error_int: core.error_int_stat_r.read().bits(),
+    }
+}
+
+fn finish_net_repl_request_report(
+    p: &Peripherals,
+    mut report: WifiSdioNetReplRequestReport,
+) -> WifiSdioNetReplRequestReport {
+    let core = &p.SDHC0.core;
+    report.host_normal_int = core.normal_int_stat_r.read().bits();
+    report.host_error_int = core.error_int_stat_r.read().bits();
+    report
+}
+
+fn empty_net_repl_reply_report(p: &Peripherals) -> WifiSdioNetReplReplyReport {
+    let core = &p.SDHC0.core;
+    WifiSdioNetReplReplyReport {
+        status: WifiSdioNetReplReplyStatus::NoPeer,
+        step: b"start",
+        lease_valid: false,
+        local_ip_address: 0,
+        peer_valid: false,
+        peer_ip_address: 0,
+        peer_port: 0,
+        peer_mac_hash: 0,
+        sequence: 0,
+        ht_status: WifiSdioHtRequestStatus::Timeout,
+        ht_attempts: 0,
+        ht_write_response: 0,
+        ht_read_value: 0,
+        ht_read_response: 0,
+        ht_available: false,
+        mac_status: WifiSdioLinkGetStatus::NotRun,
+        mac_hash: 0,
+        mac_nonzero: false,
+        mac_cdc_status: 0,
+        mac_cdc_length: 0,
+        payload_length: 0,
+        payload_hash: 0,
+        ethernet_length: 0,
+        ethernet_hash: 0,
+        send_status: WifiSdioF2ControlStatus::NotRun,
+        send_packet_length: 0,
+        send_write_response: 0,
+        ack_status: WifiSdioInterruptAckStatus::NotRun,
+        ht_last_error: None,
+        mac_last_error: None,
+        send_last_error: None,
+        host_normal_int: core.normal_int_stat_r.read().bits(),
+        host_error_int: core.error_int_stat_r.read().bits(),
+    }
+}
+
+fn finish_net_repl_reply_report(
+    p: &Peripherals,
+    mut report: WifiSdioNetReplReplyReport,
+) -> WifiSdioNetReplReplyReport {
     let core = &p.SDHC0.core;
     report.host_normal_int = core.normal_int_stat_r.read().bits();
     report.host_error_int = core.error_int_stat_r.read().bits();
