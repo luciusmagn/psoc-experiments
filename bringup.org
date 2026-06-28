@@ -5587,6 +5587,71 @@ payload.text==> ((enabled . #t)
     (last.ack.response-hash . #xeb69a6d2))
 #+end_example
 
+* 2026-06-28 Raw TCP SYN probe
+
+Added raw TCP handshake diagnostics as the next step toward =(http-get
+"http://...")= and eventually a standard network REPL transport:
+
+- =(wifi-tcp-syn "host" port)= resolves the host with the stored DNS server,
+  sends a TCP SYN, parses a SYN-ACK, and sends RST/ACK cleanup;
+- =(wifi-tcp-syn-ip #xIPv4 port)= skips DNS and sends the same TCP probe to a
+  numeric IPv4 address.
+
+The TCP frame path builds Ethernet, IPv4, and TCP headers directly, including
+the TCP IPv4 pseudo-header checksum. It reuses the stored DHCP lease, router
+ARP state, local MAC lookup, SDPCM data send path, and F2 frame polling code.
+
+The first direct-IP test exposed a real firmware bug: the TCP frame builder
+returned the 60-byte Ethernet minimum frame length, but the buffer was only the
+54 bytes needed for Ethernet + IPv4 + TCP headers. Slicing to 60 bytes panicked
+and halted the board before the UDP REPL could reply. The fix is to size the
+TCP Ethernet frame buffer at =ETHERNET_MIN_FRAME_BYTES=.
+
+The current TP-Link network is returning DHCP and ARP and the UDP REPL is
+working, but DNS queries to the DHCP-provided DNS/router address timed out:
+
+#+begin_example
+tools/send-net-repl.scm --host 192.168.0.107 --sequence 222 --attempts 1 --wait 60 '(wifi-dns-query "example.com")'
+payload.text==> ((status . response-timeout)
+    (step . response)
+    (lease.valid . #t)
+    (lease.ip . #xc0a8006b)
+    (lease.dns . #xc0a80001)
+    (lease.router . #xc0a80001)
+    ...)
+#+end_example
+
+Because DNS was timing out, validation used the direct router IP. The corrected
+image successfully sent a SYN to =192.168.0.1:80=, parsed a SYN-ACK with flags
+=#x12=, and sent RST/ACK cleanup:
+
+#+begin_example
+tools/send-net-repl.scm --host 192.168.0.107 --sequence 301 --attempts 1 --wait 60 '(wifi-tcp-syn-ip #xc0a80001 80)'
+payload.text==> ((status . ready)
+    (step . done)
+    (local.ip . #xc0a8006b)
+    (remote.ip . #xc0a80001)
+    (remote.port . #x00000050)
+    (source.port . #x0000c002)
+    (local.seq . #x4c505501)
+    (remote.seq . #xc46f0922)
+    (ack . #x4c505502)
+    (flags . #x00000012)
+    (dns.status . not-run)
+    (request.status . ready)
+    (response.status . ready)
+    (response.parse . ready)
+    (response.polls . #x00000001)
+    (reset.status . ready))
+#+end_example
+
+The UDP REPL remained alive after the TCP probe:
+
+#+begin_example
+tools/send-net-repl.scm --host 192.168.0.107 --sequence 302 --attempts 5 --wait 3 '(+ 18 19)'
+payload.text==> 37
+#+end_example
+
 Transport decision for now: keep UDP as the working board-control path because
 DHCP, ARP, DNS, and framed UDP replies are already live. A future standard
 console should likely be raw TCP first, with minimal telnet option handling on
@@ -5606,8 +5671,8 @@ serial-over-LAN is too heavy for this firmware target.
    unattended Wi-Fi tests.
 6. Exercise ACK plus host retry behavior under induced packet loss and decide
    whether an ACK should clear or preserve the single-entry response cache.
-7. Add TCP or minimal HTTP GET after DNS to prove longer network exchanges.
-   Use raw TCP before considering minimal telnet negotiation.
+7. Debug DNS timeout on the current TP-Link network, then build a minimal HTTP
+   GET on top of the validated TCP SYN/SYN-ACK/RST path.
 8. Add generic CDC ioctl/iovar helpers for firmware version, join, and link
    status.
 9. Start Wi-Fi from a known-good Infineon or Zephyr sample before trying

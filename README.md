@@ -75,19 +75,22 @@ only sanitized status fields and a MAC hash. `(wifi-dns-query "example.com")`
 sends a UDP DNS A-record query through the stored lease and router ARP state,
 then reports sanitized response status and the first answer. These high-level
 network forms are stepping stones toward a framed network REPL protocol that is
-less dependent on the flaky serial RX path. `(wifi-net-repl-once)` polls UDP
-port 4665 for one framed request. The current request payload is `LPS3`, a
-big-endian 32-bit sequence number, a big-endian 32-bit FNV-1a checksum of the
-request bytes, and one Lisp expression. The firmware still accepts legacy
-`LPS0` requests without request checksums for compatibility with older host
-tooling. The current reply payload is `LPS2`, the same sequence number, a
-big-endian 32-bit FNV-1a checksum of the reply text, and the pretty-printed
-result or error text. The host client still accepts legacy `LPS1` responses
-without a checksum while older images are being replaced. After a verified
-response, the host client sends an optional `LPS4` ACK with the same sequence
-number and the response checksum. The board records ACK counts and the last ACK
-hash in `(wifi-net-repl-service status)` without evaluating anything from the
-ACK frame.
+less dependent on the flaky serial RX path. `(wifi-tcp-syn "example.com" 80)`
+resolves a host through the stored DNS server, sends a raw TCP SYN, parses a
+SYN-ACK, and sends RST/ACK cleanup. `(wifi-tcp-syn-ip #xc0a80001 80)` skips DNS
+and probes a numeric IPv4 address directly, which is useful while DNS behavior
+is being debugged. `(wifi-net-repl-once)` polls UDP port 4665 for one framed
+request. The current request payload is `LPS3`, a big-endian 32-bit sequence
+number, a big-endian 32-bit FNV-1a checksum of the request bytes, and one Lisp
+expression. The firmware still accepts legacy `LPS0` requests without request
+checksums for compatibility with older host tooling. The current reply payload
+is `LPS2`, the same sequence number, a big-endian 32-bit FNV-1a checksum of the
+reply text, and the pretty-printed result or error text. The host client still
+accepts legacy `LPS1` responses without a checksum while older images are being
+replaced. After a verified response, the host client sends an optional `LPS4`
+ACK with the same sequence number and the response checksum. The board records
+ACK counts and the last ACK hash in `(wifi-net-repl-service status)` without
+evaluating anything from the ACK frame.
 Requests are capped at 96 bytes and replies at 512 bytes.
 `(wifi-net-repl-service status)`, `(wifi-net-repl-service on)`,
 `(wifi-net-repl-service on 1)`, and `(wifi-net-repl-service off)` control the

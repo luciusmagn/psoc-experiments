@@ -616,6 +616,24 @@ impl lisp::Board for PsocBoard<'_> {
         ))
     }
 
+    fn wifi_tcp_syn(&mut self, name: lisp::StringBytes, port: u16) -> lisp::WifiSdioTcpSynReport {
+        wifi_sdio_tcp_syn_report(wifi_sdio::tcp_syn_probe(
+            self.p,
+            &mut self.state.wifi_control_state,
+            &name.bytes[..name.len as usize],
+            port,
+        ))
+    }
+
+    fn wifi_tcp_syn_ip(&mut self, remote_ip_address: u32, port: u16) -> lisp::WifiSdioTcpSynReport {
+        wifi_sdio_tcp_syn_report(wifi_sdio::tcp_syn_probe_ip(
+            self.p,
+            &mut self.state.wifi_control_state,
+            remote_ip_address,
+            port,
+        ))
+    }
+
     fn wifi_net_repl_poll(&mut self, poll_frames: u8) -> lisp::WifiNetReplRequestReport {
         wifi_sdio_net_repl_request_report(wifi_sdio::net_repl_poll(
             self.p,
@@ -1397,6 +1415,7 @@ fn wifi_sdio_arp_parse_status(status: wifi_sdio::WifiSdioArpParseStatus) -> &'st
 
 fn wifi_sdio_dns_query_status(status: wifi_sdio::WifiSdioDnsQueryStatus) -> &'static [u8] {
     match status {
+        wifi_sdio::WifiSdioDnsQueryStatus::NotRun => b"not-run",
         wifi_sdio::WifiSdioDnsQueryStatus::Ready => b"ready",
         wifi_sdio::WifiSdioDnsQueryStatus::NoLease => b"no-lease",
         wifi_sdio::WifiSdioDnsQueryStatus::LeaseMissingAddress => b"lease-missing-address",
@@ -1443,6 +1462,55 @@ fn wifi_sdio_dns_parse_status(status: wifi_sdio::WifiSdioDnsParseStatus) -> &'st
         wifi_sdio::WifiSdioDnsParseStatus::DnsError => b"dns-error",
         wifi_sdio::WifiSdioDnsParseStatus::TruncatedName => b"truncated-name",
         wifi_sdio::WifiSdioDnsParseStatus::NoAnswer => b"no-answer",
+    }
+}
+
+fn wifi_sdio_tcp_syn_status(status: wifi_sdio::WifiSdioTcpSynStatus) -> &'static [u8] {
+    match status {
+        wifi_sdio::WifiSdioTcpSynStatus::Ready => b"ready",
+        wifi_sdio::WifiSdioTcpSynStatus::NoLease => b"no-lease",
+        wifi_sdio::WifiSdioTcpSynStatus::LeaseMissingAddress => b"lease-missing-address",
+        wifi_sdio::WifiSdioTcpSynStatus::RouterMacMissing => b"router-mac-missing",
+        wifi_sdio::WifiSdioTcpSynStatus::LocalMacMissing => b"local-mac-missing",
+        wifi_sdio::WifiSdioTcpSynStatus::BadPort => b"bad-port",
+        wifi_sdio::WifiSdioTcpSynStatus::DnsFailed => b"dns-failed",
+        wifi_sdio::WifiSdioTcpSynStatus::HtRequestFailed => b"ht-request-failed",
+        wifi_sdio::WifiSdioTcpSynStatus::SendFailed => b"send-failed",
+        wifi_sdio::WifiSdioTcpSynStatus::ResponsePollFailed => b"response-poll-failed",
+        wifi_sdio::WifiSdioTcpSynStatus::ResponseTimeout => b"response-timeout",
+        wifi_sdio::WifiSdioTcpSynStatus::ResponseRejected => b"response-rejected",
+        wifi_sdio::WifiSdioTcpSynStatus::ResetFailed => b"reset-failed",
+    }
+}
+
+fn wifi_sdio_tcp_poll_status(status: wifi_sdio::WifiSdioTcpPollStatus) -> &'static [u8] {
+    match status {
+        wifi_sdio::WifiSdioTcpPollStatus::NotRun => b"not-run",
+        wifi_sdio::WifiSdioTcpPollStatus::Ready => b"ready",
+        wifi_sdio::WifiSdioTcpPollStatus::Timeout => b"timeout",
+        wifi_sdio::WifiSdioTcpPollStatus::AckFailed => b"ack-failed",
+        wifi_sdio::WifiSdioTcpPollStatus::FrameReadFailed => b"frame-read-failed",
+        wifi_sdio::WifiSdioTcpPollStatus::InvalidFrame => b"invalid-frame",
+    }
+}
+
+fn wifi_sdio_tcp_parse_status(status: wifi_sdio::WifiSdioTcpParseStatus) -> &'static [u8] {
+    match status {
+        wifi_sdio::WifiSdioTcpParseStatus::NotRun => b"not-run",
+        wifi_sdio::WifiSdioTcpParseStatus::Ready => b"ready",
+        wifi_sdio::WifiSdioTcpParseStatus::EmptyFrame => b"empty-frame",
+        wifi_sdio::WifiSdioTcpParseStatus::NonDataChannel => b"non-data-channel",
+        wifi_sdio::WifiSdioTcpParseStatus::BdcHeaderTooShort => b"bdc-header-too-short",
+        wifi_sdio::WifiSdioTcpParseStatus::EthernetTooShort => b"ethernet-too-short",
+        wifi_sdio::WifiSdioTcpParseStatus::WrongEtherType => b"wrong-ethertype",
+        wifi_sdio::WifiSdioTcpParseStatus::NotIpv4 => b"not-ipv4",
+        wifi_sdio::WifiSdioTcpParseStatus::NotTcp => b"not-tcp",
+        wifi_sdio::WifiSdioTcpParseStatus::WrongAddress => b"wrong-address",
+        wifi_sdio::WifiSdioTcpParseStatus::TcpTooShort => b"tcp-too-short",
+        wifi_sdio::WifiSdioTcpParseStatus::WrongPorts => b"wrong-ports",
+        wifi_sdio::WifiSdioTcpParseStatus::WrongSequence => b"wrong-sequence",
+        wifi_sdio::WifiSdioTcpParseStatus::MissingSynAck => b"missing-syn-ack",
+        wifi_sdio::WifiSdioTcpParseStatus::Reset => b"reset",
     }
 }
 
@@ -2396,6 +2464,52 @@ fn wifi_sdio_dns_query_report(
             .request_last_error
             .map(wifi_sdio_command_error_report),
         frame_last_error: report.frame_last_error.map(wifi_sdio_command_error_report),
+        host_normal_int: report.host_normal_int,
+        host_error_int: report.host_error_int,
+    }
+}
+
+fn wifi_sdio_tcp_syn_report(report: wifi_sdio::WifiSdioTcpSynReport) -> lisp::WifiSdioTcpSynReport {
+    lisp::WifiSdioTcpSynReport {
+        status: wifi_sdio_tcp_syn_status(report.status),
+        step: report.step,
+        lease_valid: report.lease_valid,
+        local_ip_address: report.local_ip_address,
+        remote_ip_address: report.remote_ip_address,
+        remote_port: report.remote_port,
+        source_port: report.source_port,
+        local_sequence: report.local_sequence,
+        remote_sequence: report.remote_sequence,
+        ack_number: report.ack_number,
+        response_flags: report.response_flags,
+        router_mac_present: report.router_mac_present,
+        local_mac_present: report.local_mac_present,
+        dns_status: wifi_sdio_dns_query_status(report.dns_status),
+        dns_parse_status: wifi_sdio_dns_parse_status(report.dns_parse_status),
+        request_status: wifi_sdio_f2_control_status(report.request_status),
+        request_ethernet_length: report.request_ethernet_length,
+        request_ethernet_hash: report.request_ethernet_hash,
+        request_packet_length: report.request_packet_length,
+        request_write_response: report.request_write_response,
+        response_poll_status: wifi_sdio_tcp_poll_status(report.response_poll_status),
+        response_parse_status: wifi_sdio_tcp_parse_status(report.response_parse_status),
+        response_polls: report.response_polls,
+        response_frames_read: report.response_frames_read,
+        response_non_data_frames: report.response_non_data_frames,
+        response_non_tcp_frames: report.response_non_tcp_frames,
+        reset_status: wifi_sdio_f2_control_status(report.reset_status),
+        reset_packet_length: report.reset_packet_length,
+        reset_write_response: report.reset_write_response,
+        ack_status: wifi_sdio_interrupt_ack_status(report.ack_status),
+        ack_last_error: report.ack_last_error.map(wifi_sdio_command_error_report),
+        ht_last_error: report.ht_last_error.map(wifi_sdio_command_error_report),
+        request_last_error: report
+            .request_last_error
+            .map(wifi_sdio_command_error_report),
+        response_last_error: report
+            .response_last_error
+            .map(wifi_sdio_command_error_report),
+        reset_last_error: report.reset_last_error.map(wifi_sdio_command_error_report),
         host_normal_int: report.host_normal_int,
         host_error_int: report.host_error_int,
     }

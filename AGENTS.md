@@ -214,6 +214,11 @@ closures or other non-reloadable bindings as skipped. `load` can read source
 files up to 512 bytes from FAT. `read-file` reports the full length but only
 includes inline content for files that fit in a 96-byte Lisp string; `cat`
 returns an error for larger files.
+Use `(wifi-tcp-syn-ip #xc0a80001 80)` as the current raw TCP smoke test on the
+TP-Link network; it has validated SYN, SYN-ACK parsing, and RST/ACK cleanup
+against the router. `(wifi-tcp-syn "example.com" 80)` exercises the same TCP
+path after DNS, but DNS responses are currently timing out on this network and
+need separate follow-up.
 Use `tools/send-net-repl.scm --color` only when ANSI payload coloring is wanted;
 plain output is the default. Use `--read-only` as a conservative host-side
 accidental-send guard for status, directory, FAT info, and simple-path

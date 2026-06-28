@@ -217,6 +217,8 @@ pub trait Board {
     fn wifi_lease_status(&mut self) -> WifiSdioLeaseStatusReport;
     fn wifi_arp_router(&mut self) -> WifiSdioArpRouterReport;
     fn wifi_dns_query(&mut self, name: StringBytes) -> WifiSdioDnsQueryReport;
+    fn wifi_tcp_syn(&mut self, name: StringBytes, port: u16) -> WifiSdioTcpSynReport;
+    fn wifi_tcp_syn_ip(&mut self, remote_ip_address: u32, port: u16) -> WifiSdioTcpSynReport;
     fn wifi_net_repl_poll(&mut self, poll_frames: u8) -> WifiNetReplRequestReport;
     fn wifi_net_repl_reply(
         &mut self,
@@ -1184,6 +1186,47 @@ pub struct WifiSdioDnsQueryReport {
 }
 
 #[derive(Clone, Copy)]
+pub struct WifiSdioTcpSynReport {
+    pub status: &'static [u8],
+    pub step: &'static [u8],
+    pub lease_valid: bool,
+    pub local_ip_address: u32,
+    pub remote_ip_address: u32,
+    pub remote_port: u16,
+    pub source_port: u16,
+    pub local_sequence: u32,
+    pub remote_sequence: u32,
+    pub ack_number: u32,
+    pub response_flags: u8,
+    pub router_mac_present: bool,
+    pub local_mac_present: bool,
+    pub dns_status: &'static [u8],
+    pub dns_parse_status: &'static [u8],
+    pub request_status: &'static [u8],
+    pub request_ethernet_length: u16,
+    pub request_ethernet_hash: u32,
+    pub request_packet_length: u16,
+    pub request_write_response: u32,
+    pub response_poll_status: &'static [u8],
+    pub response_parse_status: &'static [u8],
+    pub response_polls: u8,
+    pub response_frames_read: u8,
+    pub response_non_data_frames: u8,
+    pub response_non_tcp_frames: u8,
+    pub reset_status: &'static [u8],
+    pub reset_packet_length: u16,
+    pub reset_write_response: u32,
+    pub ack_status: &'static [u8],
+    pub ack_last_error: Option<WifiSdioCommandErrorReport>,
+    pub ht_last_error: Option<WifiSdioCommandErrorReport>,
+    pub request_last_error: Option<WifiSdioCommandErrorReport>,
+    pub response_last_error: Option<WifiSdioCommandErrorReport>,
+    pub reset_last_error: Option<WifiSdioCommandErrorReport>,
+    pub host_normal_int: u16,
+    pub host_error_int: u16,
+}
+
+#[derive(Clone, Copy)]
 pub struct WifiNetReplRequestReport {
     pub status: &'static [u8],
     pub step: &'static [u8],
@@ -2014,6 +2057,8 @@ pub enum Primitive {
     WifiLeaseStatus,
     WifiArpRouter,
     WifiDnsQuery,
+    WifiTcpSyn,
+    WifiTcpSynIp,
     WifiNetReplOnce,
     WifiNetReplService,
     WifiNetworkBootstrap,
@@ -2135,6 +2180,8 @@ impl Primitive {
             Self::WifiLeaseStatus => "wifi-lease-status",
             Self::WifiArpRouter => "wifi-arp-router",
             Self::WifiDnsQuery => "wifi-dns-query",
+            Self::WifiTcpSyn => "wifi-tcp-syn",
+            Self::WifiTcpSynIp => "wifi-tcp-syn-ip",
             Self::WifiNetReplOnce => "wifi-net-repl-once",
             Self::WifiNetReplService => "wifi-net-repl-service",
             Self::WifiNetworkBootstrap => "wifi-network-bootstrap",
@@ -2428,6 +2475,8 @@ impl Machine {
         self.install_primitive(b"wifi-lease-status", Primitive::WifiLeaseStatus)?;
         self.install_primitive(b"wifi-arp-router", Primitive::WifiArpRouter)?;
         self.install_primitive(b"wifi-dns-query", Primitive::WifiDnsQuery)?;
+        self.install_primitive(b"wifi-tcp-syn", Primitive::WifiTcpSyn)?;
+        self.install_primitive(b"wifi-tcp-syn-ip", Primitive::WifiTcpSynIp)?;
         self.install_primitive(b"wifi-net-repl-once", Primitive::WifiNetReplOnce)?;
         self.install_primitive(b"wifi-net-repl-service", Primitive::WifiNetReplService)?;
         self.install_primitive(b"wifi-network-bootstrap", Primitive::WifiNetworkBootstrap)?;
@@ -3427,6 +3476,18 @@ impl Machine {
                 let name = self.expect_string(args[0])?;
                 self.wifi_sdio_dns_query_report(board.wifi_dns_query(name))
             }
+            Primitive::WifiTcpSyn => {
+                self.expect_count(args, 2)?;
+                let name = self.expect_string(args[0])?;
+                let port = self.expect_u16(args[1])?;
+                self.wifi_sdio_tcp_syn_report(board.wifi_tcp_syn(name, port))
+            }
+            Primitive::WifiTcpSynIp => {
+                self.expect_count(args, 2)?;
+                let remote_ip_address = self.expect_u32(args[0])?;
+                let port = self.expect_u16(args[1])?;
+                self.wifi_sdio_tcp_syn_report(board.wifi_tcp_syn_ip(remote_ip_address, port))
+            }
             Primitive::WifiNetReplOnce => {
                 let poll_frames = match args.len() {
                     0 => 1,
@@ -3991,6 +4052,15 @@ impl Machine {
         }
     }
 
+    fn expect_u16(&self, value: Value) -> LispResult<u16> {
+        let value = self.expect_u32(value)?;
+        if value <= u16::MAX as u32 {
+            Ok(value as u16)
+        } else {
+            Err(Error::new("expected 16-bit value"))
+        }
+    }
+
     fn expect_string(&self, value: Value) -> LispResult<StringBytes> {
         match value {
             Value::Object(id) => match self.object_kind_by_id(id)? {
@@ -4237,6 +4307,8 @@ impl Machine {
             b"wifi-lease-status",
             b"wifi-arp-router",
             b"wifi-dns-query",
+            b"wifi-tcp-syn",
+            b"wifi-tcp-syn-ip",
             b"wifi-net-repl-once",
             b"wifi-net-repl-service",
             b"wifi-network-bootstrap",
@@ -5959,6 +6031,46 @@ impl Machine {
             ht_last_error,
             request_last_error,
             frame_last_error,
+        ];
+        self.make_list_from_values(&entries)
+    }
+
+    fn wifi_sdio_tcp_syn_report(&mut self, report: WifiSdioTcpSynReport) -> LispResult<Value> {
+        let status = self.symbol_entry(b"status", report.status)?;
+        let step = self.symbol_entry(b"step", report.step)?;
+        let local_ip_address = self.word_entry(b"local.ip", report.local_ip_address)?;
+        let remote_ip_address = self.word_entry(b"remote.ip", report.remote_ip_address)?;
+        let remote_port = self.word_entry(b"remote.port", report.remote_port as u32)?;
+        let source_port = self.word_entry(b"source.port", report.source_port as u32)?;
+        let local_sequence = self.word_entry(b"local.seq", report.local_sequence)?;
+        let remote_sequence = self.word_entry(b"remote.seq", report.remote_sequence)?;
+        let ack_number = self.word_entry(b"ack", report.ack_number)?;
+        let response_flags = self.word_entry(b"flags", report.response_flags as u32)?;
+        let dns_status = self.symbol_entry(b"dns.status", report.dns_status)?;
+        let request_status = self.symbol_entry(b"request.status", report.request_status)?;
+        let response_poll_status =
+            self.symbol_entry(b"response.status", report.response_poll_status)?;
+        let response_parse_status =
+            self.symbol_entry(b"response.parse", report.response_parse_status)?;
+        let response_polls = self.word_entry(b"response.polls", report.response_polls as u32)?;
+        let reset_status = self.symbol_entry(b"reset.status", report.reset_status)?;
+        let entries = [
+            status,
+            step,
+            local_ip_address,
+            remote_ip_address,
+            remote_port,
+            source_port,
+            local_sequence,
+            remote_sequence,
+            ack_number,
+            response_flags,
+            dns_status,
+            request_status,
+            response_poll_status,
+            response_parse_status,
+            response_polls,
+            reset_status,
         ];
         self.make_list_from_values(&entries)
     }
