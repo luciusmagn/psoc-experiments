@@ -134,14 +134,16 @@ const DNS_TYPE_A: u16 = 1;
 const DNS_CLASS_IN: u16 = 1;
 pub const NET_REPL_REQUEST_PAYLOAD_MAX_BYTES: usize = 96;
 pub const NET_REPL_RESPONSE_PAYLOAD_MAX_BYTES: usize = 512;
-const NET_REPL_REQUEST_FRAME_HEADER_BYTES: usize = 8;
+const NET_REPL_LEGACY_REQUEST_FRAME_HEADER_BYTES: usize = 8;
+const NET_REPL_CHECKED_REQUEST_FRAME_HEADER_BYTES: usize = 12;
 const NET_REPL_RESPONSE_FRAME_HEADER_BYTES: usize = 12;
 const NET_REPL_ETHERNET_FRAME_MAX_BYTES: usize = ETHERNET_HEADER_BYTES
     + IPV4_HEADER_BYTES
     + UDP_HEADER_BYTES
     + NET_REPL_RESPONSE_FRAME_HEADER_BYTES
     + NET_REPL_RESPONSE_PAYLOAD_MAX_BYTES;
-const NET_REPL_REQUEST_MAGIC: u32 = 0x4c50_5330;
+const NET_REPL_LEGACY_REQUEST_MAGIC: u32 = 0x4c50_5330;
+const NET_REPL_CHECKED_REQUEST_MAGIC: u32 = 0x4c50_5333;
 const NET_REPL_RESPONSE_MAGIC: u32 = 0x4c50_5332;
 const NET_REPL_UDP_PORT: u16 = 4665;
 const NET_REPL_IP_IDENTIFICATION: u16 = 0x4c52;
@@ -677,6 +679,7 @@ pub enum WifiSdioNetReplParseStatus {
     PayloadTooShort,
     WrongMagic,
     PayloadTooLarge,
+    RequestChecksumMismatch,
 }
 
 #[derive(Clone, Copy)]
@@ -10495,20 +10498,42 @@ fn parse_net_repl_frame(
 
     let payload_offset = udp_offset + UDP_HEADER_BYTES;
     let payload_end = udp_offset + udp_length;
-    if payload_offset + NET_REPL_REQUEST_FRAME_HEADER_BYTES > payload_end {
+    if payload_offset + NET_REPL_LEGACY_REQUEST_FRAME_HEADER_BYTES > payload_end {
         packet.status = WifiSdioNetReplParseStatus::PayloadTooShort;
         return packet;
     }
-    if read_slice_be_u32(bytes, payload_offset) != NET_REPL_REQUEST_MAGIC {
-        packet.status = WifiSdioNetReplParseStatus::WrongMagic;
-        return packet;
-    }
-
-    let repl_payload_offset = payload_offset + NET_REPL_REQUEST_FRAME_HEADER_BYTES;
+    let request_magic = read_slice_be_u32(bytes, payload_offset);
+    let request_checksum = match request_magic {
+        NET_REPL_LEGACY_REQUEST_MAGIC => None,
+        NET_REPL_CHECKED_REQUEST_MAGIC => {
+            if payload_offset + NET_REPL_CHECKED_REQUEST_FRAME_HEADER_BYTES > payload_end {
+                packet.status = WifiSdioNetReplParseStatus::PayloadTooShort;
+                return packet;
+            }
+            Some(read_slice_be_u32(bytes, payload_offset + 8))
+        }
+        _ => {
+            packet.status = WifiSdioNetReplParseStatus::WrongMagic;
+            return packet;
+        }
+    };
+    let request_header_bytes = if request_checksum.is_some() {
+        NET_REPL_CHECKED_REQUEST_FRAME_HEADER_BYTES
+    } else {
+        NET_REPL_LEGACY_REQUEST_FRAME_HEADER_BYTES
+    };
+    let repl_payload_offset = payload_offset + request_header_bytes;
     let repl_payload_length = payload_end - repl_payload_offset;
     if repl_payload_length > NET_REPL_REQUEST_PAYLOAD_MAX_BYTES {
         packet.status = WifiSdioNetReplParseStatus::PayloadTooLarge;
         return packet;
+    }
+    let payload_hash = checksum_bytes(&bytes[repl_payload_offset..payload_end]);
+    if let Some(expected_checksum) = request_checksum {
+        if expected_checksum != payload_hash {
+            packet.status = WifiSdioNetReplParseStatus::RequestChecksumMismatch;
+            return packet;
+        }
     }
 
     copy_bytes_to_slice(
@@ -10526,7 +10551,7 @@ fn parse_net_repl_frame(
         &mut packet.payload,
         0,
     );
-    packet.payload_hash = checksum_bytes(&packet.payload[..repl_payload_length]);
+    packet.payload_hash = payload_hash;
     packet.status = WifiSdioNetReplParseStatus::Ready;
     packet
 }

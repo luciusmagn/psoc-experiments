@@ -1445,6 +1445,9 @@ fn wifi_sdio_net_repl_parse_status(status: wifi_sdio::WifiSdioNetReplParseStatus
         wifi_sdio::WifiSdioNetReplParseStatus::PayloadTooShort => b"payload-too-short",
         wifi_sdio::WifiSdioNetReplParseStatus::WrongMagic => b"wrong-magic",
         wifi_sdio::WifiSdioNetReplParseStatus::PayloadTooLarge => b"payload-too-large",
+        wifi_sdio::WifiSdioNetReplParseStatus::RequestChecksumMismatch => {
+            b"request-checksum-mismatch"
+        }
     }
 }
 

@@ -22,10 +22,12 @@
 (define response-path ".local/net-repl/response.bin")
 
 (define (usage)
-  (say "usage: tools/send-net-repl.scm --host HOST [--port PORT] [--sequence N] [--attempts N] [--wait SECONDS] [--color] [--read-only] FORM")
+  (say "usage: tools/send-net-repl.scm --host HOST [--port PORT] [--sequence N] [--attempts N] [--wait SECONDS] [--color] [--read-only] [--legacy-request] FORM")
   (say "")
   (say "Sends one framed UDP Lisp request to the board network REPL endpoint.")
   (say "The Lisp form is written to an ignored binary request file, not printed in the shell command.")
+  (say "The default request frame is LPS3 with a request checksum.")
+  (say "--legacy-request sends the older LPS0 request frame for older flashed images.")
   (say "--color wraps the payload text in ANSI color. The default is plain output.")
   (say "--read-only refuses forms outside the conservative host-side read-only allowlist.")
   (say "HOST may also be supplied with PSOC_NET_REPL_HOST."))
@@ -39,10 +41,10 @@
                             ".."
                             (number->string max))))))
 
-(define (parse args host port sequence attempts wait-seconds color? read-only? forms)
+(define (parse args host port sequence attempts wait-seconds color? read-only? legacy-request? forms)
   (cond
     ((null? args)
-     (values host port sequence attempts wait-seconds color? read-only? (reverse forms)))
+     (values host port sequence attempts wait-seconds color? read-only? legacy-request? (reverse forms)))
     ((string=? (car args) "--help")
      (usage)
      (exit 0))
@@ -57,6 +59,7 @@
                 wait-seconds
                 color?
                 read-only?
+                legacy-request?
                 forms)))
     ((string=? (car args) "--port")
      (if (null? (cdr args))
@@ -69,6 +72,7 @@
                 wait-seconds
                 color?
                 read-only?
+                legacy-request?
                 forms)))
     ((string=? (car args) "--sequence")
      (if (null? (cdr args))
@@ -81,6 +85,7 @@
                 wait-seconds
                 color?
                 read-only?
+                legacy-request?
                 forms)))
     ((string=? (car args) "--attempts")
      (if (null? (cdr args))
@@ -93,6 +98,7 @@
                 wait-seconds
                 color?
                 read-only?
+                legacy-request?
                 forms)))
     ((string=? (car args) "--wait")
      (if (null? (cdr args))
@@ -105,13 +111,16 @@
                 (parse-integer-option "--wait" (cadr args) 1 60)
                 color?
                 read-only?
+                legacy-request?
                 forms)))
     ((string=? (car args) "--color")
-     (parse (cdr args) host port sequence attempts wait-seconds #t read-only? forms))
+     (parse (cdr args) host port sequence attempts wait-seconds #t read-only? legacy-request? forms))
     ((string=? (car args) "--no-color")
-     (parse (cdr args) host port sequence attempts wait-seconds #f read-only? forms))
+     (parse (cdr args) host port sequence attempts wait-seconds #f read-only? legacy-request? forms))
     ((string=? (car args) "--read-only")
-     (parse (cdr args) host port sequence attempts wait-seconds color? #t forms))
+     (parse (cdr args) host port sequence attempts wait-seconds color? #t legacy-request? forms))
+    ((string=? (car args) "--legacy-request")
+     (parse (cdr args) host port sequence attempts wait-seconds color? read-only? #t forms))
     (else
      (parse (cdr args)
             host
@@ -121,6 +130,7 @@
             wait-seconds
             color?
             read-only?
+            legacy-request?
             (cons (car args) forms)))))
 
 (define (join-form parts)
@@ -139,6 +149,15 @@
         (put-u8 port byte))
       (loop (+ index 1)))))
 
+(define (ascii-byte-list text)
+  (let loop ((index 0) (bytes '()))
+    (if (= index (string-length text))
+        (reverse bytes)
+        (let ((byte (char->integer (string-ref text index))))
+          (when (> byte 255)
+            (die "form contains a non-byte character"))
+          (loop (+ index 1) (cons byte bytes))))))
+
 (define (put-u32-be port value)
   (put-u8 port (bitwise-and (bitwise-arithmetic-shift-right value 24) #xff))
   (put-u8 port (bitwise-and (bitwise-arithmetic-shift-right value 16) #xff))
@@ -151,13 +170,15 @@
      (bitwise-arithmetic-shift-left (list-ref bytes (+ offset 2)) 8)
      (list-ref bytes (+ offset 3))))
 
-(define (write-request path sequence form)
+(define (write-request path sequence form legacy-request?)
   (run (string-append "mkdir -p " (shell-quote (dirname path))))
   (call-with-port
    (open-file-output-port path (file-options no-fail replace) (buffer-mode none))
    (lambda (port)
-     (put-ascii port "LPS0")
+     (put-ascii port (if legacy-request? "LPS0" "LPS3"))
      (put-u32-be port sequence)
+     (when (not legacy-request?)
+       (put-u32-be port (checksum-bytes (ascii-byte-list form))))
      (put-ascii port form)))
   (run (string-append "chmod 600 " (shell-quote path))))
 
@@ -409,13 +430,14 @@
     (say command)
     (system command)))
 
-(define-values (host port sequence attempts wait-seconds color? read-only? parts)
+(define-values (host port sequence attempts wait-seconds color? read-only? legacy-request? parts)
   (parse (command-line-tail)
          (env "PSOC_NET_REPL_HOST")
          default-port
          default-sequence
          default-attempts
          default-wait-seconds
+         #f
          #f
          #f
          '()))
@@ -440,8 +462,15 @@
 (define request-file (repo-path request-path))
 (define response-file (repo-path response-path))
 
-(write-request request-file sequence form)
-(say (string-append "request.bytes=" (number->string (+ 8 (string-length form)))))
+(define request-frame-header-bytes (if legacy-request? 8 12))
+(define request-checksum (and (not legacy-request?) (checksum-bytes (ascii-byte-list form))))
+
+(write-request request-file sequence form legacy-request?)
+(say (string-append "request.bytes="
+                    (number->string (+ request-frame-header-bytes (string-length form)))))
+(say (string-append "request.format=" (if legacy-request? "LPS0" "LPS3")))
+(when request-checksum
+  (say (string-append "request.checksum=#x" (u32-hex request-checksum))))
 (say (string-append "sequence=" (number->string sequence)))
 
 (let loop ((attempt 1))

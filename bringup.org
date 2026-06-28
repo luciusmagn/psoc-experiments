@@ -5346,6 +5346,55 @@ response.checksum.ok=#t
 payload.text==> ((enabled . #t) ...)
 #+end_example
 
+* 2026-06-28 Network REPL request checksum
+
+Changed the current framed UDP request from =LPS0= to =LPS3=. The default
+request frame now contains:
+
+- =LPS3=
+- a big-endian 32-bit sequence number
+- a big-endian 32-bit FNV-1a checksum of the Lisp payload bytes
+- one Lisp expression payload
+
+The firmware parser still accepts legacy =LPS0= requests without request
+checksums so older host scripts and older notes have a transition path.
+Checked requests with a mismatched payload checksum are rejected before the Lisp
+reader/evaluator sees the payload and report the parser status
+=request-checksum-mismatch= through the one-shot request report path.
+
+=tools/send-net-repl.scm= now sends =LPS3= by default, prints the request format
+and checksum metadata, and keeps =--legacy-request= for explicit =LPS0= probes.
+
+Validation used the quiet Wi-Fi image with the local firmware and credential
+blobs embedded:
+
+#+begin_example
+tools/build-lisp.scm --wifi-firmware --wifi-credentials
+tools/flash-lisp.scm
+#+end_example
+
+After reset and the FAT =boot.lisp=-started network bootstrap, the checked
+request path worked:
+
+#+begin_example
+tools/send-net-repl.scm --host 192.168.0.107 --sequence 130 --attempts 10 --wait 3 '(+ 30 12)'
+request.format=LPS3
+request.checksum=#x79ec2229
+response.format=LPS2
+response.checksum.ok=#t
+payload.text==> 42
+#+end_example
+
+The same flashed image still accepted an explicit legacy request:
+
+#+begin_example
+tools/send-net-repl.scm --host 192.168.0.107 --sequence 131 --attempts 5 --wait 3 --legacy-request '(+ 40 2)'
+request.format=LPS0
+response.format=LPS2
+response.checksum.ok=#t
+payload.text==> 42
+#+end_example
+
 Transport decision for now: keep UDP as the working board-control path because
 DHCP, ARP, DNS, and framed UDP replies are already live. A future standard
 console should likely be raw TCP first, with minimal telnet option handling on
