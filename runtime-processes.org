@@ -1,0 +1,58 @@
+#+title: Runtime Processes And Coroutines
+#+date: 2026-06-28
+
+* Current State
+
+There are no Lisp-level processes, coroutines, or continuations yet.
+
+The CM0+ image is a bootloader and handoff shim. The CM4 image owns the Lisp
+machine, UART console, FAT operations, Wi-Fi driver, and UDP network REPL.
+The evaluator is direct recursive Rust code, so a primitive owns the firmware
+loop until it returns. Blocking primitives such as FAT writes and Wi-Fi SDIO
+commands therefore block serial input and network REPL polling.
+
+* Near-Term Architecture
+
+Use a cooperative scheduler in the CM4 Lisp runtime before attempting a
+dual-core split:
+
+#+begin_src scheme
+(spawn '(begin ...))
+(yield)
+(sleep-ms 100)
+(processes)
+(kill pid)
+#+end_src
+
+The first implementation should model processes as explicit evaluator states,
+not host-style preemptive threads. Each runnable process gets a bounded number
+of evaluator steps, then yields to the firmware loop. Firmware services such as
+UART RX, network REPL polling, timers, and SD/Wi-Fi progress must get time
+between Lisp steps.
+
+* Required Runtime Changes
+
+1. Replace direct recursive evaluation with a resumable evaluator frame stack.
+2. Keep roots for every suspended process so mark-sweep GC sees live values.
+3. Represent sleep, I/O wait, completed value, and error as process states.
+4. Move long FAT and Wi-Fi operations behind request objects or incremental
+   poll functions before exposing them as process-friendly Lisp forms.
+5. Keep synchronous forms available for diagnostics, but document when they
+   block the firmware loop.
+
+* Dual-Core Direction
+
+A later split can put the always-responsive front end on CM0+ and evaluator
+work on CM4:
+
+- CM0+: UART RX/TX, network REPL framing, reset-safe command queue, watchdog
+  style health checks.
+- CM4: Lisp evaluator, heap/GC, FAT, Wi-Fi driver work that needs the larger
+  core.
+- IPC: fixed-size queues in shared SRAM, explicit message ownership, no shared
+  mutable Lisp heap across cores.
+
+This is useful once the single-core cooperative model is clear. Moving the
+current direct evaluator to CM0+ would not solve blocking FAT or Wi-Fi calls;
+it would only move the blockage to another core unless the I/O boundary is also
+made asynchronous.

@@ -5719,6 +5719,110 @@ console should likely be raw TCP first, with minimal telnet option handling on
 top if useful. =rlogin= carries old Unix login assumptions, and IPMI-style
 serial-over-LAN is too heavy for this firmware target.
 
+* 2026-06-28 Boot recovery and process notes
+
+Validated the inserted microSD after the HTTP work using the FAT-backed UDP
+REPL. =(sd-status)= reported card detect inserted. =(fat-info)= and =(ls)=
+both completed over the network REPL and showed a FAT32 card with
+=boot.lisp=, =long.lisp=, =tiny.lisp=, and =defs.lisp=. =cat= confirmed
+=boot.lisp= contained:
+
+#+begin_src scheme
+(begin (wifi-network-bootstrap) (wifi-net-repl-service on))
+#+end_src
+
+A later attempt to create =probe.lisp= with =(save-file "probe.lisp"
+"(+ 40 2)")= did not return within the 60 second host receive window. After
+that, quick UDP status probes also stopped receiving replies. This should be
+treated as a runtime scheduling/storage bug: FAT writes from the current direct
+evaluator can monopolize or wedge the single firmware loop.
+
+After the board was rebooted and USB was replugged, the previous DHCP address
+=192.168.0.107= no longer answered. A host ARP sweep of =192.168.0.0/24=
+did not find the board MAC at another address. UART was quiet and did not
+answer a short =(+ 1 2)= form. OpenOCD worked after the replug; sampled CM4
+PCs were in the main millisecond delay loop and in
+=hal::wifi_sdio::send_command=, so the app was running and polling Wi-Fi SDIO,
+not faulted or stuck in CM0+ boot.
+
+Added a =skip-boot-file= Cargo feature plus Chez script flags:
+
+#+begin_src sh
+tools/build-lisp.scm --skip-boot-file
+tools/build-flash-lisp.scm --wifi-firmware --wifi-credentials --skip-boot-file
+#+end_src
+
+Use this for recovery or Wi-Fi debugging when FAT =boot.lisp= contains a
+blocking startup form. The image leaves the SD card untouched and starts
+without loading =boot.lisp=.
+
+Added =quickstart.org= for operator workflow and =runtime-processes.org= for
+the current process/coroutine state. There are no Lisp-level processes yet.
+The near-term direction is a cooperative CM4 scheduler with explicit evaluator
+states; a later CM0+/CM4 split can put console/network framing on CM0+ and the
+Lisp evaluator on CM4, connected by fixed-size IPC queues.
+
+Built and flashed the skip-boot recovery image:
+
+#+begin_src sh
+tools/build-flash-lisp.scm --wifi-firmware --wifi-credentials --skip-boot-file
+#+end_src
+
+OpenOCD sampling showed CM4 in the normal main loop at =main.rs:180=, proving
+the image reached the firmware loop without loading =boot.lisp=. UART still
+returned corrupt bytes, so the serial RX/TX path remains unreliable even with
+boot loading skipped.
+
+Built and flashed the skip-boot Wi-Fi service smoke:
+
+#+begin_src sh
+tools/build-flash-lisp.scm --wifi-net-repl-service-boot-smoke --skip-boot-file
+#+end_src
+
+The first UDP probes did not answer until the host neighbour table was pinned
+with the board's known MAC for the DHCP lease. The RAM smoke marker at
+=0x08001000= showed:
+
+1. marker magic present
+2. smoke step reached =13=
+3. join, DHCP, lease, router ARP, DNS, and service enable all reported ready
+4. DHCP lease was still =192.168.0.107=
+5. service polling was running, with no requests handled before the neighbour
+   entry was pinned
+
+After pinning the neighbour entry, the UDP REPL answered immediately:
+
+#+begin_example
+tools/send-net-repl.scm --host 192.168.0.107 --sequence 371 --attempts 3 --wait 3 '(+ 4 5)'
+payload.text==> 9
+#+end_example
+
+Service status then reported =enabled . #t=, =requests-handled . #x1=, and a
+matching ACK. =fat-info= over the service showed =probe.lisp= exists, which
+means the earlier timed-out =save-file= did finish on the card. Read and load
+validation:
+
+#+begin_example
+tools/send-net-repl.scm --host 192.168.0.107 --sequence 374 --wait 60 --read-only '(cat "probe.lisp")'
+payload.text==> "(+ 40 2)"
+
+tools/send-net-repl.scm --host 192.168.0.107 --sequence 375 --wait 60 '(load "probe.lisp")'
+payload.text==> 42
+#+end_example
+
+Current interpretation: Wi-Fi association, DHCP, ARP to router, DNS, and UDP
+REPL work. Host-to-board ARP/neighbour discovery is fragile after reboot, but
+pinning the known neighbour entry proves the service is alive. FAT operations
+work but are too slow/blocking for the current single direct evaluator and need
+to become process-friendly or asynchronous.
+
+After another user power cycle and USB replug, the normal quiet image started
+from FAT =boot.lisp= and answered on the same DHCP lease. A read-only
+=(wifi-net-repl-service status)= request returned =enabled . #t= with
+=poll-frames . #x1=, so the =boot.lisp= startup path is viable again after a
+clean board replug. The service had not yet handled an evaluated request in
+that boot when status was checked.
+
 * Next actions
 
 1. Watch for any remaining UART corruption during longer Wi-Fi association

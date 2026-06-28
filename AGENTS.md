@@ -7,9 +7,11 @@ PSoC 6 Wi-Fi BT Prototyping Kit. The current active line of work is a
 quiet serial-console firmware that will grow into a tiny Lisp machine
 with microSD storage and Wi-Fi support.
 
-Keep `README.md` for stable project setup and `bringup.org` for dated,
-experiment-level notes, measured hardware facts, toolchain decisions,
-and commands that are known to work on the attached board.
+Keep `README.md` for stable project setup, `quickstart.org` for the short
+operator workflow, `runtime-processes.org` for the cooperative-process design
+direction, and `bringup.org` for dated, experiment-level notes, measured
+hardware facts, toolchain decisions, and commands that are known to work on
+the attached board.
 
 ## Project Structure
 
@@ -23,6 +25,10 @@ and commands that are known to work on the attached board.
 - `probe-rs-targets/`: local probe-rs target metadata and compatibility
   notes.
 - `backups/`: flash and firmware backups captured before risky changes.
+- `quickstart.org`: short build, flash, console, network REPL, and recovery
+  workflow.
+- `runtime-processes.org`: current Lisp process/coroutine status and the
+  cooperative scheduler design direction.
 - `bringup.org`: running lab notebook. Update it when a command,
   hardware fact, or implementation decision becomes useful to preserve.
 
@@ -236,6 +242,13 @@ Then rebuild and flash the quiet image with
 `tools/build-flash-lisp.scm --wifi-firmware --wifi-credentials`. Keep the
 temporary smoke image on the board only as long as needed for installation and
 verification.
+
+Use `tools/build-lisp.scm --skip-boot-file` or
+`tools/build-flash-lisp.scm --skip-boot-file` for recovery and Wi-Fi debugging
+when FAT `boot.lisp` contains a blocking startup form. The flag leaves the SD
+card untouched and skips automatic `boot.lisp` loading; combine it with
+`--wifi-firmware --wifi-credentials` when the recovery image still needs local
+Wi-Fi resources embedded.
 
 Use `tools/build-lisp.scm --storage-boot-smoke` or
 `tools/build-flash-lisp.scm --storage-boot-smoke` only for unattended FAT

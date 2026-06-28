@@ -3,6 +3,10 @@
 A demo project for the CY8C624ABZI-S2D44A0 SoC, as fitted to the
 *CY8CPROTO-062-4343W PSoC 6 Wi-Fi BT Prototyping kit*.
 
+See [quickstart.org](quickstart.org) for the short board-control workflow and
+[runtime-processes.org](runtime-processes.org) for the cooperative process
+direction.
+
 Schematic: <https://www.infineon.com/dgdl/Infineon-CY8CPROTO-062-4343W_Schematic-PCBDesignData-v01_00-EN.pdf?fileId=8ac78c8c7d0d8da4017d0f010c6d183a>
 
 ## Building
@@ -212,6 +216,11 @@ tools/send-net-repl.scm --host BOARD_IP --wait 15 \
 tools/send-net-repl.scm --host BOARD_IP --wait 15 '(cat "boot.lisp")'
 tools/build-flash-lisp.scm --wifi-firmware --wifi-credentials
 ```
+
+Use `tools/build-flash-lisp.scm --wifi-firmware --wifi-credentials
+--skip-boot-file` for recovery or Wi-Fi debugging when `boot.lisp` is blocking
+startup. That image leaves the FAT card untouched and starts without loading
+`boot.lisp`.
 
 The longer `--wait` matters for FAT operations; small arithmetic forms usually
 reply quickly, while `save-file`, `append-file`, `read-file`, `load`, and

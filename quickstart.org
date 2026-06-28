@@ -1,0 +1,88 @@
+#+title: PSoC6 Lisp Machine Quickstart
+#+date: 2026-06-28
+
+* Scope
+
+This is the short path for working on the CY8CPROTO-062-4343W Lisp
+firmware from this checkout. Keep longer dated experiments in =bringup.org=.
+
+* Build And Flash
+
+Check local tools and resources:
+
+#+begin_src sh
+tools/setup-modustoolbox.scm --check
+tools/prepare-wifi-resources.scm --check
+#+end_src
+
+Build and flash the normal quiet Wi-Fi-capable image:
+
+#+begin_src sh
+tools/build-flash-lisp.scm --wifi-firmware --wifi-credentials
+#+end_src
+
+Build and flash a recovery image that ignores FAT =boot.lisp= at startup:
+
+#+begin_src sh
+tools/build-flash-lisp.scm --wifi-firmware --wifi-credentials --skip-boot-file
+#+end_src
+
+Use the recovery image when =boot.lisp= contains a blocking form such as
+=(wifi-network-bootstrap)= and the board no longer reaches the console loop.
+The recovery image leaves the card contents untouched.
+
+* Consoles
+
+Serial console:
+
+#+begin_src sh
+tools/serial-console.scm
+#+end_src
+
+Send one serial form:
+
+#+begin_src sh
+tools/send-lisp.scm '(+ 1 2)'
+#+end_src
+
+Network REPL, after Wi-Fi and the UDP service are running:
+
+#+begin_src sh
+tools/send-net-repl.scm --host BOARD_IP '(+ 1 2)'
+tools/send-net-repl.scm --host BOARD_IP --read-only '(wifi-net-repl-service status)'
+#+end_src
+
+Use =--wait 60= for FAT-backed forms such as =ls=, =cat=, =read-file=,
+=save-file=, =append-file=, =save-defs=, and =load=.
+
+If a Wi-Fi smoke marker shows a valid lease and an enabled UDP service but
+host requests still time out, check host ARP/neighbour state. On this network,
+pinning the board's known local MAC for the current lease was enough to make
+UDP replies work again. Keep the actual generated MAC out of committed docs and
+logs.
+
+* Current Useful Forms
+
+#+begin_src scheme
+(help)
+(sd-status)
+(fat-info)
+(ls)
+(cat "boot.lisp")
+(wifi-network-bootstrap)
+(wifi-net-repl-service on)
+(wifi-net-repl-service status)
+(http-get "http://example.com/")
+#+end_src
+
+* Boot File
+
+The current FAT =boot.lisp= starts Wi-Fi and enables the network REPL:
+
+#+begin_src scheme
+(begin (wifi-network-bootstrap) (wifi-net-repl-service on))
+#+end_src
+
+That is useful when it succeeds, but it is still a blocking startup form.
+Use =--skip-boot-file= for recovery or for Wi-Fi debugging that should start
+from a responsive UART console.

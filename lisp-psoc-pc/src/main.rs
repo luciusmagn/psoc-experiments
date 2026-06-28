@@ -91,11 +91,13 @@ fn main() -> ! {
         console::UART_BAUD
     )
     .ok();
-    #[cfg(not(feature = "storage-boot-smoke"))]
+    #[cfg(all(not(feature = "storage-boot-smoke"), not(feature = "skip-boot-file")))]
     {
         let mut board = board_state.lisp_board(&p);
         load_boot_file(&mut machine, &mut board, &mut console).ok();
     }
+    #[cfg(all(not(feature = "storage-boot-smoke"), feature = "skip-boot-file"))]
+    writeln!(console, "boot.lisp preload: skipped by build feature").ok();
     #[cfg(feature = "storage-boot-smoke")]
     writeln!(console, "boot.lisp preload: skipped for storage smoke").ok();
     #[cfg(feature = "storage-format-boot-smoke")]

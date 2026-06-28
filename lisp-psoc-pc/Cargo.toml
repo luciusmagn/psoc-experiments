@@ -24,6 +24,7 @@ wifi-net-repl-boot-smoke = ["wifi-dns-boot-smoke"]
 wifi-net-repl-service-boot-smoke = ["wifi-dns-boot-smoke"]
 storage-boot-smoke = []
 storage-format-boot-smoke = ["storage-boot-smoke"]
+skip-boot-file = []
 
 [profile.release]
 lto = true
