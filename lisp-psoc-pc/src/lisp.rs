@@ -160,6 +160,9 @@ pub trait Board {
     fn read32(&mut self, address: u32) -> Result<u32, Error>;
     fn write32(&mut self, address: u32, value: u32) -> Result<(), Error>;
     fn registers(&mut self) -> RegisterReport;
+    fn pdm_status(&mut self) -> PdmStatusReport;
+    fn thermistor_status(&mut self) -> ThermistorStatusReport;
+    fn capsense_status(&mut self) -> CapsenseStatusReport;
     fn sd_status(&mut self) -> SdStatusReport;
     fn sd_pins(&mut self) -> SdPinsReport;
     fn sd_pinmux(&mut self) -> SdPinsReport;
@@ -349,6 +352,44 @@ pub struct RegisterReport {
     pub gpio_prt5_cfg: u32,
     pub gpio_prt13_out: u32,
     pub gpio_prt13_cfg: u32,
+}
+
+#[derive(Clone, Copy)]
+pub struct PdmStatusReport {
+    pub gpio_prt10_cfg: u32,
+    pub gpio_prt10_in: u32,
+    pub hsiom_prt10_sel0: u32,
+    pub hsiom_prt10_sel1: u32,
+    pub pdm_ctl: u32,
+    pub pdm_clock_ctl: u32,
+    pub pdm_mode_ctl: u32,
+    pub pdm_data_ctl: u32,
+    pub pdm_rx_fifo_ctl: u32,
+    pub pdm_rx_fifo_status: u32,
+}
+
+#[derive(Clone, Copy)]
+pub struct ThermistorStatusReport {
+    pub gpio_prt10_cfg: u32,
+    pub gpio_prt10_in: u32,
+    pub hsiom_prt10_sel0: u32,
+    pub hsiom_prt10_sel1: u32,
+}
+
+#[derive(Clone, Copy)]
+pub struct CapsenseStatusReport {
+    pub gpio_prt1_cfg: u32,
+    pub gpio_prt7_cfg: u32,
+    pub gpio_prt8_cfg: u32,
+    pub gpio_prt8_in: u32,
+    pub hsiom_prt1_sel0: u32,
+    pub hsiom_prt7_sel1: u32,
+    pub hsiom_prt8_sel0: u32,
+    pub hsiom_prt8_sel1: u32,
+    pub csd_config: u32,
+    pub csd_status: u32,
+    pub csd_stat_seq: u32,
+    pub csd_intr_masked: u32,
 }
 
 #[derive(Clone, Copy)]
@@ -2029,6 +2070,9 @@ pub enum Primitive {
     Reg32,
     Poke32,
     Regs,
+    PdmStatus,
+    ThermistorStatus,
+    CapsenseStatus,
     SdStatus,
     SdPins,
     SdPinmux,
@@ -2153,6 +2197,9 @@ impl Primitive {
             Self::Reg32 => "reg32",
             Self::Poke32 => "poke32",
             Self::Regs => "regs",
+            Self::PdmStatus => "pdm-status",
+            Self::ThermistorStatus => "thermistor-status",
+            Self::CapsenseStatus => "capsense-status",
             Self::SdStatus => "sd-status",
             Self::SdPins => "sd-pins",
             Self::SdPinmux => "sd-pinmux",
@@ -2443,6 +2490,9 @@ impl Machine {
         self.install_primitive(b"reg32", Primitive::Reg32)?;
         self.install_primitive(b"poke32", Primitive::Poke32)?;
         self.install_primitive(b"regs", Primitive::Regs)?;
+        self.install_primitive(b"pdm-status", Primitive::PdmStatus)?;
+        self.install_primitive(b"thermistor-status", Primitive::ThermistorStatus)?;
+        self.install_primitive(b"capsense-status", Primitive::CapsenseStatus)?;
         self.install_primitive(b"sd-status", Primitive::SdStatus)?;
         self.install_primitive(b"sd-pins", Primitive::SdPins)?;
         self.install_primitive(b"sd-pinmux", Primitive::SdPinmux)?;
@@ -2589,7 +2639,12 @@ impl Machine {
     ) -> LispResult<LoadFileOutcome> {
         self.collect_garbage();
         let result = self.load_file_in_env(path, Value::Nil, board, output, 0);
+        let previous_expression = self.active_expression;
+        if let Ok(LoadFileOutcome::Loaded(value)) = result {
+            self.active_expression = value;
+        }
         self.collect_garbage();
+        self.active_expression = previous_expression;
         result
     }
 
@@ -3260,6 +3315,18 @@ impl Machine {
             Primitive::Regs => {
                 self.expect_count(args, 0)?;
                 self.register_report(board.registers())
+            }
+            Primitive::PdmStatus => {
+                self.expect_count(args, 0)?;
+                self.pdm_status_report(board.pdm_status())
+            }
+            Primitive::ThermistorStatus => {
+                self.expect_count(args, 0)?;
+                self.thermistor_status_report(board.thermistor_status())
+            }
+            Primitive::CapsenseStatus => {
+                self.expect_count(args, 0)?;
+                self.capsense_status_report(board.capsense_status())
             }
             Primitive::SdStatus => {
                 self.expect_count(args, 0)?;
@@ -4287,6 +4354,9 @@ impl Machine {
             b"reg32",
             b"poke32",
             b"regs",
+            b"pdm-status",
+            b"thermistor-status",
+            b"capsense-status",
             b"sd-status",
             b"sd-pins",
             b"sd-pinmux",
@@ -4398,6 +4468,93 @@ impl Machine {
             gpio_prt5_cfg,
             gpio_prt13_out,
             gpio_prt13_cfg,
+        ];
+        self.make_list_from_values(&entries)
+    }
+
+    fn pdm_status_report(&mut self, report: PdmStatusReport) -> LispResult<Value> {
+        let clock = self.symbol_entry(b"clock", b"P10.4")?;
+        let data = self.symbol_entry(b"data", b"P10.5")?;
+        let gpio_cfg = self.word_entry(b"GPIO.PRT10.CFG", report.gpio_prt10_cfg)?;
+        let gpio_in = self.word_entry(b"GPIO.PRT10.IN", report.gpio_prt10_in)?;
+        let hsiom_sel0 = self.word_entry(b"HSIOM.PRT10.SEL0", report.hsiom_prt10_sel0)?;
+        let hsiom_sel1 = self.word_entry(b"HSIOM.PRT10.SEL1", report.hsiom_prt10_sel1)?;
+        let pdm_ctl = self.word_entry(b"PDM.CTL", report.pdm_ctl)?;
+        let pdm_clock_ctl = self.word_entry(b"PDM.CLOCK_CTL", report.pdm_clock_ctl)?;
+        let pdm_mode_ctl = self.word_entry(b"PDM.MODE_CTL", report.pdm_mode_ctl)?;
+        let pdm_data_ctl = self.word_entry(b"PDM.DATA_CTL", report.pdm_data_ctl)?;
+        let pdm_rx_fifo_ctl = self.word_entry(b"PDM.RX_FIFO_CTL", report.pdm_rx_fifo_ctl)?;
+        let pdm_rx_fifo_status =
+            self.word_entry(b"PDM.RX_FIFO_STATUS", report.pdm_rx_fifo_status)?;
+        let entries = [
+            clock,
+            data,
+            gpio_cfg,
+            gpio_in,
+            hsiom_sel0,
+            hsiom_sel1,
+            pdm_ctl,
+            pdm_clock_ctl,
+            pdm_mode_ctl,
+            pdm_data_ctl,
+            pdm_rx_fifo_ctl,
+            pdm_rx_fifo_status,
+        ];
+        self.make_list_from_values(&entries)
+    }
+
+    fn thermistor_status_report(&mut self, report: ThermistorStatusReport) -> LispResult<Value> {
+        let out0 = self.symbol_entry(b"out0", b"P10.1")?;
+        let out1 = self.symbol_entry(b"out1", b"P10.2")?;
+        let vdd = self.symbol_entry(b"vdd", b"P10.3")?;
+        let gnd = self.symbol_entry(b"gnd", b"P10.0")?;
+        let part = self.symbol_entry(b"RT1", b"NCP18XH103F03RB")?;
+        let r36 = self.symbol_entry(b"R36", b"populated")?;
+        let r37 = self.symbol_entry(b"R37", b"populated")?;
+        let gpio_cfg = self.word_entry(b"GPIO.PRT10.CFG", report.gpio_prt10_cfg)?;
+        let gpio_in = self.word_entry(b"GPIO.PRT10.IN", report.gpio_prt10_in)?;
+        let hsiom_sel0 = self.word_entry(b"HSIOM.PRT10.SEL0", report.hsiom_prt10_sel0)?;
+        let hsiom_sel1 = self.word_entry(b"HSIOM.PRT10.SEL1", report.hsiom_prt10_sel1)?;
+        let entries = [
+            out0, out1, vdd, gnd, part, r36, r37, gpio_cfg, gpio_in, hsiom_sel0, hsiom_sel1,
+        ];
+        self.make_list_from_values(&entries)
+    }
+
+    fn capsense_status_report(&mut self, report: CapsenseStatusReport) -> LispResult<Value> {
+        let tx = self.symbol_entry(b"tx", b"P1.0")?;
+        let cmod = self.symbol_entry(b"cmod", b"P7.7")?;
+        let buttons = self.symbol_entry(b"buttons", b"P8.1-P8.2")?;
+        let slider = self.symbol_entry(b"slider", b"P8.3-P8.7")?;
+        let gpio_prt1_cfg = self.word_entry(b"GPIO.PRT1.CFG", report.gpio_prt1_cfg)?;
+        let gpio_prt7_cfg = self.word_entry(b"GPIO.PRT7.CFG", report.gpio_prt7_cfg)?;
+        let gpio_prt8_cfg = self.word_entry(b"GPIO.PRT8.CFG", report.gpio_prt8_cfg)?;
+        let gpio_prt8_in = self.word_entry(b"GPIO.PRT8.IN", report.gpio_prt8_in)?;
+        let hsiom_prt1_sel0 = self.word_entry(b"HSIOM.PRT1.SEL0", report.hsiom_prt1_sel0)?;
+        let hsiom_prt7_sel1 = self.word_entry(b"HSIOM.PRT7.SEL1", report.hsiom_prt7_sel1)?;
+        let hsiom_prt8_sel0 = self.word_entry(b"HSIOM.PRT8.SEL0", report.hsiom_prt8_sel0)?;
+        let hsiom_prt8_sel1 = self.word_entry(b"HSIOM.PRT8.SEL1", report.hsiom_prt8_sel1)?;
+        let csd_config = self.word_entry(b"CSD.CONFIG", report.csd_config)?;
+        let csd_status = self.word_entry(b"CSD.STATUS", report.csd_status)?;
+        let csd_stat_seq = self.word_entry(b"CSD.STAT_SEQ", report.csd_stat_seq)?;
+        let csd_intr_masked = self.word_entry(b"CSD.INTR_MASKED", report.csd_intr_masked)?;
+        let entries = [
+            tx,
+            cmod,
+            buttons,
+            slider,
+            gpio_prt1_cfg,
+            gpio_prt7_cfg,
+            gpio_prt8_cfg,
+            gpio_prt8_in,
+            hsiom_prt1_sel0,
+            hsiom_prt7_sel1,
+            hsiom_prt8_sel0,
+            hsiom_prt8_sel1,
+            csd_config,
+            csd_status,
+            csd_stat_seq,
+            csd_intr_masked,
         ];
         self.make_list_from_values(&entries)
     }

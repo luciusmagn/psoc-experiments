@@ -6,6 +6,9 @@
 # local-only generated files; may include Wi-Fi credentials
 .local/
 
+# local flash backups may contain embedded Wi-Fi credentials
+backups/*-local-*.bin
+
 # editor files
 .vscode/*
 !.vscode/*.md

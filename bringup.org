@@ -5882,6 +5882,83 @@ tools/send-net-repl.scm --host 192.168.0.107 --sequence 311 --attempts 5 --wait 
 => 32
 #+end_example
 
+* 2026-06-28 Board facility status forms
+
+Added read-only Lisp status forms for the PDM microphone pins, thermistor
+routing, and Capsense resources:
+
+#+begin_src scheme
+(pdm-status)
+(thermistor-status)
+(capsense-status)
+#+end_src
+
+Before flashing this firmware, the previous board image was dumped to an
+ignored local backup because it may contain embedded Wi-Fi credentials:
+
+#+begin_example
+backups/flash-10000000-40000-before-facility-status-local-20260628T200642Z.bin
+#+end_example
+
+Restore command:
+
+#+begin_src sh
+/opt/ModusToolbox/tools_3.4/openocd/bin/openocd \
+  -s /opt/ModusToolbox/tools_3.4/openocd/scripts \
+  -f interface/cmsis-dap.cfg \
+  -f target/psoc6_2m.cfg \
+  -c "program backups/flash-10000000-40000-before-facility-status-local-20260628T200642Z.bin 0x10000000 verify reset exit"
+#+end_src
+
+The pin map is from the local BSP, schematic, and BOM:
+
+- PDM clock is =P10.4= and PDM data is =P10.5=.
+- Thermistor =RT1= is =NCP18XH103F03RB=. =THERM_OUT= is tied to both
+  =P10.1= and =P10.2= through populated zero-ohm links =R36= and =R37=.
+  =P10.3= is =THERM_VDD= and =P10.0= is =THERM_GND=.
+- Capsense transmit is =P1.0=, =CMOD= is =P7.7=, buttons are =P8.1= and
+  =P8.2=, and the five slider segments are =P8.3= through =P8.7=.
+
+These forms only read GPIO, HSIOM, PDM0, and CSD0 register state. They do not
+drive pins, start PDM sampling, start CSD scans, or power the thermistor
+divider. Actual microphone samples, touch readings, and ADC-backed
+temperature readings should be built as separate HAL slices on top of this
+verified board map.
+
+Validation used a temporary =--wifi-net-repl-service-boot-smoke= image after a
+USB replug. The smoke marker reached step =13= with the UDP REPL service
+enabled, and the three forms answered over the network REPL:
+
+#+begin_src sh
+tools/send-net-repl.scm --host 192.168.0.107 --payload-only --read-only '(pdm-status)'
+tools/send-net-repl.scm --host 192.168.0.107 --payload-only --read-only '(thermistor-status)'
+tools/send-net-repl.scm --host 192.168.0.107 --payload-only --read-only '(capsense-status)'
+#+end_src
+
+Representative outputs showed =P10.4=/=P10.5= for PDM, =P10.1=/=P10.2= plus
+=P10.3=/=P10.0= for the thermistor, and =P1.0=, =P7.7=, =P8.1= through
+=P8.7= for Capsense. The client-side =--read-only= allowlist now includes
+these three status forms.
+
+During normal-image validation, =boot.lisp= printed =<stale>= even though the
+file content was still:
+
+#+begin_src scheme
+(begin (wifi-network-bootstrap) (wifi-net-repl-service on))
+#+end_src
+
+Root cause: public =Machine::load_file= collected after evaluating a boot file
+without rooting the loaded result. If the boot file returned a heap object such
+as the Wi-Fi service status report, the caller could print a freed object. The
+load path now roots =LoadFileOutcome::Loaded= across that collection.
+
+After rebuilding and flashing the normal quiet image with
+=--wifi-firmware --wifi-credentials=, =boot.lisp= again enabled the UDP REPL
+service at the existing DHCP lease. A post-reboot read-only
+=(wifi-net-repl-service status)= returned =enabled . #t=, and
+=(thermistor-status)= returned the expected =P10.x= thermistor routing on the
+normal image.
+
 * Next actions
 
 1. Watch for any remaining UART corruption during longer Wi-Fi association

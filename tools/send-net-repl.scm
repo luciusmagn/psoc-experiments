@@ -395,12 +395,15 @@
         (string=? text "(ls)")
         (string=? text "(fat-info)")
         (string=? text "(sd-status)")
+        (string=? text "(pdm-status)")
+        (string=? text "(thermistor-status)")
+        (string=? text "(capsense-status)")
         (safe-read-string-call? "(cat \"" text)
         (safe-read-string-call? "(read-file \"" text))))
 
 (define (enforce-read-only form)
   (unless (read-only-form? form)
-    (die "read-only mode allows only status, ls, fat-info, sd-status, cat, and read-file forms")))
+    (die "read-only mode allows only status, ls, fat-info, sd-status, board status, cat, and read-file forms")))
 
 (define (legacy-response? bytes sequence)
   (and (>= (length bytes) 8)

@@ -179,6 +179,47 @@ impl lisp::Board for PsocBoard<'_> {
         }
     }
 
+    fn pdm_status(&mut self) -> lisp::PdmStatusReport {
+        lisp::PdmStatusReport {
+            gpio_prt10_cfg: self.p.GPIO.prt10.cfg.read().bits(),
+            gpio_prt10_in: self.p.GPIO.prt10.in_.read().bits(),
+            hsiom_prt10_sel0: self.p.HSIOM.prt10.port_sel0.read().bits(),
+            hsiom_prt10_sel1: self.p.HSIOM.prt10.port_sel1.read().bits(),
+            pdm_ctl: self.p.PDM0.ctl.read().bits(),
+            pdm_clock_ctl: self.p.PDM0.clock_ctl.read().bits(),
+            pdm_mode_ctl: self.p.PDM0.mode_ctl.read().bits(),
+            pdm_data_ctl: self.p.PDM0.data_ctl.read().bits(),
+            pdm_rx_fifo_ctl: self.p.PDM0.rx_fifo_ctl.read().bits(),
+            pdm_rx_fifo_status: self.p.PDM0.rx_fifo_status.read().bits(),
+        }
+    }
+
+    fn thermistor_status(&mut self) -> lisp::ThermistorStatusReport {
+        lisp::ThermistorStatusReport {
+            gpio_prt10_cfg: self.p.GPIO.prt10.cfg.read().bits(),
+            gpio_prt10_in: self.p.GPIO.prt10.in_.read().bits(),
+            hsiom_prt10_sel0: self.p.HSIOM.prt10.port_sel0.read().bits(),
+            hsiom_prt10_sel1: self.p.HSIOM.prt10.port_sel1.read().bits(),
+        }
+    }
+
+    fn capsense_status(&mut self) -> lisp::CapsenseStatusReport {
+        lisp::CapsenseStatusReport {
+            gpio_prt1_cfg: self.p.GPIO.prt1.cfg.read().bits(),
+            gpio_prt7_cfg: self.p.GPIO.prt7.cfg.read().bits(),
+            gpio_prt8_cfg: self.p.GPIO.prt8.cfg.read().bits(),
+            gpio_prt8_in: self.p.GPIO.prt8.in_.read().bits(),
+            hsiom_prt1_sel0: self.p.HSIOM.prt1.port_sel0.read().bits(),
+            hsiom_prt7_sel1: self.p.HSIOM.prt7.port_sel1.read().bits(),
+            hsiom_prt8_sel0: self.p.HSIOM.prt8.port_sel0.read().bits(),
+            hsiom_prt8_sel1: self.p.HSIOM.prt8.port_sel1.read().bits(),
+            csd_config: self.p.CSD0.config.read().bits(),
+            csd_status: self.p.CSD0.status.read().bits(),
+            csd_stat_seq: self.p.CSD0.stat_seq.read().bits(),
+            csd_intr_masked: self.p.CSD0.intr_masked.read().bits(),
+        }
+    }
+
     fn sd_status(&mut self) -> lisp::SdStatusReport {
         let snapshot = micro_sd::card_detect_snapshot(self.p);
         lisp::SdStatusReport {

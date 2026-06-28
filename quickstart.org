@@ -77,6 +77,9 @@ logs.
 
 #+begin_src scheme
 (help)
+(pdm-status)
+(thermistor-status)
+(capsense-status)
 (sd-status)
 (fat-info)
 (ls)
