@@ -23,7 +23,7 @@
 (define ack-path ".local/net-repl/ack.bin")
 
 (define (usage)
-  (say "usage: tools/send-net-repl.scm --host HOST [--port PORT] [--sequence N] [--attempts N] [--wait SECONDS] [--color] [--read-only] [--legacy-request] FORM")
+  (say "usage: tools/send-net-repl.scm --host HOST [--port PORT] [--sequence N] [--attempts N] [--wait SECONDS] [--color] [--payload-only] [--read-only] [--legacy-request] FORM")
   (say "")
   (say "Sends one framed UDP Lisp request to the board network REPL endpoint.")
   (say "The Lisp form is written to an ignored binary request file, not printed in the shell command.")
@@ -31,6 +31,7 @@
   (say "After a verified response, the client sends an LPS4 ACK with the response checksum.")
   (say "--legacy-request sends the older LPS0 request frame for older flashed images.")
   (say "--color wraps the payload text in ANSI color. The default is plain output.")
+  (say "--payload-only prints only the decoded response payload.")
   (say "--read-only refuses forms outside the conservative host-side read-only allowlist.")
   (say "HOST may also be supplied with PSOC_NET_REPL_HOST."))
 
@@ -43,10 +44,10 @@
                             ".."
                             (number->string max))))))
 
-(define (parse args host port sequence attempts wait-seconds color? read-only? legacy-request? forms)
+(define (parse args host port sequence attempts wait-seconds color? read-only? legacy-request? payload-only? forms)
   (cond
     ((null? args)
-     (values host port sequence attempts wait-seconds color? read-only? legacy-request? (reverse forms)))
+     (values host port sequence attempts wait-seconds color? read-only? legacy-request? payload-only? (reverse forms)))
     ((string=? (car args) "--help")
      (usage)
      (exit 0))
@@ -62,6 +63,7 @@
                 color?
                 read-only?
                 legacy-request?
+                payload-only?
                 forms)))
     ((string=? (car args) "--port")
      (if (null? (cdr args))
@@ -75,6 +77,7 @@
                 color?
                 read-only?
                 legacy-request?
+                payload-only?
                 forms)))
     ((string=? (car args) "--sequence")
      (if (null? (cdr args))
@@ -88,6 +91,7 @@
                 color?
                 read-only?
                 legacy-request?
+                payload-only?
                 forms)))
     ((string=? (car args) "--attempts")
      (if (null? (cdr args))
@@ -101,6 +105,7 @@
                 color?
                 read-only?
                 legacy-request?
+                payload-only?
                 forms)))
     ((string=? (car args) "--wait")
      (if (null? (cdr args))
@@ -114,15 +119,18 @@
                 color?
                 read-only?
                 legacy-request?
+                payload-only?
                 forms)))
     ((string=? (car args) "--color")
-     (parse (cdr args) host port sequence attempts wait-seconds #t read-only? legacy-request? forms))
+     (parse (cdr args) host port sequence attempts wait-seconds #t read-only? legacy-request? payload-only? forms))
     ((string=? (car args) "--no-color")
-     (parse (cdr args) host port sequence attempts wait-seconds #f read-only? legacy-request? forms))
+     (parse (cdr args) host port sequence attempts wait-seconds #f read-only? legacy-request? payload-only? forms))
+    ((string=? (car args) "--payload-only")
+     (parse (cdr args) host port sequence attempts wait-seconds color? read-only? legacy-request? #t forms))
     ((string=? (car args) "--read-only")
-     (parse (cdr args) host port sequence attempts wait-seconds color? #t legacy-request? forms))
+     (parse (cdr args) host port sequence attempts wait-seconds color? #t legacy-request? payload-only? forms))
     ((string=? (car args) "--legacy-request")
-     (parse (cdr args) host port sequence attempts wait-seconds color? read-only? #t forms))
+     (parse (cdr args) host port sequence attempts wait-seconds color? read-only? #t payload-only? forms))
     (else
      (parse (cdr args)
             host
@@ -133,6 +141,7 @@
             color?
             read-only?
             legacy-request?
+            payload-only?
             (cons (car args) forms)))))
 
 (define (join-form parts)
@@ -172,8 +181,24 @@
      (bitwise-arithmetic-shift-left (list-ref bytes (+ offset 2)) 8)
      (list-ref bytes (+ offset 3))))
 
-(define (write-request path sequence form legacy-request?)
-  (run (string-append "mkdir -p " (shell-quote (dirname path))))
+(define (run-checked command verbose?)
+  (when verbose?
+    (display "+ ")
+    (say command))
+  (let ((status (system command)))
+    (unless (zero? status)
+      (die (string-append "command failed with status "
+                          (number->string status)))))
+  0)
+
+(define (run-unchecked command verbose?)
+  (when verbose?
+    (display "+ ")
+    (say command))
+  (system command))
+
+(define (write-request path sequence form legacy-request? verbose?)
+  (run-checked (string-append "mkdir -p " (shell-quote (dirname path))) verbose?)
   (call-with-port
    (open-file-output-port path (file-options no-fail replace) (buffer-mode none))
    (lambda (port)
@@ -182,17 +207,17 @@
      (when (not legacy-request?)
        (put-u32-be port (checksum-bytes (ascii-byte-list form))))
      (put-ascii port form)))
-  (run (string-append "chmod 600 " (shell-quote path))))
+  (run-checked (string-append "chmod 600 " (shell-quote path)) verbose?))
 
-(define (write-ack path sequence response-hash)
-  (run (string-append "mkdir -p " (shell-quote (dirname path))))
+(define (write-ack path sequence response-hash verbose?)
+  (run-checked (string-append "mkdir -p " (shell-quote (dirname path))) verbose?)
   (call-with-port
    (open-file-output-port path (file-options no-fail replace) (buffer-mode none))
    (lambda (port)
      (put-ascii port "LPS4")
      (put-u32-be port sequence)
      (put-u32-be port response-hash)))
-  (run (string-append "chmod 600 " (shell-quote path))))
+  (run-checked (string-append "chmod 600 " (shell-quote path)) verbose?))
 
 (define (read-bytes path)
   (if (file-exists? path)
@@ -298,6 +323,15 @@
     (display-payload payload)
     (when color?
       (write-ansi "0"))
+    (newline)))
+
+(define (display-payload-raw bytes color?)
+  (when color?
+    (write-ansi (payload-color-code bytes)))
+  (display-payload bytes)
+  (when color?
+    (write-ansi "0"))
+  (unless (bytes-end-with? 10 bytes)
     (newline)))
 
 (define (ascii-space? char)
@@ -423,7 +457,7 @@
 (define (response-format bytes)
   (if (= (response-header-bytes bytes) 12) "LPS2" "LPS1"))
 
-(define (send-attempt host port wait-seconds request response)
+(define (send-attempt host port wait-seconds request response verbose?)
   (when (file-exists? response)
     (delete-file response))
   (let* ((process-timeout-seconds (+ wait-seconds 1))
@@ -441,11 +475,9 @@
           (shell-quote request)
           " > "
           (shell-quote response))))
-    (display "+ ")
-    (say command)
-    (system command)))
+    (run-unchecked command verbose?)))
 
-(define (send-ack host port ack-file)
+(define (send-ack host port ack-file verbose?)
   (let ((command
          (string-append
           "timeout 2 nc -u -w 1 "
@@ -455,17 +487,16 @@
           " < "
           (shell-quote ack-file)
           " > /dev/null")))
-    (display "+ ")
-    (say command)
-    (system command)))
+    (run-unchecked command verbose?)))
 
-(define-values (host port sequence attempts wait-seconds color? read-only? legacy-request? parts)
+(define-values (host port sequence attempts wait-seconds color? read-only? legacy-request? payload-only? parts)
   (parse (command-line-tail)
          (env "PSOC_NET_REPL_HOST")
          default-port
          default-sequence
          default-attempts
          default-wait-seconds
+         #f
          #f
          #f
          #f
@@ -494,40 +525,46 @@
 
 (define request-frame-header-bytes (if legacy-request? 8 12))
 (define request-checksum (and (not legacy-request?) (checksum-bytes (ascii-byte-list form))))
+(define verbose? (not payload-only?))
 
-(write-request request-file sequence form legacy-request?)
-(say (string-append "request.bytes="
-                    (number->string (+ request-frame-header-bytes (string-length form)))))
-(say (string-append "request.format=" (if legacy-request? "LPS0" "LPS3")))
-(when request-checksum
-  (say (string-append "request.checksum=#x" (u32-hex request-checksum))))
-(say (string-append "sequence=" (number->string sequence)))
+(write-request request-file sequence form legacy-request? verbose?)
+(when verbose?
+  (say (string-append "request.bytes="
+                      (number->string (+ request-frame-header-bytes (string-length form)))))
+  (say (string-append "request.format=" (if legacy-request? "LPS0" "LPS3")))
+  (when request-checksum
+    (say (string-append "request.checksum=#x" (u32-hex request-checksum))))
+  (say (string-append "sequence=" (number->string sequence))))
 
 (let loop ((attempt 1))
-  (send-attempt host port wait-seconds request-file response-file)
+  (send-attempt host port wait-seconds request-file response-file verbose?)
   (let ((response (read-bytes response-file)))
     (cond
       ((valid-response? response sequence)
        (let ((payload (take-after-header response)))
-         (say (string-append "attempt=" (number->string attempt)))
-         (say (string-append "response.bytes=" (number->string (length response))))
-         (say (string-append "response.format=" (response-format response)))
-         (say (string-append "response.hex=" (bytes-hex response)))
-         (let ((expected-checksum (response-checksum response)))
-           (when expected-checksum
-             (say (string-append "response.checksum=#x"
-                                 (u32-hex expected-checksum)))
-             (say (string-append "response.checksum.ok="
-                                 (if (response-checksum-valid? response sequence)
-                                     "#t"
-                                     "#f")))))
-         (say (string-append "payload.bytes=" (number->string (length payload))))
-         (display-payload-line payload color?)
+         (if payload-only?
+             (display-payload-raw payload color?)
+             (begin
+               (say (string-append "attempt=" (number->string attempt)))
+               (say (string-append "response.bytes=" (number->string (length response))))
+               (say (string-append "response.format=" (response-format response)))
+               (say (string-append "response.hex=" (bytes-hex response)))
+               (let ((expected-checksum (response-checksum response)))
+                 (when expected-checksum
+                   (say (string-append "response.checksum=#x"
+                                       (u32-hex expected-checksum)))
+                   (say (string-append "response.checksum.ok="
+                                       (if (response-checksum-valid? response sequence)
+                                           "#t"
+                                           "#f")))))
+               (say (string-append "payload.bytes=" (number->string (length payload))))
+               (display-payload-line payload color?)))
          (let ((ack-checksum (response-payload-checksum response)))
-           (write-ack ack-file sequence ack-checksum)
-           (say "ack.format=LPS4")
-           (say (string-append "ack.response-checksum=#x" (u32-hex ack-checksum)))
-           (send-ack host port ack-file))
+           (write-ack ack-file sequence ack-checksum verbose?)
+           (when verbose?
+             (say "ack.format=LPS4")
+             (say (string-append "ack.response-checksum=#x" (u32-hex ack-checksum))))
+           (send-ack host port ack-file verbose?))
          (exit 0)))
       ((>= attempt attempts)
        (if (null? response)

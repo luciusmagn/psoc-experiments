@@ -5842,6 +5842,34 @@ Tail mode prepares the ignored log file and runs =tail -f= without configuring
 or opening the UART device. This gives the user a safe way to watch console
 output while another process owns the serial port.
 
+* 2026-06-28 Payload-only network REPL client
+
+Added =--payload-only= to =tools/send-net-repl.scm=. The default remains
+verbose for bring-up diagnostics; payload-only suppresses request, response,
+and ACK transport metadata and prints only the decoded board payload.
+
+Validated against the quiet FAT =boot.lisp=-started UDP service:
+
+#+begin_example
+tools/send-net-repl.scm --host 192.168.0.107 --sequence 307 --attempts 5 --wait 3 --payload-only '(+ 12 13)'
+=> 25
+#+end_example
+
+A payload-only read-only status request preserved the firmware pretty-printer's
+multi-line shape:
+
+#+begin_example
+tools/send-net-repl.scm --host 192.168.0.107 --sequence 308 --attempts 5 --wait 3 --payload-only --read-only '(wifi-net-repl-service status)'
+=> ((enabled . #t)
+    (poll-frames . #x00000001)
+    ...)
+#+end_example
+
+Do not run multiple =send-net-repl.scm= clients concurrently against the current
+single-request UDP service unless testing duplicate/loss behavior. A parallel
+probe attempt before the sequential validation timed out on the host while the
+board service state showed one request had been processed.
+
 * Next actions
 
 1. Watch for any remaining UART corruption during longer Wi-Fi association

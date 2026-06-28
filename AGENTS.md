@@ -232,7 +232,9 @@ Use `tools/send-net-repl.scm --color` only when ANSI payload coloring is wanted;
 plain output is the default. Use `--read-only` as a conservative host-side
 accidental-send guard for status, directory, FAT info, and simple-path
 file-read forms. Do not treat this client flag as a board-side authorization
-boundary.
+boundary. Use `--payload-only` for clean REPL-like output when transport
+metadata is not needed. Do not run multiple UDP client sends in parallel against
+the current service unless testing duplicate/loss behavior.
 
 To make a normal quiet Wi-Fi image start the UDP REPL service from microSD,
 install this `boot.lisp` through the temporary service-smoke image:

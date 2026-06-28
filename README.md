@@ -176,17 +176,20 @@ plus payload text. Use `--legacy-request` to send an older `LPS0` request frame.
 
 `tools/send-net-repl.scm --color` wraps payload text in ANSI color. Plain output
 is the default so logs and scripts do not receive escape codes. Use
-`--read-only` for a conservative host-side guard that refuses forms outside
+`--payload-only` for a cleaner REPL-like display without transport metadata.
+Use `--read-only` for a conservative host-side guard that refuses forms outside
 status, directory, FAT info, and simple-path file-read operations before it
 sends a UDP request:
 
 ```sh
-tools/send-net-repl.scm --host BOARD_IP --read-only --color \
+tools/send-net-repl.scm --host BOARD_IP --payload-only --read-only --color \
   '(wifi-net-repl-service status)'
 ```
 
 This guard is for avoiding accidental writes from the host client; it is not a
-board-side authorization boundary.
+board-side authorization boundary. The current UDP service expects one request
+stream at a time; avoid running multiple clients in parallel unless
+duplicate/loss behavior is the thing being tested.
 
 For unattended Wi-Fi association, DHCP, router ARP, DNS, and background framed
 UDP REPL service smoke testing:
