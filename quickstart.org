@@ -39,6 +39,13 @@ Serial console:
 tools/serial-console.scm
 #+end_src
 
+That command mirrors bytes into =.local/logs/serial-console.log=. To watch the
+console without touching the UART device, use:
+
+#+begin_src sh
+tools/serial-console.scm --tail-log
+#+end_src
+
 Send one serial form:
 
 #+begin_src sh
@@ -50,6 +57,7 @@ Network REPL, after Wi-Fi and the UDP service are running:
 #+begin_src sh
 tools/send-net-repl.scm --host BOARD_IP '(+ 1 2)'
 tools/send-net-repl.scm --host BOARD_IP --read-only '(wifi-net-repl-service status)'
+tools/send-net-repl.scm --host BOARD_IP --read-only --color '(wifi-net-repl-service status)'
 #+end_src
 
 Use =--wait 60= for FAT-backed forms such as =ls=, =cat=, =read-file=,

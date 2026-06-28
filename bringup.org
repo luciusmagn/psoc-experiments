@@ -5823,6 +5823,25 @@ from FAT =boot.lisp= and answered on the same DHCP lease. A read-only
 clean board replug. The service had not yet handled an evaluated request in
 that boot when status was checked.
 
+* 2026-06-28 Logged serial console tail
+
+Updated =tools/serial-console.scm= so the normal interactive console mirrors
+bytes into =.local/logs/serial-console.log= by default:
+
+#+begin_src sh
+tools/serial-console.scm
+#+end_src
+
+Added a read-only tail mode for observers:
+
+#+begin_src sh
+tools/serial-console.scm --tail-log
+#+end_src
+
+Tail mode prepares the ignored log file and runs =tail -f= without configuring
+or opening the UART device. This gives the user a safe way to watch console
+output while another process owns the serial port.
+
 * Next actions
 
 1. Watch for any remaining UART corruption during longer Wi-Fi association

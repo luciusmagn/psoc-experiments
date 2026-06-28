@@ -143,10 +143,13 @@ tools/flash-lisp.scm
 ```
 
 Use `tools/build-flash-lisp.scm` when a change should be built and flashed
-in one step. Use `tools/serial-console.scm` for an interactive console and
-`tools/send-lisp.scm '(form ...)'` for one-off Lisp forms. These scripts
-encode the current known-good build, pack, flash, and serial-console
-commands and should be kept up to date when that flow changes.
+in one step. Use `tools/serial-console.scm` for an interactive console;
+it mirrors bytes into `.local/logs/serial-console.log` by default. Use
+`tools/serial-console.scm --tail-log` when the user should watch console output
+without opening the UART device. Use `tools/send-lisp.scm '(form ...)'` for
+one-off Lisp forms. These scripts encode the current known-good build, pack,
+flash, and serial-console commands and should be kept up to date when that flow
+changes.
 
 Use `tools/build-lisp.scm --wifi-firmware` or
 `tools/build-flash-lisp.scm --wifi-firmware` only when the local CYW4343W
