@@ -313,37 +313,37 @@ impl lisp::Board for PsocBoard<'_> {
         path: lisp::StringBytes,
         content: lisp::StringBytes,
     ) -> lisp::StoreWriteReport {
-        let report = lisp_store::write_file(self.p, path, content);
+        let report = lisp_fat::write_file(self.p, path, content);
         lisp::StoreWriteReport {
-            ready: matches!(report.status, lisp_store::StoreStatus::Ready),
-            status: store_status(report.status),
+            ready: matches!(report.status, lisp_fat::FatStatus::Ready),
+            status: fat_status(report.status),
             path_len: report.path_len,
             content_len: report.content_len,
-            directory_sector: report.directory_sector,
-            data_sector: report.data_sector,
+            directory_sector: 0,
+            data_sector: 0,
         }
     }
 
     fn read_file(&mut self, path: lisp::StringBytes) -> lisp::StoreReadReport {
-        let report = lisp_store::read_file(self.p, path);
+        let report = lisp_fat::read_file(self.p, path);
         lisp::StoreReadReport {
-            ready: matches!(report.status, lisp_store::StoreStatus::Ready),
-            status: store_status(report.status),
+            ready: matches!(report.status, lisp_fat::FatStatus::Ready),
+            status: fat_status(report.status),
             path_len: report.path_len,
             content_len: report.content_len,
-            directory_sector: report.directory_sector,
-            data_sector: report.data_sector,
+            directory_sector: 0,
+            data_sector: 0,
             content: report.content,
         }
     }
 
     fn list_files(&mut self) -> lisp::StoreListReport {
-        let report = lisp_store::list_files(self.p);
+        let report = lisp_fat::list_files(self.p);
         lisp::StoreListReport {
-            ready: matches!(report.status, lisp_store::StoreStatus::Ready),
-            status: store_status(report.status),
+            ready: matches!(report.status, lisp_fat::FatStatus::Ready),
+            status: fat_status(report.status),
             file_count: report.file_count,
-            directory_sector: report.directory_sector,
+            directory_sector: 0,
             files: report.files,
         }
     }
@@ -851,6 +851,11 @@ fn store_status(status: lisp_store::StoreStatus) -> &'static [u8] {
 fn fat_status(status: lisp_fat::FatStatus) -> &'static [u8] {
     match status {
         lisp_fat::FatStatus::Ready => b"ready",
+        lisp_fat::FatStatus::EmptyPath => b"empty-path",
+        lisp_fat::FatStatus::PathTooLong => b"path-too-long",
+        lisp_fat::FatStatus::ContentTooLong => b"content-too-long",
+        lisp_fat::FatStatus::InvalidPath => b"invalid-path",
+        lisp_fat::FatStatus::NotFound => b"not-found",
         lisp_fat::FatStatus::MbrReadFailed => b"mbr-read-failed",
         lisp_fat::FatStatus::MissingMbrSignature => b"missing-mbr-signature",
         lisp_fat::FatStatus::UnsupportedPartition => b"unsupported-partition",
@@ -867,6 +872,10 @@ fn fat_status(status: lisp_fat::FatStatus) -> &'static [u8] {
         lisp_fat::FatStatus::RootIterateFailed => b"root-iterate-failed",
         lisp_fat::FatStatus::RootCloseFailed => b"root-close-failed",
         lisp_fat::FatStatus::VolumeCloseFailed => b"volume-close-failed",
+        lisp_fat::FatStatus::FileOpenFailed => b"file-open-failed",
+        lisp_fat::FatStatus::FileReadFailed => b"file-read-failed",
+        lisp_fat::FatStatus::FileWriteFailed => b"file-write-failed",
+        lisp_fat::FatStatus::FileCloseFailed => b"file-close-failed",
     }
 }
 

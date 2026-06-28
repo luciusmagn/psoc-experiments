@@ -78,6 +78,34 @@ tools/flash-lisp.scm
 `(console-echo off)`, `(wifi-connect-local)`, and `(wifi-link-status)` at boot.
 Do not use it for normal quiet images.
 
+For microSD-backed Lisp files, the active `save-file`, `read-file`, `load`,
+`ls`, and `cat` forms use the FAT root directory. The firmware accepts Lisp
+paths such as `boot.lisp`; on disk these are stored as 8.3 short names such as
+`BOOT.LSP` because the embedded FAT crate currently creates and opens short
+names only. `ls` maps `.LSP` files back to `.lisp` for the Lisp console.
+
+For unattended storage smoke testing:
+
+```sh
+tools/build-lisp.scm --storage-boot-smoke
+tools/flash-lisp.scm
+```
+
+The storage smoke image skips automatic `boot.lisp` preload, then runs
+`(save-file "boot.lisp" "(+ 40 2)")`, `(read-file "boot.lisp")`, `(ls)`, and
+`(load "boot.lisp")` at boot. Do not use it for normal quiet images.
+
+To destructively format the inserted microSD card as FAT32 before that storage
+smoke test:
+
+```sh
+tools/build-lisp.scm --storage-format-boot-smoke
+tools/flash-lisp.scm
+```
+
+`--storage-format-boot-smoke` implies `--storage-boot-smoke` and destroys card
+contents at boot. Flash a non-formatting image immediately afterward.
+
 To keep the large vendor tools out of git, install ModusToolbox into the
 ignored `.local/ModusToolbox` directory:
 

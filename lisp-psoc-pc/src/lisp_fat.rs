@@ -1,5 +1,7 @@
+use core::str;
+
 use embedded_sdmmc::{
-    Block, BlockCount, BlockDevice, BlockIdx, Error as FatError, RawDirectory, RawVolume,
+    Block, BlockCount, BlockDevice, BlockIdx, Error as FatError, Mode, RawDirectory, RawVolume,
     ShortFileName, TimeSource, Timestamp, VolumeIdx, VolumeManager,
 };
 use psoc6_pac::Peripherals;
@@ -29,6 +31,9 @@ const FAT32_MAX_CLUSTERS: u32 = 0x0fff_ffef;
 const VOLUME_ID: u32 = 0x2026_0623;
 const VOLUME_LABEL: &[u8; 11] = b"LISPPSOC6  ";
 const FORMAT_PROGRESS_CHUNK_SECTORS: u32 = 256;
+const FAT_LISP_EXTENSION: &[u8; 3] = b"lsp";
+const LISP_EXTENSION: &[u8; 4] = b"lisp";
+const MAX_SHORT_PATH_TEXT_BYTES: usize = 12;
 
 pub trait FormatProgress {
     fn report(&mut self, phase: &'static [u8], written_sector_count: u32, total_sectors: u32);
@@ -70,9 +75,33 @@ pub struct FormatReport {
     pub failed_sector: u32,
 }
 
+pub struct FileWriteReport {
+    pub status: FatStatus,
+    pub path_len: u8,
+    pub content_len: u8,
+}
+
+pub struct FileReadReport {
+    pub status: FatStatus,
+    pub path_len: u8,
+    pub content_len: u8,
+    pub content: lisp::StringBytes,
+}
+
+pub struct FileListReport {
+    pub status: FatStatus,
+    pub file_count: u8,
+    pub files: [lisp::StringBytes; lisp::MAX_STORE_FILES],
+}
+
 #[derive(Clone, Copy)]
 pub enum FatStatus {
     Ready,
+    EmptyPath,
+    PathTooLong,
+    ContentTooLong,
+    InvalidPath,
+    NotFound,
     MbrReadFailed,
     MissingMbrSignature,
     UnsupportedPartition,
@@ -89,6 +118,10 @@ pub enum FatStatus {
     RootIterateFailed,
     RootCloseFailed,
     VolumeCloseFailed,
+    FileOpenFailed,
+    FileReadFailed,
+    FileWriteFailed,
+    FileCloseFailed,
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -114,6 +147,11 @@ struct Fat32Layout {
     partition_sector_count: u32,
     fat_size_sectors: u32,
     data_cluster_count: u32,
+}
+
+struct ShortPathText {
+    len: usize,
+    bytes: [u8; MAX_SHORT_PATH_TEXT_BYTES],
 }
 
 pub fn info(p: &Peripherals) -> InfoReport {
@@ -265,6 +303,152 @@ pub fn info(p: &Peripherals) -> InfoReport {
 pub fn format_fat32(p: &Peripherals) -> FormatReport {
     let mut progress = SilentProgress;
     format_fat32_with_progress(p, &mut progress)
+}
+
+pub fn write_file(
+    p: &Peripherals,
+    path: lisp::StringBytes,
+    content: lisp::StringBytes,
+) -> FileWriteReport {
+    let short_name = match path_short_name(path) {
+        Ok(short_name) => short_name,
+        Err(status) => return file_write_report(status, path, content),
+    };
+    if content.len as usize > lisp::MAX_STRING_BYTES {
+        return file_write_report(FatStatus::ContentTooLong, path, content);
+    }
+
+    let (manager, volume, root) = match open_root(p) {
+        Ok(opened) => opened,
+        Err(status) => return file_write_report(status, path, content),
+    };
+
+    let file = match manager.open_file_in_dir(root, short_name, Mode::ReadWriteCreateOrTruncate) {
+        Ok(file) => file,
+        Err(error) => {
+            close_dir_ignore_error(&manager, root);
+            close_volume_ignore_error(&manager, volume);
+            return file_write_report(file_open_error_status(error), path, content);
+        }
+    };
+
+    let content_bytes = &content.bytes[..content.len as usize];
+    if manager.write(file, content_bytes).is_err() {
+        manager.close_file(file).ok();
+        close_dir_ignore_error(&manager, root);
+        close_volume_ignore_error(&manager, volume);
+        return file_write_report(FatStatus::FileWriteFailed, path, content);
+    }
+
+    if manager.close_file(file).is_err() {
+        close_dir_ignore_error(&manager, root);
+        close_volume_ignore_error(&manager, volume);
+        return file_write_report(FatStatus::FileCloseFailed, path, content);
+    }
+
+    let close_status = close_root(manager, volume, root);
+    file_write_report(close_status, path, content)
+}
+
+pub fn read_file(p: &Peripherals, path: lisp::StringBytes) -> FileReadReport {
+    let short_name = match path_short_name(path) {
+        Ok(short_name) => short_name,
+        Err(status) => return file_read_report(status, path, empty_string()),
+    };
+
+    let (manager, volume, root) = match open_root(p) {
+        Ok(opened) => opened,
+        Err(status) => return file_read_report(status, path, empty_string()),
+    };
+
+    let file = match manager.open_file_in_dir(root, short_name, Mode::ReadOnly) {
+        Ok(file) => file,
+        Err(error) => {
+            close_dir_ignore_error(&manager, root);
+            close_volume_ignore_error(&manager, volume);
+            return file_read_report(file_open_error_status(error), path, empty_string());
+        }
+    };
+
+    let mut content = empty_string();
+    let mut content_len = 0usize;
+    let mut chunk = [0u8; 16];
+    loop {
+        match manager.file_eof(file) {
+            Ok(true) => break,
+            Ok(false) => {}
+            Err(_) => {
+                manager.close_file(file).ok();
+                close_dir_ignore_error(&manager, root);
+                close_volume_ignore_error(&manager, volume);
+                return file_read_report(FatStatus::FileReadFailed, path, empty_string());
+            }
+        }
+
+        if content_len >= content.bytes.len() {
+            manager.close_file(file).ok();
+            close_dir_ignore_error(&manager, root);
+            close_volume_ignore_error(&manager, volume);
+            return file_read_report(FatStatus::ContentTooLong, path, empty_string());
+        }
+
+        let capacity = core::cmp::min(chunk.len(), content.bytes.len() - content_len);
+        let read = match manager.read(file, &mut chunk[..capacity]) {
+            Ok(read) => read,
+            Err(_) => {
+                manager.close_file(file).ok();
+                close_dir_ignore_error(&manager, root);
+                close_volume_ignore_error(&manager, volume);
+                return file_read_report(FatStatus::FileReadFailed, path, empty_string());
+            }
+        };
+        if read == 0 {
+            break;
+        }
+        content.bytes[content_len..content_len + read].copy_from_slice(&chunk[..read]);
+        content_len += read;
+    }
+    content.len = content_len as u8;
+
+    if manager.close_file(file).is_err() {
+        close_dir_ignore_error(&manager, root);
+        close_volume_ignore_error(&manager, volume);
+        return file_read_report(FatStatus::FileCloseFailed, path, empty_string());
+    }
+
+    let close_status = close_root(manager, volume, root);
+    if matches!(close_status, FatStatus::Ready) {
+        file_read_report(FatStatus::Ready, path, content)
+    } else {
+        file_read_report(close_status, path, empty_string())
+    }
+}
+
+pub fn list_files(p: &Peripherals) -> FileListReport {
+    let (manager, volume, root) = match open_root(p) {
+        Ok(opened) => opened,
+        Err(status) => return file_list_report(status, 0, empty_entries()),
+    };
+
+    let mut entries = empty_entries();
+    let mut file_count = 0u8;
+    if manager
+        .iterate_dir(root, |entry| {
+            if usize::from(file_count) < entries.len() {
+                entries[usize::from(file_count)] = short_name_string(&entry.name);
+            }
+            file_count = file_count.saturating_add(1);
+        })
+        .is_err()
+    {
+        close_dir_ignore_error(&manager, root);
+        close_volume_ignore_error(&manager, volume);
+        return file_list_report(FatStatus::RootIterateFailed, 0, empty_entries());
+    }
+
+    let close_status = close_root(manager, volume, root);
+    let sample_count = core::cmp::min(file_count, lisp::MAX_STORE_FILES as u8);
+    file_list_report(close_status, sample_count, entries)
 }
 
 pub fn format_fat32_with_progress(
@@ -811,6 +995,56 @@ fn root_error_status(error: FatError<FatBlockError>) -> FatStatus {
     }
 }
 
+fn file_open_error_status(error: FatError<FatBlockError>) -> FatStatus {
+    match error {
+        FatError::DeviceError(_) => FatStatus::BlockDeviceFailed,
+        FatError::FilenameError(_) => FatStatus::InvalidPath,
+        FatError::NotFound => FatStatus::NotFound,
+        _ => FatStatus::FileOpenFailed,
+    }
+}
+
+fn open_root(
+    p: &Peripherals,
+) -> Result<
+    (
+        VolumeManager<PsocBlockDevice<'_>, FixedTime, 2, 1, 1>,
+        RawVolume,
+        RawDirectory,
+    ),
+    FatStatus,
+> {
+    let device = PsocBlockDevice { p };
+    let manager: VolumeManager<_, _, 2, 1, 1> =
+        VolumeManager::new_with_limits(device, FixedTime, 7000);
+    let volume = manager
+        .open_raw_volume(VolumeIdx(0))
+        .map_err(open_error_status)?;
+    let root = match manager.open_root_dir(volume) {
+        Ok(root) => root,
+        Err(error) => {
+            close_volume_ignore_error(&manager, volume);
+            return Err(root_error_status(error));
+        }
+    };
+    Ok((manager, volume, root))
+}
+
+fn close_root(
+    manager: VolumeManager<PsocBlockDevice<'_>, FixedTime, 2, 1, 1>,
+    volume: RawVolume,
+    root: RawDirectory,
+) -> FatStatus {
+    if manager.close_dir(root).is_err() {
+        close_volume_ignore_error(&manager, volume);
+        return FatStatus::RootCloseFailed;
+    }
+    if manager.close_volume(volume).is_err() {
+        return FatStatus::VolumeCloseFailed;
+    }
+    FatStatus::Ready
+}
+
 fn close_dir_ignore_error(
     manager: &VolumeManager<PsocBlockDevice<'_>, FixedTime, 2, 1, 1>,
     root: RawDirectory,
@@ -825,21 +1059,152 @@ fn close_volume_ignore_error(
     manager.close_volume(volume).ok();
 }
 
+fn path_short_name(path: lisp::StringBytes) -> Result<ShortFileName, FatStatus> {
+    let path_len = path.len as usize;
+    if path_len == 0 {
+        return Err(FatStatus::EmptyPath);
+    }
+    if path_len > lisp::MAX_STRING_BYTES {
+        return Err(FatStatus::PathTooLong);
+    }
+    let path_bytes = &path.bytes[..path_len];
+    if let Some(path_text) = mapped_lisp_short_path(path_bytes) {
+        let path_text = str::from_utf8(&path_text.bytes[..path_text.len])
+            .map_err(|_| FatStatus::InvalidPath)?;
+        return ShortFileName::create_from_str(path_text).map_err(|_| FatStatus::InvalidPath);
+    }
+    let path_text = str::from_utf8(path_bytes).map_err(|_| FatStatus::InvalidPath)?;
+    ShortFileName::create_from_str(path_text).map_err(|_| FatStatus::InvalidPath)
+}
+
+fn mapped_lisp_short_path(path: &[u8]) -> Option<ShortPathText> {
+    let dot_index = lisp_extension_dot_index(path)?;
+    if dot_index == 0 || dot_index > 8 {
+        return None;
+    }
+
+    let mut mapped = ShortPathText {
+        len: dot_index + 4,
+        bytes: [0; MAX_SHORT_PATH_TEXT_BYTES],
+    };
+    mapped.bytes[..dot_index].copy_from_slice(&path[..dot_index]);
+    mapped.bytes[dot_index] = b'.';
+    mapped.bytes[dot_index + 1..dot_index + 4].copy_from_slice(FAT_LISP_EXTENSION);
+    Some(mapped)
+}
+
+fn lisp_extension_dot_index(path: &[u8]) -> Option<usize> {
+    if path.len() < LISP_EXTENSION.len() + 2 {
+        return None;
+    }
+    let dot_index = path.len() - LISP_EXTENSION.len() - 1;
+    if path[dot_index] != b'.' {
+        return None;
+    }
+    if ascii_eq_ignore_case(&path[dot_index + 1..], LISP_EXTENSION) {
+        Some(dot_index)
+    } else {
+        None
+    }
+}
+
+fn file_write_report(
+    status: FatStatus,
+    path: lisp::StringBytes,
+    content: lisp::StringBytes,
+) -> FileWriteReport {
+    FileWriteReport {
+        status,
+        path_len: path.len,
+        content_len: if matches!(status, FatStatus::Ready) {
+            content.len
+        } else {
+            0
+        },
+    }
+}
+
+fn file_read_report(
+    status: FatStatus,
+    path: lisp::StringBytes,
+    content: lisp::StringBytes,
+) -> FileReadReport {
+    FileReadReport {
+        status,
+        path_len: path.len,
+        content_len: if matches!(status, FatStatus::Ready) {
+            content.len
+        } else {
+            0
+        },
+        content,
+    }
+}
+
+fn file_list_report(
+    status: FatStatus,
+    file_count: u8,
+    files: [lisp::StringBytes; lisp::MAX_STORE_FILES],
+) -> FileListReport {
+    FileListReport {
+        status,
+        file_count: if matches!(status, FatStatus::Ready) {
+            file_count
+        } else {
+            0
+        },
+        files,
+    }
+}
+
 fn short_name_string(name: &ShortFileName) -> lisp::StringBytes {
     let mut out = empty_string();
     let mut len = 0usize;
+    let display_lisp_extension = ascii_eq_ignore_case(name.extension(), FAT_LISP_EXTENSION);
     for &byte in name.base_name() {
-        push_byte(&mut out, &mut len, byte);
+        if display_lisp_extension {
+            push_byte(&mut out, &mut len, ascii_lower_byte(byte));
+        } else {
+            push_byte(&mut out, &mut len, byte);
+        }
     }
     let extension = name.extension();
     if !extension.is_empty() {
         push_byte(&mut out, &mut len, b'.');
-        for &byte in extension {
-            push_byte(&mut out, &mut len, byte);
+        if display_lisp_extension {
+            for &byte in LISP_EXTENSION {
+                push_byte(&mut out, &mut len, byte);
+            }
+        } else {
+            for &byte in extension {
+                push_byte(&mut out, &mut len, byte);
+            }
         }
     }
     out.len = len as u8;
     out
+}
+
+fn ascii_eq_ignore_case(left: &[u8], right: &[u8]) -> bool {
+    if left.len() != right.len() {
+        return false;
+    }
+    let mut index = 0usize;
+    while index < left.len() {
+        if ascii_lower_byte(left[index]) != ascii_lower_byte(right[index]) {
+            return false;
+        }
+        index += 1;
+    }
+    true
+}
+
+fn ascii_lower_byte(byte: u8) -> u8 {
+    if byte.is_ascii_uppercase() {
+        byte + (b'a' - b'A')
+    } else {
+        byte
+    }
 }
 
 fn push_byte(out: &mut lisp::StringBytes, len: &mut usize, byte: u8) {

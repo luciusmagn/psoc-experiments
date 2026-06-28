@@ -17,6 +17,8 @@ use-bootloader = []
 wifi-firmware-blob = []
 wifi-local-credentials = []
 wifi-boot-smoke = []
+storage-boot-smoke = []
+storage-format-boot-smoke = ["storage-boot-smoke"]
 
 [profile.release]
 lto = true

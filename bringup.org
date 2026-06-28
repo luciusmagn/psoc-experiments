@@ -4660,12 +4660,70 @@ boot> (wifi-link-status)
 The serial log still shows occasional damaged characters during long output,
 but the link-status transaction itself completed and returned ready.
 
+* 2026-06-28 FAT-backed Lisp file storage
+
+Moved the active Lisp file forms from the raw Lisp store to the FAT microSD
+root directory:
+
+#+begin_example
+(save-file "boot.lisp" "(+ 40 2)")
+(read-file "boot.lisp")
+(ls)
+(cat "boot.lisp")
+(load "boot.lisp")
+#+end_example
+
+The firmware still exposes the same Lisp-facing names. Internally,
+=embedded-sdmmc 0.9.0= creates and opens short names only, so paths ending in
+=.lisp= are mapped to FAT =.LSP= short names. For example, =boot.lisp= is
+stored on the card as =BOOT.LSP= and is displayed back to the Lisp console as
+=boot.lisp=. Exact FAT long-name creation is not implemented in this slice.
+
+Added storage boot-smoke build flags:
+
+#+begin_example
+tools/build-lisp.scm --storage-boot-smoke
+tools/build-lisp.scm --storage-format-boot-smoke
+#+end_example
+
+=--storage-boot-smoke= skips the automatic =boot.lisp= preload for that test
+image, then runs =save-file=, =read-file=, =ls=, and =load= at boot.
+=--storage-format-boot-smoke= implies the storage smoke and first runs
+=fat-format=, which destroys the inserted card contents. After using the
+formatting image, a non-formatting image was flashed immediately.
+
+Live result after formatting the inserted card:
+
+#+begin_example
+boot> (save-file "boot.lisp" "(+ 40 2)")
+=> ((status . ready) ...)
+
+boot> (read-file "boot.lisp")
+=> ((status . ready)
+    ...
+    (content . "(+ 40 2)"))
+
+boot> (ls)
+=> ((status . ready)
+    ...
+    (files ("boot.lisp")))
+
+boot> (load "boot.lisp")
+=> 42
+#+end_example
+
+The old card state made the first FAT create/read pass very slow because the
+short-name root search had to walk existing card metadata. The explicit FAT32
+format cleared that state; afterward the quiet Wi-Fi-capable image loaded
+=boot.lisp= at startup and returned =42=.
+
 * Next actions
 
 1. Watch for any remaining UART corruption during longer Wi-Fi association
    workflows.
 2. Add REPL history and better editing across continuation lines.
-3. Add a FAT/exFAT-aware storage layer after raw block reads/writes work.
+3. Add FAT long-file-name support or document a PC-side =.LSP= convention for
+   Lisp source files.
 4. Test the newer Infineon target =infineon/cy8cxxa.cfg= as a replacement
    for obsolete =target/psoc6_2m.cfg=.
 5. Fix UART/REPL input reliability; boot smoke is only a workaround for

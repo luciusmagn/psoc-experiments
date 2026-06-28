@@ -23,6 +23,15 @@ const WIFI_BOOT_SMOKE_FORMS: [&[u8]; 3] = [
     b"(wifi-connect-local)",
     b"(wifi-link-status)",
 ];
+#[cfg(feature = "storage-boot-smoke")]
+const STORAGE_BOOT_SMOKE_FORMS: [&[u8]; 4] = [
+    b"(save-file \"boot.lisp\" \"(+ 40 2)\")",
+    b"(read-file \"boot.lisp\")",
+    b"(ls)",
+    b"(load \"boot.lisp\")",
+];
+#[cfg(feature = "storage-format-boot-smoke")]
+const STORAGE_FORMAT_BOOT_SMOKE_FORMS: [&[u8]; 1] = [b"(fat-format)"];
 
 #[entry]
 fn main() -> ! {
@@ -56,14 +65,27 @@ fn main() -> ! {
         console::UART_BAUD
     )
     .ok();
+    #[cfg(not(feature = "storage-boot-smoke"))]
     {
         let mut board = board_state.lisp_board(&p);
         load_boot_file(&mut machine, &mut board, &mut console).ok();
+    }
+    #[cfg(feature = "storage-boot-smoke")]
+    writeln!(console, "boot.lisp preload: skipped for storage smoke").ok();
+    #[cfg(feature = "storage-format-boot-smoke")]
+    {
+        let mut board = board_state.lisp_board(&p);
+        run_storage_format_boot_smoke(&mut machine, &mut board, &mut console).ok();
     }
     #[cfg(feature = "wifi-boot-smoke")]
     {
         let mut board = board_state.lisp_board(&p);
         run_wifi_boot_smoke(&mut machine, &mut board, &mut console).ok();
+    }
+    #[cfg(feature = "storage-boot-smoke")]
+    {
+        let mut board = board_state.lisp_board(&p);
+        run_storage_boot_smoke(&mut machine, &mut board, &mut console).ok();
     }
     writeln!(console, "Try: (help), (ls), (cat \"boot.lisp\"), (+ 1 2 3)").ok();
     console.prompt();
@@ -149,6 +171,38 @@ fn run_wifi_boot_smoke<B: lisp::Board, W: Write>(
         machine.eval_line(form, board, output)?;
     }
     writeln!(output, "wifi boot smoke: done")
+}
+
+#[cfg(feature = "storage-boot-smoke")]
+fn run_storage_boot_smoke<B: lisp::Board, W: Write>(
+    machine: &mut lisp::Machine,
+    board: &mut B,
+    output: &mut W,
+) -> fmt::Result {
+    writeln!(output, "storage boot smoke: start")?;
+    for form in STORAGE_BOOT_SMOKE_FORMS {
+        write!(output, "boot> ")?;
+        write_ascii(form, output)?;
+        writeln!(output)?;
+        machine.eval_line(form, board, output)?;
+    }
+    writeln!(output, "storage boot smoke: done")
+}
+
+#[cfg(feature = "storage-format-boot-smoke")]
+fn run_storage_format_boot_smoke<B: lisp::Board, W: Write>(
+    machine: &mut lisp::Machine,
+    board: &mut B,
+    output: &mut W,
+) -> fmt::Result {
+    writeln!(output, "storage format boot smoke: start")?;
+    for form in STORAGE_FORMAT_BOOT_SMOKE_FORMS {
+        write!(output, "boot> ")?;
+        write_ascii(form, output)?;
+        writeln!(output)?;
+        machine.eval_line(form, board, output)?;
+    }
+    writeln!(output, "storage format boot smoke: done")
 }
 
 fn load_boot_file<B: lisp::Board, W: Write>(

@@ -11,7 +11,7 @@
        (else (loop (- index 1)))))))
 
 (define (usage)
-  (say "usage: tools/build-lisp.scm [--wifi-firmware] [--wifi-credentials] [--wifi-boot-smoke]")
+  (say "usage: tools/build-lisp.scm [--wifi-firmware] [--wifi-credentials] [--wifi-boot-smoke] [--storage-boot-smoke] [--storage-format-boot-smoke]")
   (say "")
   (say "Builds the CM4 Lisp firmware, packs it into the CM0+ bootloader,")
   (say "and rebuilds the bootloader image.")
@@ -19,20 +19,27 @@
   (say "--wifi-firmware includes local firmware, NVRAM, and CLM resources in the CM4 image.")
   (say "--wifi-credentials includes ignored local SSID/passphrase blobs in the CM4 image.")
   (say "--wifi-boot-smoke runs local connect and link-status forms at boot.")
-  (say "  It implies --wifi-firmware and --wifi-credentials."))
+  (say "  It implies --wifi-firmware and --wifi-credentials.")
+  (say "--storage-boot-smoke runs FAT save/read/list/load forms at boot.")
+  (say "--storage-format-boot-smoke formats FAT32 before the storage smoke.")
+  (say "  It implies --storage-boot-smoke and destroys card contents."))
 
-(define (parse args wifi-firmware? wifi-credentials? wifi-boot-smoke?)
+(define (parse args wifi-firmware? wifi-credentials? wifi-boot-smoke? storage-boot-smoke? storage-format-boot-smoke?)
   (cond
-    ((null? args) (values wifi-firmware? wifi-credentials? wifi-boot-smoke?))
+    ((null? args) (values wifi-firmware? wifi-credentials? wifi-boot-smoke? storage-boot-smoke? storage-format-boot-smoke?))
     ((string=? (car args) "--help")
      (usage)
      (exit 0))
     ((string=? (car args) "--wifi-firmware")
-     (parse (cdr args) #t wifi-credentials? wifi-boot-smoke?))
+     (parse (cdr args) #t wifi-credentials? wifi-boot-smoke? storage-boot-smoke? storage-format-boot-smoke?))
     ((string=? (car args) "--wifi-credentials")
-     (parse (cdr args) wifi-firmware? #t wifi-boot-smoke?))
+     (parse (cdr args) wifi-firmware? #t wifi-boot-smoke? storage-boot-smoke? storage-format-boot-smoke?))
     ((string=? (car args) "--wifi-boot-smoke")
-     (parse (cdr args) #t #t #t))
+     (parse (cdr args) #t #t #t storage-boot-smoke? storage-format-boot-smoke?))
+    ((string=? (car args) "--storage-boot-smoke")
+     (parse (cdr args) wifi-firmware? wifi-credentials? wifi-boot-smoke? #t storage-format-boot-smoke?))
+    ((string=? (car args) "--storage-format-boot-smoke")
+     (parse (cdr args) wifi-firmware? wifi-credentials? wifi-boot-smoke? #t #t))
     (else
      (die (string-append "unknown argument: " (car args))))))
 
@@ -43,17 +50,19 @@
       ((string=? out "") (loop (cdr items) (car items)))
       (else (loop (cdr items) (string-append out "," (car items)))))))
 
-(define (feature-list wifi-firmware? wifi-credentials? wifi-boot-smoke?)
+(define (feature-list wifi-firmware? wifi-credentials? wifi-boot-smoke? storage-boot-smoke? storage-format-boot-smoke?)
   (join-with-comma
    (append
     '("use-bootloader")
     (if wifi-firmware? '("wifi-firmware-blob") '())
     (if wifi-credentials? '("wifi-local-credentials") '())
-    (if wifi-boot-smoke? '("wifi-boot-smoke") '()))))
+    (if wifi-boot-smoke? '("wifi-boot-smoke") '())
+    (if storage-boot-smoke? '("storage-boot-smoke") '())
+    (if storage-format-boot-smoke? '("storage-format-boot-smoke") '()))))
 
-(define-values (wifi-firmware? wifi-credentials? wifi-boot-smoke?)
-  (parse (command-line-tail) #f #f #f))
-(define features (feature-list wifi-firmware? wifi-credentials? wifi-boot-smoke?))
+(define-values (wifi-firmware? wifi-credentials? wifi-boot-smoke? storage-boot-smoke? storage-format-boot-smoke?)
+  (parse (command-line-tail) #f #f #f #f #f))
+(define features (feature-list wifi-firmware? wifi-credentials? wifi-boot-smoke? storage-boot-smoke? storage-format-boot-smoke?))
 
 (when wifi-firmware?
   (run (string-append

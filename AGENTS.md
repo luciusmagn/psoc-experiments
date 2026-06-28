@@ -160,6 +160,18 @@ association smoke tests while UART RX is unreliable. It implies the Wi-Fi
 firmware and local credential features, then runs `(console-echo off)`,
 `(wifi-connect-local)`, and `(wifi-link-status)` at boot.
 
+Use `tools/build-lisp.scm --storage-boot-smoke` or
+`tools/build-flash-lisp.scm --storage-boot-smoke` only for unattended FAT
+storage smoke tests while UART RX is unreliable. It skips automatic
+`boot.lisp` preload for the smoke image, then runs `save-file`, `read-file`,
+`ls`, and `load` forms at boot.
+
+Use `tools/build-lisp.scm --storage-format-boot-smoke` or
+`tools/build-flash-lisp.scm --storage-format-boot-smoke` only when the
+inserted microSD card contents may be destroyed. It implies
+`--storage-boot-smoke`, formats the card as FAT32 at boot, and then runs the
+FAT storage smoke forms. Flash a non-formatting image immediately afterward.
+
 The scripts keep vendor downloads and generated local state under `.local/`
 and discover Infineon OpenOCD from `OPENOCD_ROOT`,
 `MODUSTOOLBOX_OPENOCD_ROOT`, `MODUSTOOLBOX_ROOT`,
