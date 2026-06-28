@@ -71,7 +71,11 @@ parses Offer, sends Request, parses Ack, and stores the lease fields in the
 Wi-Fi state for later network primitives. `(wifi-lease-status)` returns the
 stored lease fields without sending SDIO traffic. `(wifi-arp-router)` uses the
 stored lease to resolve the router MAC and stores it internally while reporting
-only sanitized status fields and a MAC hash. `(wifi-network-bootstrap)` runs
+only sanitized status fields and a MAC hash. `(wifi-dns-query "example.com")`
+sends a UDP DNS A-record query through the stored lease and router ARP state,
+then reports sanitized response status and the first answer. These high-level
+network forms are stepping stones toward a framed network REPL protocol that is
+less dependent on the flaky serial RX path. `(wifi-network-bootstrap)` runs
 local association, DHCP, lease status, and router ARP resolution as one compact
 high-level form.
 
@@ -108,6 +112,18 @@ tools/flash-lisp.scm
 UART-silent smoke path and records a RAM marker named
 `WIFI_ARP_BOOT_SMOKE_MARKER` for SWD inspection. Flash a non-smoke image
 afterward.
+
+For unattended Wi-Fi association, DHCP, router ARP, and DNS smoke testing:
+
+```sh
+tools/build-lisp.scm --wifi-dns-boot-smoke
+tools/flash-lisp.scm
+```
+
+`--wifi-dns-boot-smoke` implies `--wifi-arp-boot-smoke` and resolves
+`example.com` through DNS at boot. It extends the same
+`WIFI_ARP_BOOT_SMOKE_MARKER` words with DNS status and answer fields for SWD
+inspection. Flash a non-smoke image afterward.
 
 For microSD-backed Lisp files, the active `save-file`, `read-file`, `load`,
 `ls`, and `cat` forms use the FAT root directory. The firmware accepts Lisp

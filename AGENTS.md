@@ -173,6 +173,13 @@ unreliable. It implies `--wifi-dhcp-boot-smoke`, runs a UART-silent smoke path,
 and records `WIFI_ARP_BOOT_SMOKE_MARKER` in RAM for SWD inspection. Flash a
 non-smoke image immediately afterward.
 
+Use `tools/build-lisp.scm --wifi-dns-boot-smoke` or
+`tools/build-flash-lisp.scm --wifi-dns-boot-smoke` only for unattended Wi-Fi
+association, DHCP lease acquisition, router ARP, and DNS smoke tests while UART
+is unreliable. It implies `--wifi-arp-boot-smoke`, resolves `example.com`, and
+extends `WIFI_ARP_BOOT_SMOKE_MARKER` with DNS status and answer fields for SWD
+inspection. Flash a non-smoke image immediately afterward.
+
 Use `tools/build-lisp.scm --storage-boot-smoke` or
 `tools/build-flash-lisp.scm --storage-boot-smoke` only for unattended FAT
 storage smoke tests while UART RX is unreliable. It skips automatic

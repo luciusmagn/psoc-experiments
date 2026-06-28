@@ -121,6 +121,7 @@ pub trait Board {
     fn wifi_dhcp_acquire(&mut self) -> WifiSdioDhcpAcquireReport;
     fn wifi_lease_status(&mut self) -> WifiSdioLeaseStatusReport;
     fn wifi_arp_router(&mut self) -> WifiSdioArpRouterReport;
+    fn wifi_dns_query(&mut self, name: StringBytes) -> WifiSdioDnsQueryReport;
     fn wifi_load_clm(&mut self) -> WifiSdioClmLoadReport;
     fn wifi_get_country(&mut self) -> WifiSdioCountryReport;
     fn wifi_set_country(&mut self, country_code: [u8; 2], revision: i32) -> WifiSdioCountryReport;
@@ -1034,6 +1035,54 @@ pub struct WifiSdioArpRouterReport {
 }
 
 #[derive(Clone, Copy)]
+pub struct WifiSdioDnsQueryReport {
+    pub status: &'static [u8],
+    pub step: &'static [u8],
+    pub lease_valid: bool,
+    pub local_ip_address: u32,
+    pub dns_server_ip_address: u32,
+    pub router_ip_address: u32,
+    pub router_mac_present: bool,
+    pub ht_status: &'static [u8],
+    pub ht_attempts: u16,
+    pub ht_write_response: u32,
+    pub ht_read_value: u8,
+    pub ht_read_response: u32,
+    pub ht_available: bool,
+    pub mac_status: &'static [u8],
+    pub mac_hash: u32,
+    pub mac_present: bool,
+    pub mac_cdc_status: u32,
+    pub mac_cdc_length: u32,
+    pub transaction_id: u16,
+    pub query_name_length: u8,
+    pub query_payload_length: u16,
+    pub query_payload_hash: u32,
+    pub request_status: &'static [u8],
+    pub request_ethernet_length: u16,
+    pub request_ethernet_hash: u32,
+    pub request_packet_length: u16,
+    pub request_write_response: u32,
+    pub response_poll_status: &'static [u8],
+    pub response_parse_status: &'static [u8],
+    pub response_polls: u8,
+    pub response_frames_read: u8,
+    pub response_non_data_frames: u8,
+    pub response_non_dns_frames: u8,
+    pub response_answer_count: u16,
+    pub answer_ip_address: u32,
+    pub answer_ttl_seconds: u32,
+    pub answer_valid: bool,
+    pub ack_status: &'static [u8],
+    pub ack_last_error: Option<WifiSdioCommandErrorReport>,
+    pub ht_last_error: Option<WifiSdioCommandErrorReport>,
+    pub request_last_error: Option<WifiSdioCommandErrorReport>,
+    pub frame_last_error: Option<WifiSdioCommandErrorReport>,
+    pub host_normal_int: u16,
+    pub host_error_int: u16,
+}
+
+#[derive(Clone, Copy)]
 pub struct WifiNetworkBootstrapReport {
     pub status: &'static [u8],
     pub step: &'static [u8],
@@ -1715,6 +1764,7 @@ pub enum Primitive {
     WifiDhcpAcquire,
     WifiLeaseStatus,
     WifiArpRouter,
+    WifiDnsQuery,
     WifiNetworkBootstrap,
     WifiLoadClm,
     WifiGetCountry,
@@ -1830,6 +1880,7 @@ impl Primitive {
             Self::WifiDhcpAcquire => "wifi-dhcp-acquire",
             Self::WifiLeaseStatus => "wifi-lease-status",
             Self::WifiArpRouter => "wifi-arp-router",
+            Self::WifiDnsQuery => "wifi-dns-query",
             Self::WifiNetworkBootstrap => "wifi-network-bootstrap",
             Self::WifiLoadClm => "wifi-load-clm",
             Self::WifiGetCountry => "wifi-get-country",
@@ -2113,6 +2164,7 @@ impl Machine {
         self.install_primitive(b"wifi-dhcp-acquire", Primitive::WifiDhcpAcquire)?;
         self.install_primitive(b"wifi-lease-status", Primitive::WifiLeaseStatus)?;
         self.install_primitive(b"wifi-arp-router", Primitive::WifiArpRouter)?;
+        self.install_primitive(b"wifi-dns-query", Primitive::WifiDnsQuery)?;
         self.install_primitive(b"wifi-network-bootstrap", Primitive::WifiNetworkBootstrap)?;
         self.install_primitive(b"wifi-load-clm", Primitive::WifiLoadClm)?;
         self.install_primitive(b"wifi-get-country", Primitive::WifiGetCountry)?;
@@ -3031,6 +3083,11 @@ impl Machine {
             Primitive::WifiArpRouter => {
                 self.expect_count(args, 0)?;
                 self.wifi_sdio_arp_router_report(board.wifi_arp_router())
+            }
+            Primitive::WifiDnsQuery => {
+                self.expect_count(args, 1)?;
+                let name = self.expect_string(args[0])?;
+                self.wifi_sdio_dns_query_report(board.wifi_dns_query(name))
             }
             Primitive::WifiNetworkBootstrap => {
                 self.expect_count(args, 0)?;
@@ -5156,6 +5213,128 @@ impl Machine {
             router_mac_hash,
             router_mac_present,
             router_mac_stored,
+            ack_status,
+            host_normal_int,
+            host_error_int,
+            ack_last_error,
+            ht_last_error,
+            request_last_error,
+            frame_last_error,
+        ];
+        self.make_list_from_values(&entries)
+    }
+
+    fn wifi_sdio_dns_query_report(&mut self, report: WifiSdioDnsQueryReport) -> LispResult<Value> {
+        let status = self.symbol_entry(b"status", report.status)?;
+        let step = self.symbol_entry(b"step", report.step)?;
+        let lease_valid = self.bool_entry(b"lease.valid", report.lease_valid)?;
+        let local_ip_address = self.word_entry(b"lease.ip", report.local_ip_address)?;
+        let dns_server_ip_address = self.word_entry(b"lease.dns", report.dns_server_ip_address)?;
+        let router_ip_address = self.word_entry(b"lease.router", report.router_ip_address)?;
+        let router_mac_present =
+            self.bool_entry(b"router.mac.present", report.router_mac_present)?;
+        let ht_status = self.symbol_entry(b"ht.status", report.ht_status)?;
+        let ht_attempts = self.word_entry(b"ht.attempts", report.ht_attempts as u32)?;
+        let ht_write_response = self.word_entry(b"ht.write-response", report.ht_write_response)?;
+        let ht_read_value = self.word_entry(b"ht.read-value", report.ht_read_value as u32)?;
+        let ht_read_response = self.word_entry(b"ht.read-response", report.ht_read_response)?;
+        let ht_available = self.bool_entry(b"ht.available", report.ht_available)?;
+        let mac_status = self.symbol_entry(b"mac.status", report.mac_status)?;
+        let mac_hash = self.word_entry(b"mac.hash", report.mac_hash)?;
+        let mac_present = self.bool_entry(b"mac.present", report.mac_present)?;
+        let mac_cdc_status = self.word_entry(b"mac.cdc.status", report.mac_cdc_status)?;
+        let mac_cdc_length = self.word_entry(b"mac.cdc.length", report.mac_cdc_length)?;
+        let transaction_id =
+            self.word_entry(b"dns.transaction-id", report.transaction_id as u32)?;
+        let query_name_length =
+            self.word_entry(b"query.name-length", report.query_name_length as u32)?;
+        let query_payload_length =
+            self.word_entry(b"query.payload-length", report.query_payload_length as u32)?;
+        let query_payload_hash =
+            self.word_entry(b"query.payload-hash", report.query_payload_hash)?;
+        let request_status = self.symbol_entry(b"request.status", report.request_status)?;
+        let request_ethernet_length = self.word_entry(
+            b"request.ethernet-length",
+            report.request_ethernet_length as u32,
+        )?;
+        let request_ethernet_hash =
+            self.word_entry(b"request.ethernet-hash", report.request_ethernet_hash)?;
+        let request_packet_length = self.word_entry(
+            b"request.packet-length",
+            report.request_packet_length as u32,
+        )?;
+        let request_write_response =
+            self.word_entry(b"request.write-response", report.request_write_response)?;
+        let response_poll_status =
+            self.symbol_entry(b"response.poll.status", report.response_poll_status)?;
+        let response_parse_status =
+            self.symbol_entry(b"response.parse.status", report.response_parse_status)?;
+        let response_polls = self.word_entry(b"response.polls", report.response_polls as u32)?;
+        let response_frames_read =
+            self.word_entry(b"response.frames-read", report.response_frames_read as u32)?;
+        let response_non_data_frames = self.word_entry(
+            b"response.non-data-frames",
+            report.response_non_data_frames as u32,
+        )?;
+        let response_non_dns_frames = self.word_entry(
+            b"response.non-dns-frames",
+            report.response_non_dns_frames as u32,
+        )?;
+        let response_answer_count = self.word_entry(
+            b"response.answer-count",
+            report.response_answer_count as u32,
+        )?;
+        let answer_ip_address = self.word_entry(b"answer.ip", report.answer_ip_address)?;
+        let answer_ttl_seconds = self.word_entry(b"answer.ttl", report.answer_ttl_seconds)?;
+        let answer_valid = self.bool_entry(b"answer.valid", report.answer_valid)?;
+        let ack_status = self.symbol_entry(b"ack.status", report.ack_status)?;
+        let host_normal_int = self.word_entry(b"HOST.NORM_INT", report.host_normal_int as u32)?;
+        let host_error_int = self.word_entry(b"HOST.ERR_INT", report.host_error_int as u32)?;
+        let ack_last_error =
+            self.wifi_sdio_error_entry(b"ack.last-error", report.ack_last_error)?;
+        let ht_last_error = self.wifi_sdio_error_entry(b"ht.last-error", report.ht_last_error)?;
+        let request_last_error =
+            self.wifi_sdio_error_entry(b"request.last-error", report.request_last_error)?;
+        let frame_last_error =
+            self.wifi_sdio_error_entry(b"frame.last-error", report.frame_last_error)?;
+        let entries = [
+            status,
+            step,
+            lease_valid,
+            local_ip_address,
+            dns_server_ip_address,
+            router_ip_address,
+            router_mac_present,
+            ht_status,
+            ht_attempts,
+            ht_write_response,
+            ht_read_value,
+            ht_read_response,
+            ht_available,
+            mac_status,
+            mac_hash,
+            mac_present,
+            mac_cdc_status,
+            mac_cdc_length,
+            transaction_id,
+            query_name_length,
+            query_payload_length,
+            query_payload_hash,
+            request_status,
+            request_ethernet_length,
+            request_ethernet_hash,
+            request_packet_length,
+            request_write_response,
+            response_poll_status,
+            response_parse_status,
+            response_polls,
+            response_frames_read,
+            response_non_data_frames,
+            response_non_dns_frames,
+            response_answer_count,
+            answer_ip_address,
+            answer_ttl_seconds,
+            answer_valid,
             ack_status,
             host_normal_int,
             host_error_int,

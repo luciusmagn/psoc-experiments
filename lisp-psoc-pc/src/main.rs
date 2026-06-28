@@ -35,8 +35,13 @@ const WIFI_BOOT_SMOKE_FORMS: [&[u8]; 4] = [
 #[cfg(feature = "wifi-arp-boot-smoke")]
 const WIFI_ARP_BOOT_SMOKE_MAGIC: u32 = 0x4152_5030;
 #[cfg(feature = "wifi-arp-boot-smoke")]
+const WIFI_NETWORK_BOOT_SMOKE_MARKER_WORDS: usize = 24;
+#[cfg(feature = "wifi-dns-boot-smoke")]
+const WIFI_DNS_BOOT_SMOKE_NAME: &[u8] = b"example.com";
+#[cfg(feature = "wifi-arp-boot-smoke")]
 #[no_mangle]
-pub static mut WIFI_ARP_BOOT_SMOKE_MARKER: [u32; 16] = [0; 16];
+pub static mut WIFI_ARP_BOOT_SMOKE_MARKER: [u32; WIFI_NETWORK_BOOT_SMOKE_MARKER_WORDS] =
+    [0; WIFI_NETWORK_BOOT_SMOKE_MARKER_WORDS];
 #[cfg(feature = "storage-boot-smoke")]
 const STORAGE_BOOT_SMOKE_FORMS: [&[u8]; 4] = [
     b"(save-file \"boot.lisp\" \"(+ 40 2)\")",
@@ -259,8 +264,32 @@ fn run_wifi_boot_smoke<B: lisp::Board, W: Write>(
     if !status_ready(arp.status) {
         return Ok(());
     }
-
     write_wifi_arp_boot_smoke_marker(1, 7);
+
+    #[cfg(feature = "wifi-dns-boot-smoke")]
+    {
+        let dns_name = match static_string_bytes(WIFI_DNS_BOOT_SMOKE_NAME) {
+            Some(value) => value,
+            None => {
+                write_wifi_arp_boot_smoke_marker(1, 0xe003);
+                return Ok(());
+            }
+        };
+        let dns = board.wifi_dns_query(dns_name);
+        write_wifi_arp_boot_smoke_marker(1, 8);
+        write_wifi_arp_boot_smoke_marker(16, status_word(dns.status));
+        write_wifi_arp_boot_smoke_marker(17, status_word(dns.response_poll_status));
+        write_wifi_arp_boot_smoke_marker(18, status_word(dns.response_parse_status));
+        write_wifi_arp_boot_smoke_marker(19, bool_word(dns.answer_valid));
+        write_wifi_arp_boot_smoke_marker(20, dns.answer_ip_address);
+        write_wifi_arp_boot_smoke_marker(21, dns.answer_ttl_seconds);
+        write_wifi_arp_boot_smoke_marker(22, dns.response_answer_count as u32);
+        if !status_ready(dns.status) {
+            return Ok(());
+        }
+        write_wifi_arp_boot_smoke_marker(1, 9);
+    }
+
     Ok(())
 }
 
@@ -304,7 +333,7 @@ fn bool_word(value: bool) -> u32 {
 #[cfg(feature = "wifi-arp-boot-smoke")]
 fn clear_wifi_arp_boot_smoke_marker() {
     let mut index = 0usize;
-    while index < 16 {
+    while index < WIFI_NETWORK_BOOT_SMOKE_MARKER_WORDS {
         write_wifi_arp_boot_smoke_marker(index, 0);
         index += 1;
     }
@@ -312,7 +341,7 @@ fn clear_wifi_arp_boot_smoke_marker() {
 
 #[cfg(feature = "wifi-arp-boot-smoke")]
 fn write_wifi_arp_boot_smoke_marker(index: usize, value: u32) {
-    if index >= 16 {
+    if index >= WIFI_NETWORK_BOOT_SMOKE_MARKER_WORDS {
         return;
     }
 

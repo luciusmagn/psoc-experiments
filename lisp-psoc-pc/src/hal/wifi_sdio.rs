@@ -83,6 +83,7 @@ const WHD_EVENT_DATA_OFFSET: usize = WHD_EVENT_MSG_OFFSET + WHD_EVENT_MSG_BYTES;
 const WHD_EVENT_FIXED_BYTES: usize = WHD_EVENT_DATA_OFFSET;
 const WL_ESCAN_RESULT_FIXED_BYTES: usize = 12;
 const IPV4_HEADER_BYTES: usize = 20;
+const IPV4_PROTOCOL_UDP: u8 = 17;
 const UDP_HEADER_BYTES: usize = 8;
 const DHCP_FIXED_BYTES: usize = 236;
 const DHCP_UDP_PAYLOAD_BYTES: usize = 300;
@@ -119,6 +120,18 @@ const ARP_OPERATION_REQUEST: u16 = 1;
 const ARP_OPERATION_REPLY: u16 = 2;
 const ARP_POLL_FRAMES: u8 = 24;
 const ARP_POLL_DELAY_MS: u32 = 200;
+const DNS_HEADER_BYTES: usize = 12;
+const DNS_QUERY_PAYLOAD_MAX_BYTES: usize = 128;
+const DNS_ETHERNET_FRAME_MAX_BYTES: usize =
+    ETHERNET_HEADER_BYTES + IPV4_HEADER_BYTES + UDP_HEADER_BYTES + DNS_QUERY_PAYLOAD_MAX_BYTES;
+const DNS_INITIAL_TRANSACTION_ID: u16 = 0x4c44;
+const DNS_CLIENT_PORT: u16 = 49152;
+const DNS_SERVER_PORT: u16 = 53;
+const DNS_IP_IDENTIFICATION: u16 = 0x4c44;
+const DNS_POLL_FRAMES: u8 = 32;
+const DNS_POLL_DELAY_MS: u32 = 250;
+const DNS_TYPE_A: u16 = 1;
+const DNS_CLASS_IN: u16 = 1;
 const WLC_UP_IOCTL: u32 = 2;
 const WLC_GET_VERSION_IOCTL: u32 = 1;
 const WLC_GET_BSSID_IOCTL: u32 = 23;
@@ -570,6 +583,54 @@ pub enum WifiSdioArpParseStatus {
     WrongOperation,
     WrongSender,
     WrongTarget,
+}
+
+#[derive(Clone, Copy)]
+pub enum WifiSdioDnsQueryStatus {
+    Ready,
+    NoLease,
+    LeaseMissingAddress,
+    RouterMacMissing,
+    HtRequestFailed,
+    MacReadFailed,
+    MacMissing,
+    BadName,
+    SendFailed,
+    ResponsePollFailed,
+    ResponseTimeout,
+    NoAnswer,
+}
+
+#[derive(Clone, Copy)]
+pub enum WifiSdioDnsPollStatus {
+    NotRun,
+    Ready,
+    Timeout,
+    AckFailed,
+    FrameReadFailed,
+    InvalidFrame,
+}
+
+#[derive(Clone, Copy)]
+pub enum WifiSdioDnsParseStatus {
+    NotRun,
+    Ready,
+    EmptyFrame,
+    NonDataChannel,
+    BdcHeaderTooShort,
+    EthernetTooShort,
+    WrongEtherType,
+    NotIpv4,
+    NotUdp,
+    WrongAddress,
+    WrongPorts,
+    UdpTooShort,
+    DnsTooShort,
+    WrongTransaction,
+    NotResponse,
+    DnsError,
+    TruncatedName,
+    NoAnswer,
 }
 
 #[derive(Clone, Copy)]
@@ -1192,6 +1253,7 @@ pub struct WifiSdioControlState {
     tx_max: u8,
     requested_ioctl_id: u16,
     dhcp_transaction_id: u32,
+    dns_transaction_id: u16,
     dhcp_lease_valid: bool,
     dhcp_ip_address: u32,
     dhcp_subnet_mask: u32,
@@ -1211,6 +1273,7 @@ impl WifiSdioControlState {
             tx_max: 1,
             requested_ioctl_id: 0,
             dhcp_transaction_id: DHCP_INITIAL_TRANSACTION_ID,
+            dns_transaction_id: DNS_INITIAL_TRANSACTION_ID,
             dhcp_lease_valid: false,
             dhcp_ip_address: 0,
             dhcp_subnet_mask: 0,
@@ -1229,6 +1292,7 @@ impl WifiSdioControlState {
         self.tx_max = 1;
         self.requested_ioctl_id = 0;
         self.dhcp_transaction_id = DHCP_INITIAL_TRANSACTION_ID;
+        self.dns_transaction_id = DNS_INITIAL_TRANSACTION_ID;
         self.clear_dhcp_lease();
     }
 
@@ -1266,6 +1330,14 @@ impl WifiSdioControlState {
             self.dhcp_transaction_id = DHCP_INITIAL_TRANSACTION_ID;
         }
         self.dhcp_transaction_id
+    }
+
+    fn allocate_dns_transaction_id(&mut self) -> u16 {
+        self.dns_transaction_id = self.dns_transaction_id.wrapping_add(1);
+        if self.dns_transaction_id == 0 {
+            self.dns_transaction_id = DNS_INITIAL_TRANSACTION_ID;
+        }
+        self.dns_transaction_id
     }
 
     fn update_credit(&mut self, bus_data_credit: u8) {
@@ -1710,6 +1782,53 @@ pub struct WifiSdioArpRouterReport {
     pub router_mac_hash: u32,
     pub router_mac_present: bool,
     pub router_mac_stored: bool,
+    pub ack_status: WifiSdioInterruptAckStatus,
+    pub ack_last_error: Option<CommandError>,
+    pub ht_last_error: Option<CommandError>,
+    pub request_last_error: Option<CommandError>,
+    pub frame_last_error: Option<CommandError>,
+    pub host_normal_int: u16,
+    pub host_error_int: u16,
+}
+
+pub struct WifiSdioDnsQueryReport {
+    pub status: WifiSdioDnsQueryStatus,
+    pub step: &'static [u8],
+    pub lease_valid: bool,
+    pub local_ip_address: u32,
+    pub dns_server_ip_address: u32,
+    pub router_ip_address: u32,
+    pub router_mac_present: bool,
+    pub ht_status: WifiSdioHtRequestStatus,
+    pub ht_attempts: u16,
+    pub ht_write_response: u32,
+    pub ht_read_value: u8,
+    pub ht_read_response: u32,
+    pub ht_available: bool,
+    pub mac_status: WifiSdioLinkGetStatus,
+    pub mac_hash: u32,
+    pub mac_nonzero: bool,
+    pub mac_cdc_status: u32,
+    pub mac_cdc_length: u32,
+    pub transaction_id: u16,
+    pub query_name_length: u8,
+    pub query_payload_length: u16,
+    pub query_payload_hash: u32,
+    pub request_status: WifiSdioF2ControlStatus,
+    pub request_ethernet_length: u16,
+    pub request_ethernet_hash: u32,
+    pub request_packet_length: u16,
+    pub request_write_response: u32,
+    pub response_poll_status: WifiSdioDnsPollStatus,
+    pub response_parse_status: WifiSdioDnsParseStatus,
+    pub response_polls: u8,
+    pub response_frames_read: u8,
+    pub response_non_data_frames: u8,
+    pub response_non_dns_frames: u8,
+    pub response_answer_count: u16,
+    pub answer_ip_address: u32,
+    pub answer_ttl_seconds: u32,
+    pub answer_valid: bool,
     pub ack_status: WifiSdioInterruptAckStatus,
     pub ack_last_error: Option<CommandError>,
     pub ht_last_error: Option<CommandError>,
@@ -6354,6 +6473,138 @@ pub fn arp_router(p: &Peripherals, state: &mut WifiSdioControlState) -> WifiSdio
     finish_arp_router_report(p, report)
 }
 
+pub fn dns_query(
+    p: &Peripherals,
+    state: &mut WifiSdioControlState,
+    name: &[u8],
+) -> WifiSdioDnsQueryReport {
+    let mut report = empty_dns_query_report(p);
+    report.lease_valid = state.dhcp_lease_valid;
+    report.local_ip_address = state.dhcp_ip_address;
+    report.dns_server_ip_address = state.dhcp_dns_server;
+    report.router_ip_address = state.dhcp_router;
+    report.router_mac_present = state.router_mac_valid;
+    report.query_name_length = name.len() as u8;
+
+    if !state.dhcp_lease_valid {
+        report.status = WifiSdioDnsQueryStatus::NoLease;
+        return finish_dns_query_report(p, report);
+    }
+    if state.dhcp_ip_address == 0 || state.dhcp_dns_server == 0 || state.dhcp_router == 0 {
+        report.status = WifiSdioDnsQueryStatus::LeaseMissingAddress;
+        return finish_dns_query_report(p, report);
+    }
+    if !state.router_mac_valid {
+        report.status = WifiSdioDnsQueryStatus::RouterMacMissing;
+        return finish_dns_query_report(p, report);
+    }
+
+    report.step = b"ht";
+    let ht = request_ht(p);
+    report.ht_status = ht.status;
+    report.ht_attempts = ht.attempts;
+    report.ht_write_response = ht.write_response;
+    report.ht_read_value = ht.read_value;
+    report.ht_read_response = ht.read_response;
+    report.ht_available = ht.ht_available;
+    report.ht_last_error = ht.last_error;
+    if !matches!(ht.status, WifiSdioHtRequestStatus::Ready) {
+        report.status = WifiSdioDnsQueryStatus::HtRequestFailed;
+        return finish_dns_query_report(p, report);
+    }
+
+    report.step = b"mac";
+    let mut mac_payload = [0u8; CUR_ETHERADDR_PAYLOAD_BYTES];
+    copy_bytes_to_slice(CUR_ETHERADDR_IOVAR_NAME, &mut mac_payload, 0);
+    let mac = link_control_get_payload(
+        p,
+        state,
+        WLC_GET_VAR_IOCTL,
+        &mac_payload,
+        ETHERNET_ADDRESS_BYTES,
+    );
+    report.mac_status = mac.status;
+    report.mac_cdc_status = mac.cdc_status;
+    report.mac_cdc_length = mac.cdc_length;
+    if !matches!(mac.status, WifiSdioLinkGetStatus::Ready) {
+        report.status = WifiSdioDnsQueryStatus::MacReadFailed;
+        return finish_dns_query_report(p, report);
+    }
+    report.mac_hash = checksum_bytes(&mac.bytes[..ETHERNET_ADDRESS_BYTES]);
+    report.mac_nonzero = !slice_all_eq(&mac.bytes[..ETHERNET_ADDRESS_BYTES], 0);
+    if !report.mac_nonzero {
+        report.status = WifiSdioDnsQueryStatus::MacMissing;
+        return finish_dns_query_report(p, report);
+    }
+
+    let mut mac_bytes = [0u8; ETHERNET_ADDRESS_BYTES];
+    copy_bytes_to_slice(&mac.bytes[..ETHERNET_ADDRESS_BYTES], &mut mac_bytes, 0);
+    let transaction_id = state.allocate_dns_transaction_id();
+    report.transaction_id = transaction_id;
+
+    let mut dns_payload = [0u8; DNS_QUERY_PAYLOAD_MAX_BYTES];
+    let payload_length = match build_dns_query_payload(&mut dns_payload, name, transaction_id) {
+        Some(length) => length,
+        None => {
+            report.status = WifiSdioDnsQueryStatus::BadName;
+            return finish_dns_query_report(p, report);
+        }
+    };
+    report.query_payload_length = payload_length as u16;
+    report.query_payload_hash = checksum_bytes(&dns_payload[..payload_length]);
+
+    let mut ethernet_frame = [0u8; DNS_ETHERNET_FRAME_MAX_BYTES];
+    let ethernet_length = build_dns_udp_frame(
+        &mut ethernet_frame,
+        &state.router_mac,
+        &mac_bytes,
+        state.dhcp_ip_address,
+        state.dhcp_dns_server,
+        DNS_CLIENT_PORT,
+        &dns_payload[..payload_length],
+    );
+    report.request_ethernet_length = ethernet_length as u16;
+    report.request_ethernet_hash = checksum_bytes(&ethernet_frame[..ethernet_length]);
+
+    report.step = b"request";
+    let request = send_data_packet(p, state, &ethernet_frame[..ethernet_length]);
+    report.request_status = request.status;
+    report.request_packet_length = request.packet_length;
+    report.request_write_response = request.write_response;
+    report.request_last_error = request.write_last_error;
+    if !matches!(request.status, WifiSdioF2ControlStatus::Ready) {
+        report.status = WifiSdioDnsQueryStatus::SendFailed;
+        return finish_dns_query_report(p, report);
+    }
+
+    report.step = b"response";
+    let response = poll_dns_response(
+        p,
+        state,
+        transaction_id,
+        DNS_CLIENT_PORT,
+        state.dhcp_ip_address,
+        state.dhcp_dns_server,
+    );
+    copy_dns_poll_to_report(&response, &mut report);
+    if !matches!(response.status, WifiSdioDnsPollStatus::Ready) {
+        report.status = if matches!(response.status, WifiSdioDnsPollStatus::Timeout) {
+            WifiSdioDnsQueryStatus::ResponseTimeout
+        } else {
+            WifiSdioDnsQueryStatus::ResponsePollFailed
+        };
+        return finish_dns_query_report(p, report);
+    }
+    if !response.packet.answer_valid {
+        report.status = WifiSdioDnsQueryStatus::NoAnswer;
+        return finish_dns_query_report(p, report);
+    }
+
+    report.status = WifiSdioDnsQueryStatus::Ready;
+    report.step = b"done";
+    finish_dns_query_report(p, report)
+}
+
 struct LinkControlGet {
     status: WifiSdioLinkGetStatus,
     cdc_status: u32,
@@ -6388,6 +6639,19 @@ struct ArpPollResult {
     packet: ParsedArpPacket,
 }
 
+struct DnsPollResult {
+    status: WifiSdioDnsPollStatus,
+    last_parse_status: WifiSdioDnsParseStatus,
+    polls: u8,
+    frames_read: u8,
+    non_data_frames: u8,
+    non_dns_frames: u8,
+    ack_status: WifiSdioInterruptAckStatus,
+    ack_last_error: Option<CommandError>,
+    frame_last_error: Option<CommandError>,
+    packet: ParsedDnsPacket,
+}
+
 #[derive(Clone, Copy)]
 struct ParsedDhcpPacket {
     status: WifiSdioDhcpParseStatus,
@@ -6406,6 +6670,15 @@ struct ParsedArpPacket {
     status: WifiSdioArpParseStatus,
     router_mac: [u8; ETHERNET_ADDRESS_BYTES],
     router_ip_address: u32,
+}
+
+#[derive(Clone, Copy)]
+struct ParsedDnsPacket {
+    status: WifiSdioDnsParseStatus,
+    answer_count: u16,
+    answer_ip_address: u32,
+    answer_ttl_seconds: u32,
+    answer_valid: bool,
 }
 
 fn poll_dhcp_response(
@@ -6557,6 +6830,82 @@ fn poll_arp_reply(
     result
 }
 
+fn poll_dns_response(
+    p: &Peripherals,
+    state: &mut WifiSdioControlState,
+    transaction_id: u16,
+    client_port: u16,
+    local_ip_address: u32,
+    dns_server_ip_address: u32,
+) -> DnsPollResult {
+    let mut result = empty_dns_poll_result();
+    let mut frame_bytes = [0u8; WHD_IOCTL_MAX_TX_PACKET_BYTES];
+
+    while result.polls < DNS_POLL_FRAMES {
+        result.polls = result.polls.saturating_add(1);
+
+        let ack = ack_interrupts(p);
+        result.ack_status = ack.status;
+        result.ack_last_error = ack.last_error;
+        if !matches!(ack.status, WifiSdioInterruptAckStatus::Ready) {
+            result.status = WifiSdioDnsPollStatus::AckFailed;
+            return result;
+        }
+
+        clear_bytes(&mut frame_bytes);
+        let (frame, copied) =
+            f2_read_frame_copy_all(p, WHD_IOCTL_MAX_TX_PACKET_BYTES as u16, &mut frame_bytes);
+        if frame.channel < 3 {
+            state.update_credit(frame.bus_data_credit);
+        }
+        result.frame_last_error = frame.last_error;
+
+        if is_empty_frame_response(&frame) {
+            result.last_parse_status = WifiSdioDnsParseStatus::EmptyFrame;
+            delay_ms(DNS_POLL_DELAY_MS);
+            continue;
+        }
+        if !matches!(frame.status, WifiSdioF2FrameStatus::Ready) {
+            result.status = WifiSdioDnsPollStatus::FrameReadFailed;
+            return result;
+        }
+        result.frames_read = result.frames_read.saturating_add(1);
+        if !frame.valid {
+            result.status = WifiSdioDnsPollStatus::InvalidFrame;
+            return result;
+        }
+
+        let packet = parse_dns_frame(
+            &frame,
+            &frame_bytes,
+            copied,
+            transaction_id,
+            client_port,
+            local_ip_address,
+            dns_server_ip_address,
+        );
+        result.last_parse_status = packet.status;
+        result.packet = packet;
+        match packet.status {
+            WifiSdioDnsParseStatus::Ready => {
+                result.status = WifiSdioDnsPollStatus::Ready;
+                return result;
+            }
+            WifiSdioDnsParseStatus::NonDataChannel => {
+                result.non_data_frames = result.non_data_frames.saturating_add(1);
+            }
+            _ => {
+                result.non_dns_frames = result.non_dns_frames.saturating_add(1);
+            }
+        }
+
+        delay_ms(DNS_POLL_DELAY_MS);
+    }
+
+    result.status = WifiSdioDnsPollStatus::Timeout;
+    result
+}
+
 fn empty_dhcp_poll_result() -> DhcpPollResult {
     DhcpPollResult {
         status: WifiSdioDhcpPollStatus::NotRun,
@@ -6587,6 +6936,21 @@ fn empty_arp_poll_result() -> ArpPollResult {
     }
 }
 
+fn empty_dns_poll_result() -> DnsPollResult {
+    DnsPollResult {
+        status: WifiSdioDnsPollStatus::NotRun,
+        last_parse_status: WifiSdioDnsParseStatus::NotRun,
+        polls: 0,
+        frames_read: 0,
+        non_data_frames: 0,
+        non_dns_frames: 0,
+        ack_status: WifiSdioInterruptAckStatus::NotRun,
+        ack_last_error: None,
+        frame_last_error: None,
+        packet: empty_parsed_dns_packet(),
+    }
+}
+
 fn empty_parsed_dhcp_packet() -> ParsedDhcpPacket {
     ParsedDhcpPacket {
         status: WifiSdioDhcpParseStatus::NotRun,
@@ -6609,6 +6973,16 @@ fn empty_parsed_arp_packet() -> ParsedArpPacket {
     }
 }
 
+fn empty_parsed_dns_packet() -> ParsedDnsPacket {
+    ParsedDnsPacket {
+        status: WifiSdioDnsParseStatus::NotRun,
+        answer_count: 0,
+        answer_ip_address: 0,
+        answer_ttl_seconds: 0,
+        answer_valid: false,
+    }
+}
+
 fn copy_arp_poll_to_report(poll: &ArpPollResult, report: &mut WifiSdioArpRouterReport) {
     report.reply_poll_status = poll.status;
     report.reply_parse_status = poll.last_parse_status;
@@ -6618,6 +6992,22 @@ fn copy_arp_poll_to_report(poll: &ArpPollResult, report: &mut WifiSdioArpRouterR
     report.reply_non_arp_frames = poll.non_arp_frames;
     report.router_mac_hash = checksum_bytes(&poll.packet.router_mac);
     report.router_mac_present = !slice_all_eq(&poll.packet.router_mac, 0);
+    report.ack_status = poll.ack_status;
+    report.ack_last_error = poll.ack_last_error;
+    report.frame_last_error = poll.frame_last_error;
+}
+
+fn copy_dns_poll_to_report(poll: &DnsPollResult, report: &mut WifiSdioDnsQueryReport) {
+    report.response_poll_status = poll.status;
+    report.response_parse_status = poll.last_parse_status;
+    report.response_polls = poll.polls;
+    report.response_frames_read = poll.frames_read;
+    report.response_non_data_frames = poll.non_data_frames;
+    report.response_non_dns_frames = poll.non_dns_frames;
+    report.response_answer_count = poll.packet.answer_count;
+    report.answer_ip_address = poll.packet.answer_ip_address;
+    report.answer_ttl_seconds = poll.packet.answer_ttl_seconds;
+    report.answer_valid = poll.packet.answer_valid;
     report.ack_status = poll.ack_status;
     report.ack_last_error = poll.ack_last_error;
     report.frame_last_error = poll.frame_last_error;
@@ -8725,6 +9115,103 @@ fn build_arp_request_frame(
     write_slice_be_u32(frame, arp_offset + 24, router_ip_address);
 }
 
+fn build_dns_query_payload(
+    payload: &mut [u8; DNS_QUERY_PAYLOAD_MAX_BYTES],
+    name: &[u8],
+    transaction_id: u16,
+) -> Option<usize> {
+    if name.is_empty() {
+        return None;
+    }
+    clear_bytes(payload);
+    write_slice_be_u16(payload, 0, transaction_id);
+    write_slice_be_u16(payload, 2, 0x0100);
+    write_slice_be_u16(payload, 4, 1);
+
+    let mut offset = DNS_HEADER_BYTES;
+    let mut label_length_offset = offset;
+    let mut label_length = 0u8;
+    offset += 1;
+
+    let mut index = 0usize;
+    while index < name.len() {
+        let byte = name[index];
+        if byte == b'.' {
+            if label_length == 0 {
+                return None;
+            }
+            payload[label_length_offset] = label_length;
+            label_length_offset = offset;
+            label_length = 0;
+            offset += 1;
+        } else {
+            if byte == 0 || label_length >= 63 || offset >= payload.len() {
+                return None;
+            }
+            payload[offset] = byte;
+            offset += 1;
+            label_length += 1;
+        }
+        index += 1;
+    }
+
+    if label_length == 0 || offset + 5 > payload.len() {
+        return None;
+    }
+    payload[label_length_offset] = label_length;
+    payload[offset] = 0;
+    offset += 1;
+    write_slice_be_u16(payload, offset, DNS_TYPE_A);
+    write_slice_be_u16(payload, offset + 2, DNS_CLASS_IN);
+    Some(offset + 4)
+}
+
+fn build_dns_udp_frame(
+    frame: &mut [u8; DNS_ETHERNET_FRAME_MAX_BYTES],
+    destination_mac: &[u8; ETHERNET_ADDRESS_BYTES],
+    source_mac: &[u8; ETHERNET_ADDRESS_BYTES],
+    source_ip_address: u32,
+    destination_ip_address: u32,
+    source_port: u16,
+    dns_payload: &[u8],
+) -> usize {
+    clear_bytes(frame);
+
+    copy_bytes_to_slice(destination_mac, frame, 0);
+    copy_bytes_to_slice(source_mac, frame, ETHERNET_ADDRESS_BYTES);
+    write_slice_be_u16(frame, 12, IPV4_ETHERTYPE);
+
+    let ip_offset = ETHERNET_HEADER_BYTES;
+    let ip_total_length = (IPV4_HEADER_BYTES + UDP_HEADER_BYTES + dns_payload.len()) as u16;
+    frame[ip_offset] = 0x45;
+    frame[ip_offset + 1] = 0;
+    write_slice_be_u16(frame, ip_offset + 2, ip_total_length);
+    write_slice_be_u16(frame, ip_offset + 4, DNS_IP_IDENTIFICATION);
+    write_slice_be_u16(frame, ip_offset + 6, 0);
+    frame[ip_offset + 8] = 64;
+    frame[ip_offset + 9] = IPV4_PROTOCOL_UDP;
+    write_slice_be_u16(frame, ip_offset + 10, 0);
+    write_slice_be_u32(frame, ip_offset + 12, source_ip_address);
+    write_slice_be_u32(frame, ip_offset + 16, destination_ip_address);
+    let ip_checksum = ipv4_header_checksum(&frame[ip_offset..ip_offset + IPV4_HEADER_BYTES]);
+    write_slice_be_u16(frame, ip_offset + 10, ip_checksum);
+
+    let udp_offset = ip_offset + IPV4_HEADER_BYTES;
+    let udp_length = (UDP_HEADER_BYTES + dns_payload.len()) as u16;
+    write_slice_be_u16(frame, udp_offset, source_port);
+    write_slice_be_u16(frame, udp_offset + 2, DNS_SERVER_PORT);
+    write_slice_be_u16(frame, udp_offset + 4, udp_length);
+    write_slice_be_u16(frame, udp_offset + 6, 0);
+    copy_bytes_to_slice(dns_payload, frame, udp_offset + UDP_HEADER_BYTES);
+
+    let ethernet_length = ETHERNET_HEADER_BYTES + ip_total_length as usize;
+    if ethernet_length < ETHERNET_MIN_FRAME_BYTES {
+        ETHERNET_MIN_FRAME_BYTES
+    } else {
+        ethernet_length
+    }
+}
+
 fn build_dhcp_discover_frame(
     frame: &mut [u8; DHCP_ETHERNET_FRAME_BYTES],
     mac: &[u8; ETHERNET_ADDRESS_BYTES],
@@ -9095,6 +9582,192 @@ fn parse_arp_frame(
     );
     packet.status = WifiSdioArpParseStatus::Ready;
     packet
+}
+
+fn parse_dns_frame(
+    frame: &WifiSdioF2FrameReport,
+    bytes: &[u8],
+    copied: u16,
+    expected_transaction_id: u16,
+    expected_client_port: u16,
+    expected_local_ip_address: u32,
+    expected_dns_server_ip_address: u32,
+) -> ParsedDnsPacket {
+    let mut packet = empty_parsed_dns_packet();
+    if frame.channel != SDPCM_DATA_CHANNEL {
+        packet.status = WifiSdioDnsParseStatus::NonDataChannel;
+        return packet;
+    }
+
+    let copied = copied as usize;
+    let bdc_offset = frame.header_length as usize;
+    if bdc_offset + BDC_HEADER_BYTES > copied {
+        packet.status = WifiSdioDnsParseStatus::BdcHeaderTooShort;
+        return packet;
+    }
+
+    let bdc_data_offset_words = bytes[bdc_offset + 3] as usize;
+    let ethernet_offset = bdc_offset + BDC_HEADER_BYTES + bdc_data_offset_words * BDC_HEADER_BYTES;
+    if ethernet_offset + ETHERNET_HEADER_BYTES > copied {
+        packet.status = WifiSdioDnsParseStatus::EthernetTooShort;
+        return packet;
+    }
+
+    if read_slice_be_u16(bytes, ethernet_offset + 12) != IPV4_ETHERTYPE {
+        packet.status = WifiSdioDnsParseStatus::WrongEtherType;
+        return packet;
+    }
+
+    let ip_offset = ethernet_offset + ETHERNET_HEADER_BYTES;
+    if ip_offset + IPV4_HEADER_BYTES > copied {
+        packet.status = WifiSdioDnsParseStatus::NotIpv4;
+        return packet;
+    }
+    let version = bytes[ip_offset] >> 4;
+    let header_words = bytes[ip_offset] & 0x0f;
+    let ip_header_bytes = header_words as usize * 4;
+    if version != 4 || ip_header_bytes < IPV4_HEADER_BYTES || ip_offset + ip_header_bytes > copied {
+        packet.status = WifiSdioDnsParseStatus::NotIpv4;
+        return packet;
+    }
+    if bytes[ip_offset + 9] != IPV4_PROTOCOL_UDP {
+        packet.status = WifiSdioDnsParseStatus::NotUdp;
+        return packet;
+    }
+    let source_ip_address = read_slice_be_u32(bytes, ip_offset + 12);
+    let destination_ip_address = read_slice_be_u32(bytes, ip_offset + 16);
+    if source_ip_address != expected_dns_server_ip_address
+        || destination_ip_address != expected_local_ip_address
+    {
+        packet.status = WifiSdioDnsParseStatus::WrongAddress;
+        return packet;
+    }
+
+    let udp_offset = ip_offset + ip_header_bytes;
+    if udp_offset + UDP_HEADER_BYTES > copied {
+        packet.status = WifiSdioDnsParseStatus::UdpTooShort;
+        return packet;
+    }
+    let source_port = read_slice_be_u16(bytes, udp_offset);
+    let destination_port = read_slice_be_u16(bytes, udp_offset + 2);
+    if source_port != DNS_SERVER_PORT || destination_port != expected_client_port {
+        packet.status = WifiSdioDnsParseStatus::WrongPorts;
+        return packet;
+    }
+    let udp_length = read_slice_be_u16(bytes, udp_offset + 4) as usize;
+    if udp_length < UDP_HEADER_BYTES || udp_offset + udp_length > copied {
+        packet.status = WifiSdioDnsParseStatus::UdpTooShort;
+        return packet;
+    }
+
+    let dns_offset = udp_offset + UDP_HEADER_BYTES;
+    let dns_end = udp_offset + udp_length;
+    if dns_offset + DNS_HEADER_BYTES > dns_end {
+        packet.status = WifiSdioDnsParseStatus::DnsTooShort;
+        return packet;
+    }
+    let transaction_id = read_slice_be_u16(bytes, dns_offset);
+    if transaction_id != expected_transaction_id {
+        packet.status = WifiSdioDnsParseStatus::WrongTransaction;
+        return packet;
+    }
+    let flags = read_slice_be_u16(bytes, dns_offset + 2);
+    if flags & 0x8000 == 0 {
+        packet.status = WifiSdioDnsParseStatus::NotResponse;
+        return packet;
+    }
+    if flags & 0x000f != 0 {
+        packet.status = WifiSdioDnsParseStatus::DnsError;
+        return packet;
+    }
+
+    let question_count = read_slice_be_u16(bytes, dns_offset + 4);
+    packet.answer_count = read_slice_be_u16(bytes, dns_offset + 6);
+    let mut offset = dns_offset + DNS_HEADER_BYTES;
+    let mut question_index = 0u16;
+    while question_index < question_count {
+        match skip_dns_name(bytes, dns_offset, dns_end, offset) {
+            Some(next_offset) => offset = next_offset,
+            None => {
+                packet.status = WifiSdioDnsParseStatus::TruncatedName;
+                return packet;
+            }
+        }
+        if offset + 4 > dns_end {
+            packet.status = WifiSdioDnsParseStatus::DnsTooShort;
+            return packet;
+        }
+        offset += 4;
+        question_index += 1;
+    }
+
+    let mut answer_index = 0u16;
+    while answer_index < packet.answer_count {
+        match skip_dns_name(bytes, dns_offset, dns_end, offset) {
+            Some(next_offset) => offset = next_offset,
+            None => {
+                packet.status = WifiSdioDnsParseStatus::TruncatedName;
+                return packet;
+            }
+        }
+        if offset + 10 > dns_end {
+            packet.status = WifiSdioDnsParseStatus::DnsTooShort;
+            return packet;
+        }
+        let answer_type = read_slice_be_u16(bytes, offset);
+        let answer_class = read_slice_be_u16(bytes, offset + 2);
+        let ttl_seconds = read_slice_be_u32(bytes, offset + 4);
+        let data_length = read_slice_be_u16(bytes, offset + 8) as usize;
+        offset += 10;
+        if offset + data_length > dns_end {
+            packet.status = WifiSdioDnsParseStatus::DnsTooShort;
+            return packet;
+        }
+        if answer_type == DNS_TYPE_A && answer_class == DNS_CLASS_IN && data_length == 4 {
+            packet.answer_ip_address = read_slice_be_u32(bytes, offset);
+            packet.answer_ttl_seconds = ttl_seconds;
+            packet.answer_valid = true;
+            packet.status = WifiSdioDnsParseStatus::Ready;
+            return packet;
+        }
+        offset += data_length;
+        answer_index += 1;
+    }
+
+    packet.status = WifiSdioDnsParseStatus::NoAnswer;
+    packet
+}
+
+fn skip_dns_name(bytes: &[u8], _dns_offset: usize, dns_end: usize, offset: usize) -> Option<usize> {
+    let mut cursor = offset;
+    let mut labels = 0u8;
+    loop {
+        if cursor >= dns_end {
+            return None;
+        }
+        let length = bytes[cursor];
+        if length & 0xc0 == 0xc0 {
+            if cursor + 1 >= dns_end {
+                return None;
+            }
+            return Some(cursor + 2);
+        }
+        if length & 0xc0 != 0 {
+            return None;
+        }
+        cursor += 1;
+        if length == 0 {
+            return Some(cursor);
+        }
+        if length > 63 || cursor + length as usize > dns_end {
+            return None;
+        }
+        cursor += length as usize;
+        labels = labels.saturating_add(1);
+        if labels > 64 {
+            return None;
+        }
+    }
 }
 
 fn parse_dhcp_options(
@@ -12883,6 +13556,66 @@ fn finish_arp_router_report(
     p: &Peripherals,
     mut report: WifiSdioArpRouterReport,
 ) -> WifiSdioArpRouterReport {
+    let core = &p.SDHC0.core;
+    report.host_normal_int = core.normal_int_stat_r.read().bits();
+    report.host_error_int = core.error_int_stat_r.read().bits();
+    report
+}
+
+fn empty_dns_query_report(p: &Peripherals) -> WifiSdioDnsQueryReport {
+    let core = &p.SDHC0.core;
+    WifiSdioDnsQueryReport {
+        status: WifiSdioDnsQueryStatus::NoLease,
+        step: b"start",
+        lease_valid: false,
+        local_ip_address: 0,
+        dns_server_ip_address: 0,
+        router_ip_address: 0,
+        router_mac_present: false,
+        ht_status: WifiSdioHtRequestStatus::Timeout,
+        ht_attempts: 0,
+        ht_write_response: 0,
+        ht_read_value: 0,
+        ht_read_response: 0,
+        ht_available: false,
+        mac_status: WifiSdioLinkGetStatus::NotRun,
+        mac_hash: 0,
+        mac_nonzero: false,
+        mac_cdc_status: 0,
+        mac_cdc_length: 0,
+        transaction_id: 0,
+        query_name_length: 0,
+        query_payload_length: 0,
+        query_payload_hash: 0,
+        request_status: WifiSdioF2ControlStatus::NotRun,
+        request_ethernet_length: 0,
+        request_ethernet_hash: 0,
+        request_packet_length: 0,
+        request_write_response: 0,
+        response_poll_status: WifiSdioDnsPollStatus::NotRun,
+        response_parse_status: WifiSdioDnsParseStatus::NotRun,
+        response_polls: 0,
+        response_frames_read: 0,
+        response_non_data_frames: 0,
+        response_non_dns_frames: 0,
+        response_answer_count: 0,
+        answer_ip_address: 0,
+        answer_ttl_seconds: 0,
+        answer_valid: false,
+        ack_status: WifiSdioInterruptAckStatus::NotRun,
+        ack_last_error: None,
+        ht_last_error: None,
+        request_last_error: None,
+        frame_last_error: None,
+        host_normal_int: core.normal_int_stat_r.read().bits(),
+        host_error_int: core.error_int_stat_r.read().bits(),
+    }
+}
+
+fn finish_dns_query_report(
+    p: &Peripherals,
+    mut report: WifiSdioDnsQueryReport,
+) -> WifiSdioDnsQueryReport {
     let core = &p.SDHC0.core;
     report.host_normal_int = core.normal_int_stat_r.read().bits();
     report.host_error_int = core.error_int_stat_r.read().bits();

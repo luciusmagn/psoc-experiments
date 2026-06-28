@@ -4927,6 +4927,55 @@ short-name root search had to walk existing card metadata. The explicit FAT32
 format cleared that state; afterward the quiet Wi-Fi-capable image loaded
 =boot.lisp= at startup and returned =42=.
 
+* 2026-06-28 Wi-Fi UDP DNS query
+
+Added =(wifi-dns-query "example.com")= as the first UDP-over-Wi-Fi consumer.
+It depends on the stored DHCP lease and router ARP state, builds an IPv4/UDP
+DNS A-record query, sends it over the SDPCM data channel, polls data-channel
+frames for the matching DNS response, and returns a sanitized Lisp report. The
+report includes state-machine status, lease words, payload lengths and hashes,
+poll/parse status, answer count, first answer IP, TTL, and validity flags. It
+does not expose raw MAC bytes or credentials.
+
+This is mostly an infrastructure milestone for the eventual network REPL
+protocol. Serial remains useful for local diagnostics, but the network path can
+be framed, checksummed, acknowledged, and retransmitted in ways the current
+flaky UART RX path cannot reliably support.
+
+Added =--wifi-dns-boot-smoke= to the Chez build scripts and Cargo features. It
+implies the ARP smoke path and then resolves =example.com=. The smoke image
+extends =WIFI_ARP_BOOT_SMOKE_MARKER= with DNS fields while keeping UART output
+silent.
+
+Live SWD marker read after flashing the DNS smoke image:
+
+#+begin_example
+0x08001000: 41525030 00000009 00000001 00000001 00000001 00000001 00000001 00000001
+0x08001020: 00000001 00000001 00000001 00000001 0000041e c0a8006b c0a80001 a1c99d37
+0x08001040: 00000001 00000001 00000001 00000001 6814179a 00000085 00000002 00000000
+#+end_example
+
+Marker interpretation:
+
+- word 0: magic =ARP0=.
+- word 1: stage =9=, completed through DNS.
+- words 2..11: prepare, join, DHCP, lease-valid, lease-status, ARP,
+  ARP-reply-poll, ARP-reply-parse, router-MAC-present, and router-MAC-stored
+  were all ready/nonzero.
+- word 12: join flags =#x0000041e=.
+- words 13..14: leased IP =#xc0a8006b= and router =#xc0a80001=.
+- word 15: sanitized router MAC hash =#xa1c99d37=.
+- words 16..19: DNS query status, response poll, response parse, and first
+  answer validity were all ready/nonzero.
+- word 20: first DNS answer IP =#x6814179a=.
+- word 21: first DNS answer TTL =133= seconds.
+- word 22: DNS answer count =2=.
+
+After validation, rebuilt with =--wifi-firmware --wifi-credentials= and flashed
+the quiet non-smoke image. The first quiet flash attempt hit a CMSIS-DAP command
+mismatch during programming; retrying =tools/flash-lisp.scm= immediately
+completed programming and OpenOCD verify.
+
 * Next actions
 
 1. Watch for any remaining UART corruption during longer Wi-Fi association
@@ -4938,8 +4987,9 @@ format cleared that state; afterward the quiet Wi-Fi-capable image loaded
    for obsolete =target/psoc6_2m.cfg=.
 5. Fix UART/REPL input reliability; boot smoke is only a workaround for
    unattended Wi-Fi tests.
-6. Add UDP transmit/receive on top of the DHCP lease and router ARP state.
-7. Add DNS or a fixed-IP HTTP smoke test before the network REPL protocol.
+6. Build a small framed UDP command channel on top of the DHCP, ARP, and DNS
+   state so the REPL can move toward a reliable network transport.
+7. Add TCP or minimal HTTP GET after DNS to prove longer network exchanges.
 8. Add generic CDC ioctl/iovar helpers for firmware version, join, and link
    status.
 9. Start Wi-Fi from a known-good Infineon or Zephyr sample before trying
