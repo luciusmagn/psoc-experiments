@@ -518,6 +518,12 @@ pub enum WifiSdioDhcpParseStatus {
 }
 
 #[derive(Clone, Copy)]
+pub enum WifiSdioLeaseStatus {
+    Ready,
+    NoLease,
+}
+
+#[derive(Clone, Copy)]
 pub enum WifiSdioWlcUpStatus {
     Ready,
     HtRequestFailed,
@@ -1144,6 +1150,7 @@ pub struct WifiSdioControlState {
     dhcp_dns_server: u32,
     dhcp_server_identifier: u32,
     dhcp_lease_seconds: u32,
+    dhcp_lease_transaction_id: u32,
 }
 
 impl WifiSdioControlState {
@@ -1160,6 +1167,7 @@ impl WifiSdioControlState {
             dhcp_dns_server: 0,
             dhcp_server_identifier: 0,
             dhcp_lease_seconds: 0,
+            dhcp_lease_transaction_id: 0,
         }
     }
 
@@ -1223,6 +1231,7 @@ impl WifiSdioControlState {
         self.dhcp_dns_server = 0;
         self.dhcp_server_identifier = 0;
         self.dhcp_lease_seconds = 0;
+        self.dhcp_lease_transaction_id = 0;
     }
 
     fn store_dhcp_lease(&mut self, packet: &ParsedDhcpPacket) {
@@ -1233,6 +1242,7 @@ impl WifiSdioControlState {
         self.dhcp_dns_server = packet.dns_server;
         self.dhcp_server_identifier = packet.server_identifier;
         self.dhcp_lease_seconds = packet.lease_seconds;
+        self.dhcp_lease_transaction_id = packet.transaction_id;
     }
 }
 
@@ -1588,6 +1598,20 @@ pub struct WifiSdioDhcpAcquireReport {
     pub host_normal_int: u16,
     pub host_error_int: u16,
     pub host: WifiSdioHostSnapshot,
+}
+
+pub struct WifiSdioLeaseStatusReport {
+    pub status: WifiSdioLeaseStatus,
+    pub lease_valid: bool,
+    pub transaction_id: u32,
+    pub ip_address: u32,
+    pub subnet_mask: u32,
+    pub router: u32,
+    pub dns_server: u32,
+    pub server_identifier: u32,
+    pub lease_seconds: u32,
+    pub host_normal_int: u16,
+    pub host_error_int: u16,
 }
 
 pub struct WifiSdioWlcUpReport {
@@ -6098,6 +6122,27 @@ pub fn dhcp_acquire(
     report.status = WifiSdioDhcpAcquireStatus::Ready;
     report.step = b"done";
     finish_dhcp_acquire_report(p, report)
+}
+
+pub fn lease_status(p: &Peripherals, state: &WifiSdioControlState) -> WifiSdioLeaseStatusReport {
+    let core = &p.SDHC0.core;
+    WifiSdioLeaseStatusReport {
+        status: if state.dhcp_lease_valid {
+            WifiSdioLeaseStatus::Ready
+        } else {
+            WifiSdioLeaseStatus::NoLease
+        },
+        lease_valid: state.dhcp_lease_valid,
+        transaction_id: state.dhcp_lease_transaction_id,
+        ip_address: state.dhcp_ip_address,
+        subnet_mask: state.dhcp_subnet_mask,
+        router: state.dhcp_router,
+        dns_server: state.dhcp_dns_server,
+        server_identifier: state.dhcp_server_identifier,
+        lease_seconds: state.dhcp_lease_seconds,
+        host_normal_int: core.normal_int_stat_r.read().bits(),
+        host_error_int: core.error_int_stat_r.read().bits(),
+    }
 }
 
 struct LinkControlGet {

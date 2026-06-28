@@ -4803,6 +4803,33 @@ boot> (wifi-dhcp-acquire)
 After the smoke test, rebuilt with =--wifi-firmware --wifi-credentials= and
 flashed the non-smoke image. OpenOCD verified the quiet image.
 
+* 2026-06-28 Wi-Fi DHCP lease status
+
+Added =(wifi-lease-status)= as a compact, read-only report for the lease stored
+by =(wifi-dhcp-acquire)=. It does not send SDIO traffic or parse frames; it
+only reports the current =WifiSdioControlState= lease fields and SDHC interrupt
+status:
+
+#+begin_example
+(wifi-lease-status)
+=> ((status . ready)
+    (lease.valid . #t)
+    (dhcp.transaction-id . #x4c495351)
+    (lease.ip . #x...)
+    (lease.subnet-mask . #x...)
+    (lease.router . #x...)
+    (lease.dns . #x...)
+    (dhcp.server . #x...)
+    (lease.seconds . #x...))
+#+end_example
+
+This keeps later ARP, DNS, HTTP, and network-REPL work dependent on a small
+lease-status surface instead of on the full DHCP transcript.
+
+Validated with =tools/build-lisp.scm --wifi-firmware --wifi-credentials= and
+flashed the quiet image with =tools/flash-lisp.scm=. OpenOCD verified the
+image after programming.
+
 * 2026-06-28 FAT-backed Lisp file storage
 
 Moved the active Lisp file forms from the raw Lisp store to the FAT microSD
@@ -4871,7 +4898,7 @@ format cleared that state; afterward the quiet Wi-Fi-capable image loaded
    for obsolete =target/psoc6_2m.cfg=.
 5. Fix UART/REPL input reliability; boot smoke is only a workaround for
    unattended Wi-Fi tests.
-6. Add a compact =(wifi-lease-status)= report to avoid long UART output.
+6. Add router ARP resolution using the stored DHCP lease.
 7. Add generic CDC ioctl/iovar helpers for firmware version, join, and link
    status.
 8. Start Wi-Fi from a known-good Infineon or Zephyr sample before trying

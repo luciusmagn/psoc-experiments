@@ -119,6 +119,7 @@ pub trait Board {
     fn wifi_link_status(&mut self) -> WifiSdioLinkStatusReport;
     fn wifi_dhcp_discover(&mut self) -> WifiSdioDhcpDiscoverReport;
     fn wifi_dhcp_acquire(&mut self) -> WifiSdioDhcpAcquireReport;
+    fn wifi_lease_status(&mut self) -> WifiSdioLeaseStatusReport;
     fn wifi_load_clm(&mut self) -> WifiSdioClmLoadReport;
     fn wifi_get_country(&mut self) -> WifiSdioCountryReport;
     fn wifi_set_country(&mut self, country_code: [u8; 2], revision: i32) -> WifiSdioCountryReport;
@@ -976,6 +977,21 @@ pub struct WifiSdioDhcpAcquireReport {
 }
 
 #[derive(Clone, Copy)]
+pub struct WifiSdioLeaseStatusReport {
+    pub status: &'static [u8],
+    pub lease_valid: bool,
+    pub transaction_id: u32,
+    pub ip_address: u32,
+    pub subnet_mask: u32,
+    pub router: u32,
+    pub dns_server: u32,
+    pub server_identifier: u32,
+    pub lease_seconds: u32,
+    pub host_normal_int: u16,
+    pub host_error_int: u16,
+}
+
+#[derive(Clone, Copy)]
 pub struct WifiSdioClmLoadReport {
     pub status: &'static [u8],
     pub ht_status: &'static [u8],
@@ -1607,6 +1623,7 @@ pub enum Primitive {
     WifiLinkStatus,
     WifiDhcpDiscover,
     WifiDhcpAcquire,
+    WifiLeaseStatus,
     WifiLoadClm,
     WifiGetCountry,
     WifiSetCountry,
@@ -1719,6 +1736,7 @@ impl Primitive {
             Self::WifiLinkStatus => "wifi-link-status",
             Self::WifiDhcpDiscover => "wifi-dhcp-discover",
             Self::WifiDhcpAcquire => "wifi-dhcp-acquire",
+            Self::WifiLeaseStatus => "wifi-lease-status",
             Self::WifiLoadClm => "wifi-load-clm",
             Self::WifiGetCountry => "wifi-get-country",
             Self::WifiSetCountry => "wifi-set-country",
@@ -1999,6 +2017,7 @@ impl Machine {
         self.install_primitive(b"wifi-link-status", Primitive::WifiLinkStatus)?;
         self.install_primitive(b"wifi-dhcp-discover", Primitive::WifiDhcpDiscover)?;
         self.install_primitive(b"wifi-dhcp-acquire", Primitive::WifiDhcpAcquire)?;
+        self.install_primitive(b"wifi-lease-status", Primitive::WifiLeaseStatus)?;
         self.install_primitive(b"wifi-load-clm", Primitive::WifiLoadClm)?;
         self.install_primitive(b"wifi-get-country", Primitive::WifiGetCountry)?;
         self.install_primitive(b"wifi-set-country", Primitive::WifiSetCountry)?;
@@ -2908,6 +2927,10 @@ impl Machine {
             Primitive::WifiDhcpAcquire => {
                 self.expect_count(args, 0)?;
                 self.wifi_sdio_dhcp_acquire_report(board.wifi_dhcp_acquire())
+            }
+            Primitive::WifiLeaseStatus => {
+                self.expect_count(args, 0)?;
+                self.wifi_sdio_lease_status_report(board.wifi_lease_status())
             }
             Primitive::WifiLoadClm => {
                 self.expect_count(args, 0)?;
@@ -4903,6 +4926,37 @@ impl Machine {
             request_last_error,
             frame_last_error,
             ack_last_error,
+        ];
+        self.make_list_from_values(&entries)
+    }
+
+    fn wifi_sdio_lease_status_report(
+        &mut self,
+        report: WifiSdioLeaseStatusReport,
+    ) -> LispResult<Value> {
+        let status = self.symbol_entry(b"status", report.status)?;
+        let lease_valid = self.bool_entry(b"lease.valid", report.lease_valid)?;
+        let transaction_id = self.word_entry(b"dhcp.transaction-id", report.transaction_id)?;
+        let ip_address = self.word_entry(b"lease.ip", report.ip_address)?;
+        let subnet_mask = self.word_entry(b"lease.subnet-mask", report.subnet_mask)?;
+        let router = self.word_entry(b"lease.router", report.router)?;
+        let dns_server = self.word_entry(b"lease.dns", report.dns_server)?;
+        let server_identifier = self.word_entry(b"dhcp.server", report.server_identifier)?;
+        let lease_seconds = self.word_entry(b"lease.seconds", report.lease_seconds)?;
+        let host_normal_int = self.word_entry(b"HOST.NORM_INT", report.host_normal_int as u32)?;
+        let host_error_int = self.word_entry(b"HOST.ERR_INT", report.host_error_int as u32)?;
+        let entries = [
+            status,
+            lease_valid,
+            transaction_id,
+            ip_address,
+            subnet_mask,
+            router,
+            dns_server,
+            server_identifier,
+            lease_seconds,
+            host_normal_int,
+            host_error_int,
         ];
         self.make_list_from_values(&entries)
     }

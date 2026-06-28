@@ -561,6 +561,13 @@ impl lisp::Board for PsocBoard<'_> {
         ))
     }
 
+    fn wifi_lease_status(&mut self) -> lisp::WifiSdioLeaseStatusReport {
+        wifi_sdio_lease_status_report(wifi_sdio::lease_status(
+            self.p,
+            &self.state.wifi_control_state,
+        ))
+    }
+
     fn wifi_load_clm(&mut self) -> lisp::WifiSdioClmLoadReport {
         wifi_sdio_clm_load_report(wifi_sdio::load_clm(
             self.p,
@@ -1266,6 +1273,13 @@ fn wifi_sdio_dhcp_acquire_status(status: wifi_sdio::WifiSdioDhcpAcquireStatus) -
         wifi_sdio::WifiSdioDhcpAcquireStatus::AckPollFailed => b"ack-poll-failed",
         wifi_sdio::WifiSdioDhcpAcquireStatus::AckTimeout => b"ack-timeout",
         wifi_sdio::WifiSdioDhcpAcquireStatus::NakReceived => b"nak-received",
+    }
+}
+
+fn wifi_sdio_lease_status(status: wifi_sdio::WifiSdioLeaseStatus) -> &'static [u8] {
+    match status {
+        wifi_sdio::WifiSdioLeaseStatus::Ready => b"ready",
+        wifi_sdio::WifiSdioLeaseStatus::NoLease => b"no-lease",
     }
 }
 
@@ -2048,6 +2062,24 @@ fn wifi_sdio_dhcp_acquire_report(
             .request_last_error
             .map(wifi_sdio_command_error_report),
         frame_last_error: report.frame_last_error.map(wifi_sdio_command_error_report),
+        host_normal_int: report.host_normal_int,
+        host_error_int: report.host_error_int,
+    }
+}
+
+fn wifi_sdio_lease_status_report(
+    report: wifi_sdio::WifiSdioLeaseStatusReport,
+) -> lisp::WifiSdioLeaseStatusReport {
+    lisp::WifiSdioLeaseStatusReport {
+        status: wifi_sdio_lease_status(report.status),
+        lease_valid: report.lease_valid,
+        transaction_id: report.transaction_id,
+        ip_address: report.ip_address,
+        subnet_mask: report.subnet_mask,
+        router: report.router,
+        dns_server: report.dns_server,
+        server_identifier: report.server_identifier,
+        lease_seconds: report.lease_seconds,
         host_normal_int: report.host_normal_int,
         host_error_int: report.host_error_int,
     }

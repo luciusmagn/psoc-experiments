@@ -68,7 +68,8 @@ presence fields, short fingerprints, RSSI, and CDC status values.
 `(wifi-dhcp-discover)` sends one DHCP Discover over the SDPCM data channel and
 reports sanitized packet metadata. `(wifi-dhcp-acquire)` sends Discover,
 parses Offer, sends Request, parses Ack, and stores the lease fields in the
-Wi-Fi state for later network primitives.
+Wi-Fi state for later network primitives. `(wifi-lease-status)` returns the
+stored lease fields without sending SDIO traffic.
 
 For unattended Wi-Fi association and link-status smoke testing on the flaky
 UART RX path:
