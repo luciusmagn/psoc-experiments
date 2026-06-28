@@ -165,6 +165,26 @@ the background service at boot, and then enters the normal firmware loop. Use
 `tools/send-net-repl.scm` to send requests while it is running. Flash a
 non-smoke image afterward.
 
+For normal quiet Wi-Fi startup from microSD, install a FAT `boot.lisp` with:
+
+```scheme
+(begin (wifi-network-bootstrap) (wifi-net-repl-service on))
+```
+
+The current installer path uses the temporary service-smoke image, then writes
+the file over the UDP REPL:
+
+```sh
+tools/send-net-repl.scm --host BOARD_IP --wait 15 \
+  '(save-file "boot.lisp" "(begin (wifi-network-bootstrap) (wifi-net-repl-service on))")'
+tools/send-net-repl.scm --host BOARD_IP --wait 15 '(cat "boot.lisp")'
+tools/build-flash-lisp.scm --wifi-firmware --wifi-credentials
+```
+
+The longer `--wait` matters for FAT operations; small arithmetic forms usually
+reply quickly, while `save-file` and `cat` can exceed the default receive
+window.
+
 For microSD-backed Lisp files, the active `save-file`, `read-file`, `load`,
 `ls`, and `cat` forms use the FAT root directory. The firmware accepts Lisp
 paths such as `boot.lisp`; on disk these are stored as 8.3 short names such as

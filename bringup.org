@@ -5136,6 +5136,70 @@ The service status form returned a complete pretty-printed report with
 After validation, rebuilt with =--wifi-firmware --wifi-credentials= and flashed
 the quiet non-smoke image. OpenOCD verified the quiet image.
 
+* 2026-06-28 Network REPL boot.lisp startup
+
+Installed a microSD =boot.lisp= through the temporary service-smoke image so
+the normal quiet Wi-Fi image can start the UDP REPL service without a smoke-test
+feature:
+
+#+begin_src scheme
+(begin (wifi-network-bootstrap) (wifi-net-repl-service on))
+#+end_src
+
+The installer form was short enough for the current 96-byte UDP request cap:
+
+#+begin_src scheme
+(save-file "boot.lisp" "(begin (wifi-network-bootstrap) (wifi-net-repl-service on))")
+#+end_src
+
+While installing, small arithmetic forms returned within the default UDP
+receive window, but FAT-backed forms did not always return before a 2 second
+host wait. With a longer window, =cat= verified the file:
+
+#+begin_example
+tools/send-net-repl.scm --host 192.168.0.107 --sequence 64 --wait 15 '(cat "boot.lisp")'
+payload.text==> "(begin (wifi-network-bootstrap) (wifi-net-repl-service on))"
+#+end_example
+
+The RAM service marker showed that timed-out storage requests were still being
+handled by the board with ready reply status. The missed replies were host-side
+receive-window misses rather than Lisp evaluator failures.
+
+Rebuilt and flashed the normal quiet image with embedded Wi-Fi firmware and
+local credential blobs:
+
+#+begin_example
+tools/build-flash-lisp.scm --wifi-firmware --wifi-credentials
+#+end_example
+
+After a 140 second quiet startup wait, the board answered the UDP REPL from the
+normal image, meaning =boot.lisp= had loaded, completed Wi-Fi bootstrap, and
+enabled the service:
+
+#+begin_example
+tools/send-net-repl.scm --host 192.168.0.107 --sequence 70 --wait 2 '(+ 2 3)'
+payload.text==> 5
+#+end_example
+
+The status form reported the background service enabled, one-frame polling,
+ready request/eval/reply statuses, and no response truncation:
+
+#+begin_example
+tools/send-net-repl.scm --host 192.168.0.107 --sequence 71 --wait 3 '(wifi-net-repl-service status)'
+payload.text==> ((enabled . #t)
+    (poll-frames . #x00000001)
+    (polls . #x00000511)
+    (requests-handled . #x00000001)
+    (last.status . ready)
+    (last.request.status . ready)
+    (last.reply.status . ready)
+    (last.eval.status . ready)
+    (last.sequence . #x00000046)
+    (last.response.length . #x00000005)
+    (last.response.hash . #xcd422419)
+    (last.response.truncated . #f))
+#+end_example
+
 Transport decision for now: keep UDP as the working board-control path because
 DHCP, ARP, DNS, and framed UDP replies are already live. A future standard
 console should likely be raw TCP first, with minimal telnet option handling on
@@ -5153,13 +5217,11 @@ serial-over-LAN is too heavy for this firmware target.
    for obsolete =target/psoc6_2m.cfg=.
 5. Fix UART/REPL input reliability; boot smoke is only a workaround for
    unattended Wi-Fi tests.
-6. Make the network REPL service start from a =boot.lisp= workflow or another
-   explicit startup policy instead of a smoke-test feature.
-7. Add ACK/retry, duplicate sequence handling, and a response checksum to the
+6. Add ACK/retry, duplicate sequence handling, and a response checksum to the
    framed UDP protocol.
-8. Add TCP or minimal HTTP GET after DNS to prove longer network exchanges.
+7. Add TCP or minimal HTTP GET after DNS to prove longer network exchanges.
    Use raw TCP before considering minimal telnet negotiation.
-9. Add generic CDC ioctl/iovar helpers for firmware version, join, and link
+8. Add generic CDC ioctl/iovar helpers for firmware version, join, and link
    status.
-10. Start Wi-Fi from a known-good Infineon or Zephyr sample before trying
+9. Start Wi-Fi from a known-good Infineon or Zephyr sample before trying
    to hand-port the full CYW4343W network stack.

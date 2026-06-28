@@ -199,6 +199,20 @@ afterward.
 Use `tools/send-net-repl.scm --host BOARD_IP '(form ...)'` for host-side framed
 UDP REPL requests. It writes ignored binary request/response files under
 `.local/net-repl/`, calls `nc`, and prints response metadata plus payload text.
+Use a longer receive window such as `--wait 15` for FAT-backed forms like
+`save-file`, `read-file`, and `cat`.
+
+To make a normal quiet Wi-Fi image start the UDP REPL service from microSD,
+install this `boot.lisp` through the temporary service-smoke image:
+
+```scheme
+(begin (wifi-network-bootstrap) (wifi-net-repl-service on))
+```
+
+Then rebuild and flash the quiet image with
+`tools/build-flash-lisp.scm --wifi-firmware --wifi-credentials`. Keep the
+temporary smoke image on the board only as long as needed for installation and
+verification.
 
 Use `tools/build-lisp.scm --storage-boot-smoke` or
 `tools/build-flash-lisp.scm --storage-boot-smoke` only for unattended FAT
