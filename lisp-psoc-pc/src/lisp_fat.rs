@@ -84,8 +84,8 @@ pub struct FileWriteReport {
 pub struct FileReadReport {
     pub status: FatStatus,
     pub path_len: u8,
-    pub content_len: u8,
-    pub content: lisp::StringBytes,
+    pub content_len: u16,
+    pub content: lisp::FileBytes,
 }
 
 pub struct FileListReport {
@@ -310,6 +310,23 @@ pub fn write_file(
     path: lisp::StringBytes,
     content: lisp::StringBytes,
 ) -> FileWriteReport {
+    write_file_with_mode(p, path, content, Mode::ReadWriteCreateOrTruncate)
+}
+
+pub fn append_file(
+    p: &Peripherals,
+    path: lisp::StringBytes,
+    content: lisp::StringBytes,
+) -> FileWriteReport {
+    write_file_with_mode(p, path, content, Mode::ReadWriteCreateOrAppend)
+}
+
+fn write_file_with_mode(
+    p: &Peripherals,
+    path: lisp::StringBytes,
+    content: lisp::StringBytes,
+    mode: Mode,
+) -> FileWriteReport {
     let short_name = match path_short_name(path) {
         Ok(short_name) => short_name,
         Err(status) => return file_write_report(status, path, content),
@@ -323,7 +340,7 @@ pub fn write_file(
         Err(status) => return file_write_report(status, path, content),
     };
 
-    let file = match manager.open_file_in_dir(root, short_name, Mode::ReadWriteCreateOrTruncate) {
+    let file = match manager.open_file_in_dir(root, short_name, mode) {
         Ok(file) => file,
         Err(error) => {
             close_dir_ignore_error(&manager, root);
@@ -353,12 +370,12 @@ pub fn write_file(
 pub fn read_file(p: &Peripherals, path: lisp::StringBytes) -> FileReadReport {
     let short_name = match path_short_name(path) {
         Ok(short_name) => short_name,
-        Err(status) => return file_read_report(status, path, empty_string()),
+        Err(status) => return file_read_report(status, path, empty_file_bytes()),
     };
 
     let (manager, volume, root) = match open_root(p) {
         Ok(opened) => opened,
-        Err(status) => return file_read_report(status, path, empty_string()),
+        Err(status) => return file_read_report(status, path, empty_file_bytes()),
     };
 
     let file = match manager.open_file_in_dir(root, short_name, Mode::ReadOnly) {
@@ -366,11 +383,11 @@ pub fn read_file(p: &Peripherals, path: lisp::StringBytes) -> FileReadReport {
         Err(error) => {
             close_dir_ignore_error(&manager, root);
             close_volume_ignore_error(&manager, volume);
-            return file_read_report(file_open_error_status(error), path, empty_string());
+            return file_read_report(file_open_error_status(error), path, empty_file_bytes());
         }
     };
 
-    let mut content = empty_string();
+    let mut content = empty_file_bytes();
     let mut content_len = 0usize;
     let mut chunk = [0u8; 16];
     loop {
@@ -381,7 +398,7 @@ pub fn read_file(p: &Peripherals, path: lisp::StringBytes) -> FileReadReport {
                 manager.close_file(file).ok();
                 close_dir_ignore_error(&manager, root);
                 close_volume_ignore_error(&manager, volume);
-                return file_read_report(FatStatus::FileReadFailed, path, empty_string());
+                return file_read_report(FatStatus::FileReadFailed, path, empty_file_bytes());
             }
         }
 
@@ -389,7 +406,7 @@ pub fn read_file(p: &Peripherals, path: lisp::StringBytes) -> FileReadReport {
             manager.close_file(file).ok();
             close_dir_ignore_error(&manager, root);
             close_volume_ignore_error(&manager, volume);
-            return file_read_report(FatStatus::ContentTooLong, path, empty_string());
+            return file_read_report(FatStatus::ContentTooLong, path, empty_file_bytes());
         }
 
         let capacity = core::cmp::min(chunk.len(), content.bytes.len() - content_len);
@@ -399,7 +416,7 @@ pub fn read_file(p: &Peripherals, path: lisp::StringBytes) -> FileReadReport {
                 manager.close_file(file).ok();
                 close_dir_ignore_error(&manager, root);
                 close_volume_ignore_error(&manager, volume);
-                return file_read_report(FatStatus::FileReadFailed, path, empty_string());
+                return file_read_report(FatStatus::FileReadFailed, path, empty_file_bytes());
             }
         };
         if read == 0 {
@@ -408,19 +425,19 @@ pub fn read_file(p: &Peripherals, path: lisp::StringBytes) -> FileReadReport {
         content.bytes[content_len..content_len + read].copy_from_slice(&chunk[..read]);
         content_len += read;
     }
-    content.len = content_len as u8;
+    content.len = content_len as u16;
 
     if manager.close_file(file).is_err() {
         close_dir_ignore_error(&manager, root);
         close_volume_ignore_error(&manager, volume);
-        return file_read_report(FatStatus::FileCloseFailed, path, empty_string());
+        return file_read_report(FatStatus::FileCloseFailed, path, empty_file_bytes());
     }
 
     let close_status = close_root(manager, volume, root);
     if matches!(close_status, FatStatus::Ready) {
         file_read_report(FatStatus::Ready, path, content)
     } else {
-        file_read_report(close_status, path, empty_string())
+        file_read_report(close_status, path, empty_file_bytes())
     }
 }
 
@@ -1127,7 +1144,7 @@ fn file_write_report(
 fn file_read_report(
     status: FatStatus,
     path: lisp::StringBytes,
-    content: lisp::StringBytes,
+    content: lisp::FileBytes,
 ) -> FileReadReport {
     FileReadReport {
         status,
@@ -1222,6 +1239,13 @@ fn empty_string() -> lisp::StringBytes {
     lisp::StringBytes {
         len: 0,
         bytes: [0; lisp::MAX_STRING_BYTES],
+    }
+}
+
+fn empty_file_bytes() -> lisp::FileBytes {
+    lisp::FileBytes {
+        len: 0,
+        bytes: [0; lisp::MAX_FILE_BYTES],
     }
 }
 

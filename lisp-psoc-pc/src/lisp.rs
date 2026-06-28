@@ -7,6 +7,7 @@ const MAX_SYMBOLS: usize = 512;
 const MAX_GLOBALS: usize = 144;
 const MAX_SYMBOL_BYTES: usize = 32;
 pub const MAX_STRING_BYTES: usize = 96;
+pub const MAX_FILE_BYTES: usize = 512;
 pub const NET_REPL_REQUEST_PAYLOAD_BYTES: usize = MAX_STRING_BYTES;
 pub const NET_REPL_RESPONSE_BYTES: usize = 512;
 pub const MAX_STORE_FILES: usize = 5;
@@ -22,6 +23,12 @@ type SymbolId = u16;
 pub struct StringBytes {
     pub len: u8,
     pub bytes: [u8; MAX_STRING_BYTES],
+}
+
+#[derive(Clone, Copy)]
+pub struct FileBytes {
+    pub len: u16,
+    pub bytes: [u8; MAX_FILE_BYTES],
 }
 
 const EMPTY_STRING_BYTES: StringBytes = StringBytes {
@@ -155,6 +162,7 @@ pub trait Board {
     fn sd_write_fill(&mut self, sector: u32, fill_word: u32) -> SdWriteReport;
     fn format_store(&mut self) -> StoreFormatReport;
     fn save_file(&mut self, path: StringBytes, content: StringBytes) -> StoreWriteReport;
+    fn append_file(&mut self, path: StringBytes, content: StringBytes) -> StoreWriteReport;
     fn read_file(&mut self, path: StringBytes) -> StoreReadReport;
     fn list_files(&mut self) -> StoreListReport;
     fn fat_info(&mut self) -> FatInfoReport;
@@ -491,10 +499,10 @@ pub struct StoreReadReport {
     pub ready: bool,
     pub status: &'static [u8],
     pub path_len: u8,
-    pub content_len: u8,
+    pub content_len: u16,
     pub directory_sector: u32,
     pub data_sector: u32,
-    pub content: StringBytes,
+    pub content: FileBytes,
 }
 
 #[derive(Clone, Copy)]
@@ -1927,6 +1935,7 @@ pub enum Primitive {
     SdWriteFill,
     FormatStore,
     SaveFile,
+    AppendFile,
     ReadFile,
     Load,
     Ls,
@@ -2046,6 +2055,7 @@ impl Primitive {
             Self::SdWriteFill => "sd-write-fill",
             Self::FormatStore => "format-store",
             Self::SaveFile => "save-file",
+            Self::AppendFile => "append-file",
             Self::ReadFile => "read-file",
             Self::Load => "load",
             Self::Ls => "ls",
@@ -2331,6 +2341,7 @@ impl Machine {
         self.install_primitive(b"sd-write-fill", Primitive::SdWriteFill)?;
         self.install_primitive(b"format-store", Primitive::FormatStore)?;
         self.install_primitive(b"save-file", Primitive::SaveFile)?;
+        self.install_primitive(b"append-file", Primitive::AppendFile)?;
         self.install_primitive(b"read-file", Primitive::ReadFile)?;
         self.install_primitive(b"load", Primitive::Load)?;
         self.install_primitive(b"ls", Primitive::Ls)?;
@@ -3159,6 +3170,12 @@ impl Machine {
                 let content = self.expect_string(args[1])?;
                 self.store_write_report(board.save_file(path, content))
             }
+            Primitive::AppendFile => {
+                self.expect_count(args, 2)?;
+                let path = self.expect_string(args[0])?;
+                let content = self.expect_string(args[1])?;
+                self.store_write_report(board.append_file(path, content))
+            }
             Primitive::ReadFile => {
                 self.expect_count(args, 1)?;
                 let path = self.expect_string(args[0])?;
@@ -3181,7 +3198,7 @@ impl Machine {
                 let path = self.expect_string(args[0])?;
                 let report = board.read_file(path);
                 if report.ready {
-                    self.string_value(report.content)
+                    self.file_bytes_string_value(report.content)
                 } else {
                     self.store_read_report(report)
                 }
@@ -3606,7 +3623,7 @@ impl Machine {
             return Ok(LoadFileOutcome::NotReady(report));
         }
 
-        let input = &report.content.bytes[..report.content.len as usize];
+        let input = &report.content.bytes[..usize::from(report.content.len)];
         let expression = self.read(input)?;
         let previous_expression = self.active_expression;
         self.active_expression = expression;
@@ -3930,6 +3947,7 @@ impl Machine {
             b"sd-write-fill",
             b"format-store",
             b"save-file",
+            b"append-file",
             b"read-file",
             b"load",
             b"ls",
@@ -4278,8 +4296,8 @@ impl Machine {
         let content_len = self.int_entry(b"content-len", report.content_len as i32)?;
         let directory_sector = self.word_entry(b"directory-sector", report.directory_sector)?;
         let data_sector = self.word_entry(b"data-sector", report.data_sector)?;
-        let content = if report.ready {
-            self.string_value(report.content)?
+        let content = if report.ready && usize::from(report.content.len) <= MAX_STRING_BYTES {
+            self.file_bytes_string_value(report.content)?
         } else {
             Value::Nil
         };
@@ -4393,6 +4411,13 @@ impl Machine {
 
     fn string_value(&mut self, value: StringBytes) -> LispResult<Value> {
         self.alloc_string(&value.bytes[..value.len as usize])
+    }
+
+    fn file_bytes_string_value(&mut self, value: FileBytes) -> LispResult<Value> {
+        if usize::from(value.len) > MAX_STRING_BYTES {
+            return Err(Error::new("file too long for string"));
+        }
+        self.alloc_string(&value.bytes[..usize::from(value.len)])
     }
 
     fn string_list(

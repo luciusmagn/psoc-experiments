@@ -202,12 +202,20 @@ tools/build-flash-lisp.scm --wifi-firmware --wifi-credentials
 ```
 
 The longer `--wait` matters for FAT operations; small arithmetic forms usually
-reply quickly, while `save-file` and `cat` can exceed the default receive
-window.
+reply quickly, while `save-file`, `append-file`, `read-file`, `load`, and
+`cat` can exceed the default receive window. Use `--wait 60` when validating
+larger FAT files over the UDP REPL.
 
-For microSD-backed Lisp files, the active `save-file`, `read-file`, `load`,
-`ls`, and `cat` forms use the FAT root directory. The firmware accepts Lisp
-paths such as `boot.lisp`; on disk these are stored as 8.3 short names such as
+For microSD-backed Lisp files, the active `save-file`, `append-file`,
+`read-file`, `load`, `ls`, and `cat` forms use the FAT root directory.
+`save-file` truncates or creates a file; `append-file` creates or appends one
+short Lisp string chunk. `load` reads source files up to 512 bytes from FAT,
+which lets a larger source file be assembled from several UDP requests or edited
+on a PC. `read-file` reports the full file length, but only includes inline
+`content` when the file fits in the 96-byte Lisp string representation. `cat`
+returns a Lisp string for those small files and errors with
+`file too long for string` for larger files. The firmware accepts Lisp paths
+such as `boot.lisp`; on disk these are stored as 8.3 short names such as
 `BOOT.LSP` because the embedded FAT crate currently creates and opens short
 names only. `ls` maps `.LSP` files back to `.lisp` for the Lisp console.
 

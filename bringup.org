@@ -5395,6 +5395,62 @@ response.checksum.ok=#t
 payload.text==> 42
 #+end_example
 
+* 2026-06-28 Larger FAT Lisp source loading
+
+Separated FAT file reads from the 96-byte Lisp string limit. Lisp strings and
+UDP request payloads still use the smaller buffer, but =read-file= and =load=
+now read FAT file content into a 512-byte file buffer. Added =(append-file ...)=
+so a longer source file can be assembled over several small UDP requests.
+
+Current behavior:
+
+- =(save-file path chunk)= truncates or creates a file with one string chunk.
+- =(append-file path chunk)= creates or appends one string chunk.
+- =(load path)= parses and evaluates files up to 512 bytes.
+- =(read-file path)= reports full =content-len=; it only includes inline
+  =content= when the file fits in a Lisp string.
+- =(cat path)= returns a string for small files and returns
+  =error: file too long for string= for larger files.
+
+FAT operations through the network REPL can be slow on this card. Use
+=--wait 60= for validation. A short =save-file= took longer than 30 seconds
+but completed and was later readable.
+
+Validation used the quiet Wi-Fi image and the FAT =boot.lisp=-started UDP
+service. A file named =long.lisp= was assembled from small chunks and crossed
+the old 96-byte limit:
+
+#+begin_example
+tools/send-net-repl.scm --host 192.168.0.107 --sequence 159 --attempts 1 --wait 60 '(read-file "long.lisp")'
+response.format=LPS2
+response.checksum.ok=#t
+payload.text==> ((status . ready)
+    (ready . #t)
+    (path-len . 9)
+    (content-len . 119)
+    (directory-sector . #x00000000)
+    (data-sector . #x00000000)
+    (content))
+#+end_example
+
+The same 119-byte file loaded and evaluated successfully:
+
+#+begin_example
+tools/send-net-repl.scm --host 192.168.0.107 --sequence 160 --attempts 1 --wait 60 '(load "long.lisp")'
+response.format=LPS2
+response.checksum.ok=#t
+payload.text==> 210
+#+end_example
+
+=cat= correctly refused to coerce the larger file into a 96-byte Lisp string:
+
+#+begin_example
+tools/send-net-repl.scm --host 192.168.0.107 --sequence 161 --attempts 1 --wait 60 '(cat "long.lisp")'
+response.format=LPS2
+response.checksum.ok=#t
+payload.text=error: file too long for string
+#+end_example
+
 Transport decision for now: keep UDP as the working board-control path because
 DHCP, ARP, DNS, and framed UDP replies are already live. A future standard
 console should likely be raw TCP first, with minimal telnet option handling on
