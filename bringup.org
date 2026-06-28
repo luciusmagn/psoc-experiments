@@ -5865,10 +5865,22 @@ tools/send-net-repl.scm --host 192.168.0.107 --sequence 308 --attempts 5 --wait 
     ...)
 #+end_example
 
-Do not run multiple =send-net-repl.scm= clients concurrently against the current
-single-request UDP service unless testing duplicate/loss behavior. A parallel
-probe attempt before the sequential validation timed out on the host while the
-board service state showed one request had been processed.
+The first payload-only implementation still used fixed host paths under
+=.local/net-repl/=, and a parallel probe timed out while the board service
+state showed one request had been processed. The client now uses per-process
+ignored files under =.local/net-repl/PROCESS_ID/= so concurrent local clients no
+longer clobber each other's request/response/ACK files. Use explicit unique
+sequences when comparing concurrent UDP requests.
+
+Validation with two concurrent payload-only clients returned distinct results:
+
+#+begin_example
+tools/send-net-repl.scm --host 192.168.0.107 --sequence 310 --attempts 5 --wait 3 --payload-only '(+ 30 1)'
+=> 31
+
+tools/send-net-repl.scm --host 192.168.0.107 --sequence 311 --attempts 5 --wait 3 --payload-only '(+ 30 2)'
+=> 32
+#+end_example
 
 * Next actions
 

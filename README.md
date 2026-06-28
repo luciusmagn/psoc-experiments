@@ -187,9 +187,9 @@ tools/send-net-repl.scm --host BOARD_IP --payload-only --read-only --color \
 ```
 
 This guard is for avoiding accidental writes from the host client; it is not a
-board-side authorization boundary. The current UDP service expects one request
-stream at a time; avoid running multiple clients in parallel unless
-duplicate/loss behavior is the thing being tested.
+board-side authorization boundary. Each client invocation uses its own ignored
+request/response files under `.local/net-repl/`; use explicit unique sequences
+when comparing concurrent UDP requests.
 
 For unattended Wi-Fi association, DHCP, router ARP, DNS, and background framed
 UDP REPL service smoke testing:

@@ -63,9 +63,9 @@ tools/send-net-repl.scm --host BOARD_IP --payload-only --read-only --color '(wif
 
 Use =--wait 60= for FAT-backed forms such as =ls=, =cat=, =read-file=,
 =save-file=, =append-file=, =save-defs=, and =load=.
-Use =--payload-only= for a cleaner REPL-like display. The current UDP service
-expects one request stream at a time; do not run multiple send clients in
-parallel unless you are deliberately testing duplicate/loss behavior.
+Use =--payload-only= for a cleaner REPL-like display. Each client invocation
+uses its own ignored request/response files under =.local/net-repl/=; use
+explicit unique sequences when comparing concurrent UDP requests.
 
 If a Wi-Fi smoke marker shows a valid lease and an enabled UDP service but
 host requests still time out, check host ARP/neighbour state. On this network,

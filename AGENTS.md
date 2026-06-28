@@ -233,8 +233,9 @@ plain output is the default. Use `--read-only` as a conservative host-side
 accidental-send guard for status, directory, FAT info, and simple-path
 file-read forms. Do not treat this client flag as a board-side authorization
 boundary. Use `--payload-only` for clean REPL-like output when transport
-metadata is not needed. Do not run multiple UDP client sends in parallel against
-the current service unless testing duplicate/loss behavior.
+metadata is not needed. Each invocation uses per-process ignored files under
+`.local/net-repl/`; use explicit unique sequences when comparing concurrent UDP
+requests.
 
 To make a normal quiet Wi-Fi image start the UDP REPL service from microSD,
 install this `boot.lisp` through the temporary service-smoke image:
