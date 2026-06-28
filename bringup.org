@@ -4989,7 +4989,7 @@ UDP port =4665= and one request/response frame:
 The HAL owns the peer MAC address internally after parsing a request. Lisp sees
 only source IP, source port, sequence number, payload length/hash, response
 length/hash, and status fields. Request payloads are capped at 96 bytes to match
-the current Lisp string/input size; replies are capped at 384 bytes and report a
+the current Lisp string/input size; replies are capped at 512 bytes and report a
 truncation flag.
 
 The endpoint accepts unicast packets for the leased IP and limited broadcast
@@ -5069,6 +5069,79 @@ payload.bytes=6
 payload.text==> 42
 #+end_example
 
+* 2026-06-28 Background framed UDP REPL service
+
+Added =(wifi-net-repl-service ...)= as an opt-in background service wrapper
+around the same request/evaluate/reply path used by =(wifi-net-repl-once)=.
+Supported forms:
+
+#+begin_example
+(wifi-net-repl-service status)
+(wifi-net-repl-service on)
+(wifi-net-repl-service on 1)
+(wifi-net-repl-service off)
+#+end_example
+
+The service is disabled by default for quiet images. When enabled, the main
+firmware loop polls the framed UDP endpoint at a bounded millisecond cadence and
+records compact service counters/status fields instead of printing to UART.
+
+Added =--wifi-net-repl-service-boot-smoke= to the Chez build scripts and Cargo
+features. It implies =--wifi-dns-boot-smoke=, completes Wi-Fi/DHCP/router-ARP
+and DNS setup, enables the background UDP REPL service, and then enters the
+normal firmware loop. This should prove the service path with
+=tools/send-net-repl.scm= without requiring serial RX.
+
+Adjusted the HAL net-REPL poll loop so a one-frame poll does not sleep after
+its final empty or non-matching frame attempt. This matters for the background
+service because =(wifi-net-repl-service on 1)= should be a short idle-loop poll,
+not a repeated 50 ms stall when no packet is pending.
+
+The first service validation exposed an important missing piece: the host could
+talk to the board only while it had a cached neighbor entry. Once Linux marked
+the board IP neighbor as failed, unicast UDP stopped reaching the board. Added a
+HAL-level ARP responder to the network-REPL poll path. The Wi-Fi state now
+stores the firmware-reported local MAC after router ARP setup; while polling
+raw data frames, the service answers ARP requests for the stored DHCP lease
+before looking for Lisp UDP frames.
+
+Raised the network-REPL response cap from 384 to 512 bytes so the pretty-printed
+=wifi-net-repl-service= status report fits without truncation. Also changed the
+service status recorder so ordinary idle timeouts do not overwrite the most
+recent handled request status.
+
+Validated the final service-smoke image after deleting the host neighbor entry
+for the board IP. The first request forced host ARP resolution through the
+firmware responder and then returned on attempt 1:
+
+#+begin_example
+tools/send-net-repl.scm --host 192.168.0.107 --sequence 50 '(+ 19 23)'
+payload.text==> 42
+#+end_example
+
+Repeated UDP forms kept working, including stateful evaluation:
+
+#+begin_example
+tools/send-net-repl.scm --host 192.168.0.107 --sequence 51 '(define net-check 123)'
+payload.text==> net-check
+
+tools/send-net-repl.scm --host 192.168.0.107 --sequence 52 'net-check'
+payload.text==> 123
+#+end_example
+
+The service status form returned a complete pretty-printed report with
+=last.status=, =last.request.status=, =last.reply.status=, and
+=last.eval.status= all =ready=, and =last.response.truncated= =#f=.
+
+After validation, rebuilt with =--wifi-firmware --wifi-credentials= and flashed
+the quiet non-smoke image. OpenOCD verified the quiet image.
+
+Transport decision for now: keep UDP as the working board-control path because
+DHCP, ARP, DNS, and framed UDP replies are already live. A future standard
+console should likely be raw TCP first, with minimal telnet option handling on
+top if useful. =rlogin= carries old Unix login assumptions, and IPMI-style
+serial-over-LAN is too heavy for this firmware target.
+
 * Next actions
 
 1. Watch for any remaining UART corruption during longer Wi-Fi association
@@ -5080,11 +5153,12 @@ payload.text==> 42
    for obsolete =target/psoc6_2m.cfg=.
 5. Fix UART/REPL input reliability; boot smoke is only a workaround for
    unattended Wi-Fi tests.
-6. Move the network REPL endpoint from manual/boot-smoke polling toward an
-   explicit service loop or a =boot.lisp= workflow.
+6. Make the network REPL service start from a =boot.lisp= workflow or another
+   explicit startup policy instead of a smoke-test feature.
 7. Add ACK/retry, duplicate sequence handling, and a response checksum to the
    framed UDP protocol.
 8. Add TCP or minimal HTTP GET after DNS to prove longer network exchanges.
+   Use raw TCP before considering minimal telnet negotiation.
 9. Add generic CDC ioctl/iovar helpers for firmware version, join, and link
    status.
 10. Start Wi-Fi from a known-good Infineon or Zephyr sample before trying

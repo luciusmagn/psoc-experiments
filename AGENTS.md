@@ -188,6 +188,14 @@ REPL request smoke test while UART is unreliable. It implies
 extends `WIFI_ARP_BOOT_SMOKE_MARKER` with the network-REPL wait status. Flash a
 non-smoke image immediately afterward.
 
+Use `tools/build-lisp.scm --wifi-net-repl-service-boot-smoke` or
+`tools/build-flash-lisp.scm --wifi-net-repl-service-boot-smoke` only for
+unattended Wi-Fi association, DHCP lease acquisition, router ARP, DNS, and
+background framed UDP REPL service smoke tests while UART is unreliable. It
+implies `--wifi-dns-boot-smoke`, enables the background service at boot, and
+then enters the normal firmware loop. Flash a non-smoke image immediately
+afterward.
+
 Use `tools/send-net-repl.scm --host BOARD_IP '(form ...)'` for host-side framed
 UDP REPL requests. It writes ignored binary request/response files under
 `.local/net-repl/`, calls `nc`, and prints response metadata plus payload text.

@@ -133,7 +133,7 @@ const DNS_POLL_DELAY_MS: u32 = 250;
 const DNS_TYPE_A: u16 = 1;
 const DNS_CLASS_IN: u16 = 1;
 pub const NET_REPL_REQUEST_PAYLOAD_MAX_BYTES: usize = 96;
-pub const NET_REPL_RESPONSE_PAYLOAD_MAX_BYTES: usize = 384;
+pub const NET_REPL_RESPONSE_PAYLOAD_MAX_BYTES: usize = 512;
 const NET_REPL_FRAME_HEADER_BYTES: usize = 8;
 const NET_REPL_ETHERNET_FRAME_MAX_BYTES: usize = ETHERNET_HEADER_BYTES
     + IPV4_HEADER_BYTES
@@ -1320,6 +1320,8 @@ pub struct WifiSdioControlState {
     dhcp_server_identifier: u32,
     dhcp_lease_seconds: u32,
     dhcp_lease_transaction_id: u32,
+    local_mac_valid: bool,
+    local_mac: [u8; ETHERNET_ADDRESS_BYTES],
     router_mac_valid: bool,
     router_mac: [u8; ETHERNET_ADDRESS_BYTES],
     net_repl_peer_valid: bool,
@@ -1345,6 +1347,8 @@ impl WifiSdioControlState {
             dhcp_server_identifier: 0,
             dhcp_lease_seconds: 0,
             dhcp_lease_transaction_id: 0,
+            local_mac_valid: false,
+            local_mac: [0; ETHERNET_ADDRESS_BYTES],
             router_mac_valid: false,
             router_mac: [0; ETHERNET_ADDRESS_BYTES],
             net_repl_peer_valid: false,
@@ -1361,6 +1365,7 @@ impl WifiSdioControlState {
         self.requested_ioctl_id = 0;
         self.dhcp_transaction_id = DHCP_INITIAL_TRANSACTION_ID;
         self.dns_transaction_id = DNS_INITIAL_TRANSACTION_ID;
+        self.clear_local_mac();
         self.clear_dhcp_lease();
     }
 
@@ -1444,6 +1449,16 @@ impl WifiSdioControlState {
     fn clear_router_mac(&mut self) {
         self.router_mac_valid = false;
         self.router_mac = [0; ETHERNET_ADDRESS_BYTES];
+    }
+
+    fn clear_local_mac(&mut self) {
+        self.local_mac_valid = false;
+        self.local_mac = [0; ETHERNET_ADDRESS_BYTES];
+    }
+
+    fn store_local_mac(&mut self, mac: &[u8; ETHERNET_ADDRESS_BYTES]) {
+        self.local_mac_valid = true;
+        self.local_mac = *mac;
     }
 
     fn store_router_mac(&mut self, mac: &[u8; ETHERNET_ADDRESS_BYTES]) {
@@ -6578,6 +6593,7 @@ pub fn arp_router(p: &Peripherals, state: &mut WifiSdioControlState) -> WifiSdio
 
     let mut mac_bytes = [0u8; ETHERNET_ADDRESS_BYTES];
     copy_bytes_to_slice(&mac.bytes[..ETHERNET_ADDRESS_BYTES], &mut mac_bytes, 0);
+    state.store_local_mac(&mac_bytes);
     let mut ethernet_frame = [0u8; ARP_ETHERNET_FRAME_BYTES];
     build_arp_request_frame(
         &mut ethernet_frame,
@@ -7003,6 +7019,13 @@ struct ParsedArpPacket {
 }
 
 #[derive(Clone, Copy)]
+struct ParsedArpRequest {
+    valid: bool,
+    source_mac: [u8; ETHERNET_ADDRESS_BYTES],
+    source_ip_address: u32,
+}
+
+#[derive(Clone, Copy)]
 struct ParsedDnsPacket {
     status: WifiSdioDnsParseStatus,
     answer_count: u16,
@@ -7248,6 +7271,35 @@ fn poll_dns_response(
     result
 }
 
+fn reply_to_local_arp_request(
+    p: &Peripherals,
+    state: &mut WifiSdioControlState,
+    frame: &WifiSdioF2FrameReport,
+    bytes: &[u8],
+    copied: u16,
+    local_ip_address: u32,
+) -> bool {
+    if !state.local_mac_valid {
+        return false;
+    }
+
+    let request = parse_arp_request_for_local(frame, bytes, copied, local_ip_address);
+    if !request.valid {
+        return false;
+    }
+
+    let mut ethernet_frame = [0u8; ARP_ETHERNET_FRAME_BYTES];
+    build_arp_reply_frame(
+        &mut ethernet_frame,
+        &state.local_mac,
+        local_ip_address,
+        &request.source_mac,
+        request.source_ip_address,
+    );
+    let send = send_data_packet(p, state, &ethernet_frame);
+    matches!(send.status, WifiSdioF2ControlStatus::Ready)
+}
+
 fn poll_net_repl_request(
     p: &Peripherals,
     state: &mut WifiSdioControlState,
@@ -7283,7 +7335,9 @@ fn poll_net_repl_request(
 
         if is_empty_frame_response(&frame) {
             result.last_parse_status = WifiSdioNetReplParseStatus::EmptyFrame;
-            delay_ms(NET_REPL_POLL_DELAY_MS);
+            if result.polls < limit {
+                delay_ms(NET_REPL_POLL_DELAY_MS);
+            }
             continue;
         }
         if !matches!(frame.status, WifiSdioF2FrameStatus::Ready) {
@@ -7294,6 +7348,14 @@ fn poll_net_repl_request(
         if !frame.valid {
             result.status = WifiSdioNetReplRequestStatus::InvalidFrame;
             return result;
+        }
+
+        if reply_to_local_arp_request(p, state, &frame, &frame_bytes, copied, local_ip_address) {
+            result.non_repl_frames = result.non_repl_frames.saturating_add(1);
+            if result.polls < limit {
+                delay_ms(NET_REPL_POLL_DELAY_MS);
+            }
+            continue;
         }
 
         let packet = parse_net_repl_frame(&frame, &frame_bytes, copied, local_ip_address);
@@ -7312,7 +7374,9 @@ fn poll_net_repl_request(
             }
         }
 
-        delay_ms(NET_REPL_POLL_DELAY_MS);
+        if result.polls < limit {
+            delay_ms(NET_REPL_POLL_DELAY_MS);
+        }
     }
 
     result.status = WifiSdioNetReplRequestStatus::Timeout;
@@ -7398,6 +7462,14 @@ fn empty_parsed_arp_packet() -> ParsedArpPacket {
         status: WifiSdioArpParseStatus::NotRun,
         router_mac: [0; ETHERNET_ADDRESS_BYTES],
         router_ip_address: 0,
+    }
+}
+
+fn empty_parsed_arp_request() -> ParsedArpRequest {
+    ParsedArpRequest {
+        valid: false,
+        source_mac: [0; ETHERNET_ADDRESS_BYTES],
+        source_ip_address: 0,
     }
 }
 
@@ -9577,6 +9649,31 @@ fn build_arp_request_frame(
     write_slice_be_u32(frame, arp_offset + 24, router_ip_address);
 }
 
+fn build_arp_reply_frame(
+    frame: &mut [u8; ARP_ETHERNET_FRAME_BYTES],
+    local_mac: &[u8; ETHERNET_ADDRESS_BYTES],
+    local_ip_address: u32,
+    target_mac: &[u8; ETHERNET_ADDRESS_BYTES],
+    target_ip_address: u32,
+) {
+    clear_bytes(frame);
+
+    copy_bytes_to_slice(target_mac, frame, 0);
+    copy_bytes_to_slice(local_mac, frame, ETHERNET_ADDRESS_BYTES);
+    write_slice_be_u16(frame, 12, ARP_ETHERTYPE);
+
+    let arp_offset = ETHERNET_HEADER_BYTES;
+    write_slice_be_u16(frame, arp_offset, ARP_HARDWARE_ETHERNET);
+    write_slice_be_u16(frame, arp_offset + 2, IPV4_ETHERTYPE);
+    frame[arp_offset + 4] = ETHERNET_ADDRESS_BYTES as u8;
+    frame[arp_offset + 5] = 4;
+    write_slice_be_u16(frame, arp_offset + 6, ARP_OPERATION_REPLY);
+    copy_bytes_to_slice(local_mac, frame, arp_offset + 8);
+    write_slice_be_u32(frame, arp_offset + 14, local_ip_address);
+    copy_bytes_to_slice(target_mac, frame, arp_offset + 18);
+    write_slice_be_u32(frame, arp_offset + 24, target_ip_address);
+}
+
 fn build_dns_query_payload(
     payload: &mut [u8; DNS_QUERY_PAYLOAD_MAX_BYTES],
     name: &[u8],
@@ -10099,6 +10196,69 @@ fn parse_arp_frame(
         0,
     );
     packet.status = WifiSdioArpParseStatus::Ready;
+    packet
+}
+
+fn parse_arp_request_for_local(
+    frame: &WifiSdioF2FrameReport,
+    bytes: &[u8],
+    copied: u16,
+    expected_local_ip_address: u32,
+) -> ParsedArpRequest {
+    let mut packet = empty_parsed_arp_request();
+    if frame.channel != SDPCM_DATA_CHANNEL {
+        return packet;
+    }
+
+    let copied = copied as usize;
+    let bdc_offset = frame.header_length as usize;
+    if bdc_offset + BDC_HEADER_BYTES > copied {
+        return packet;
+    }
+
+    let bdc_data_offset_words = bytes[bdc_offset + 3] as usize;
+    let ethernet_offset = bdc_offset + BDC_HEADER_BYTES + bdc_data_offset_words * BDC_HEADER_BYTES;
+    if ethernet_offset + ETHERNET_HEADER_BYTES > copied {
+        return packet;
+    }
+    if read_slice_be_u16(bytes, ethernet_offset + 12) != ARP_ETHERTYPE {
+        return packet;
+    }
+
+    let arp_offset = ethernet_offset + ETHERNET_HEADER_BYTES;
+    if arp_offset + ARP_PACKET_BYTES > copied {
+        return packet;
+    }
+    if read_slice_be_u16(bytes, arp_offset) != ARP_HARDWARE_ETHERNET
+        || read_slice_be_u16(bytes, arp_offset + 2) != IPV4_ETHERTYPE
+        || bytes[arp_offset + 4] != ETHERNET_ADDRESS_BYTES as u8
+        || bytes[arp_offset + 5] != 4
+        || read_slice_be_u16(bytes, arp_offset + 6) != ARP_OPERATION_REQUEST
+    {
+        return packet;
+    }
+
+    let target_ip_address = read_slice_be_u32(bytes, arp_offset + 24);
+    if target_ip_address != expected_local_ip_address {
+        return packet;
+    }
+    let source_ip_address = read_slice_be_u32(bytes, arp_offset + 14);
+    if source_ip_address == 0
+        || slice_all_eq(
+            &bytes[arp_offset + 8..arp_offset + 8 + ETHERNET_ADDRESS_BYTES],
+            0,
+        )
+    {
+        return packet;
+    }
+
+    copy_bytes_to_slice(
+        &bytes[arp_offset + 8..arp_offset + 8 + ETHERNET_ADDRESS_BYTES],
+        &mut packet.source_mac,
+        0,
+    );
+    packet.source_ip_address = source_ip_address;
+    packet.valid = true;
     packet
 }
 

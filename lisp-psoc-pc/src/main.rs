@@ -17,6 +17,7 @@ mod wifi_resources;
 
 const SYSCLK_HZ: u32 = 50_000_000;
 const CONSOLE_POLL_DELAY_US: u32 = 50;
+const WIFI_NET_REPL_SERVICE_INTERVAL_MS: u32 = 50;
 #[cfg(feature = "wifi-boot-smoke")]
 #[cfg(not(feature = "wifi-dhcp-boot-smoke"))]
 const WIFI_BOOT_SMOKE_FORMS: [&[u8]; 3] = [
@@ -42,6 +43,8 @@ const WIFI_DNS_BOOT_SMOKE_NAME: &[u8] = b"example.com";
 const WIFI_NET_REPL_BOOT_SMOKE_FORM: &[u8] = b"(wifi-net-repl-once 240)";
 #[cfg(feature = "wifi-net-repl-boot-smoke")]
 const WIFI_NET_REPL_BOOT_SMOKE_POLL_FRAMES: u32 = 240;
+#[cfg(feature = "wifi-net-repl-service-boot-smoke")]
+const WIFI_NET_REPL_SERVICE_BOOT_SMOKE_POLL_FRAMES: u8 = 1;
 #[cfg(feature = "wifi-arp-boot-smoke")]
 #[no_mangle]
 pub static mut WIFI_ARP_BOOT_SMOKE_MARKER: [u32; WIFI_NETWORK_BOOT_SMOKE_MARKER_WORDS] =
@@ -116,6 +119,7 @@ fn main() -> ! {
     let mut line = [0u8; 384];
     let mut line_len = 0usize;
     let mut tick_accumulated_us = 0u32;
+    let mut net_repl_service_accumulated_ms = 0u32;
 
     loop {
         while let Some(byte) = console.read_byte() {
@@ -176,6 +180,19 @@ fn main() -> ! {
         while tick_accumulated_us >= 1000 {
             tick_accumulated_us -= 1000;
             board_state.tick_ms(&p);
+            net_repl_service_accumulated_ms = net_repl_service_accumulated_ms.saturating_add(1);
+        }
+
+        if machine.wifi_net_repl_service_enabled() {
+            if net_repl_service_accumulated_ms >= WIFI_NET_REPL_SERVICE_INTERVAL_MS {
+                net_repl_service_accumulated_ms = 0;
+                let mut board = board_state.lisp_board(&p);
+                machine.poll_wifi_net_repl_service(&mut board);
+                #[cfg(feature = "wifi-net-repl-service-boot-smoke")]
+                write_wifi_net_repl_service_marker(&machine);
+            }
+        } else {
+            net_repl_service_accumulated_ms = 0;
         }
     }
 }
@@ -222,12 +239,11 @@ fn run_wifi_boot_smoke<B: lisp::Board, W: Write>(
         }
     };
 
-    let prepare = board.wifi_prepare_join();
-    write_wifi_arp_boot_smoke_marker(1, 2);
-    write_wifi_arp_boot_smoke_marker(2, status_word(prepare.status));
-    if !status_ready(prepare.status) {
+    if !run_wifi_prepare_join_marker_smoke(board) {
         return Ok(());
     }
+    write_wifi_arp_boot_smoke_marker(1, 2);
+    write_wifi_arp_boot_smoke_marker(2, 1);
 
     let join = board.wifi_join_wpa2(ssid, passphrase);
     write_wifi_arp_boot_smoke_marker(1, 3);
@@ -304,6 +320,16 @@ fn run_wifi_boot_smoke<B: lisp::Board, W: Write>(
         write_wifi_arp_boot_smoke_marker(1, 11);
     }
 
+    #[cfg(feature = "wifi-net-repl-service-boot-smoke")]
+    {
+        write_wifi_arp_boot_smoke_marker(1, 12);
+        _machine.enable_wifi_net_repl_service(WIFI_NET_REPL_SERVICE_BOOT_SMOKE_POLL_FRAMES);
+        write_wifi_arp_boot_smoke_marker(25, WIFI_NET_REPL_SERVICE_BOOT_SMOKE_POLL_FRAMES as u32);
+        write_wifi_arp_boot_smoke_marker(26, bool_word(_machine.wifi_net_repl_service_enabled()));
+        write_wifi_net_repl_service_marker(_machine);
+        write_wifi_arp_boot_smoke_marker(1, 13);
+    }
+
     Ok(())
 }
 
@@ -333,6 +359,80 @@ fn static_string_bytes(bytes: &[u8]) -> Option<lisp::StringBytes> {
         index += 1;
     }
     Some(value)
+}
+
+#[cfg(feature = "wifi-arp-boot-smoke")]
+fn run_wifi_prepare_join_marker_smoke<B: lisp::Board>(board: &mut B) -> bool {
+    write_wifi_arp_boot_smoke_marker(27, 1);
+    let sdio = board.wifi_sdio_init();
+    write_wifi_arp_boot_smoke_marker(28, status_word(sdio.status));
+    if !status_ready(sdio.status) {
+        write_wifi_arp_boot_smoke_marker(1, 0xe101);
+        return false;
+    }
+
+    write_wifi_arp_boot_smoke_marker(27, 2);
+    let firmware = board.wifi_start_firmware();
+    write_wifi_arp_boot_smoke_marker(28, status_word(firmware.status));
+    if !status_ready(firmware.status) {
+        write_wifi_arp_boot_smoke_marker(1, 0xe102);
+        return false;
+    }
+
+    write_wifi_arp_boot_smoke_marker(27, 3);
+    let wlc_up = board.wifi_wlc_up();
+    write_wifi_arp_boot_smoke_marker(28, status_word(wlc_up.status));
+    if !status_ready(wlc_up.status) {
+        write_wifi_arp_boot_smoke_marker(1, 0xe103);
+        return false;
+    }
+
+    write_wifi_arp_boot_smoke_marker(27, 4);
+    let ack = board.wifi_ack_interrupts();
+    write_wifi_arp_boot_smoke_marker(28, status_word(ack.status));
+    if !status_ready(ack.status) {
+        write_wifi_arp_boot_smoke_marker(1, 0xe104);
+        return false;
+    }
+
+    write_wifi_arp_boot_smoke_marker(27, 5);
+    let clm = board.wifi_load_clm();
+    write_wifi_arp_boot_smoke_marker(28, status_word(clm.status));
+    if !status_ready(clm.status) {
+        write_wifi_arp_boot_smoke_marker(1, 0xe105);
+        return false;
+    }
+
+    write_wifi_arp_boot_smoke_marker(27, 6);
+    let tx_glomming = board.wifi_disable_tx_glomming();
+    write_wifi_arp_boot_smoke_marker(28, status_word(tx_glomming.status));
+    if !status_ready(tx_glomming.status) {
+        write_wifi_arp_boot_smoke_marker(1, 0xe106);
+        return false;
+    }
+
+    write_wifi_arp_boot_smoke_marker(27, 7);
+    let country = board.wifi_set_country(*b"XX", -1);
+    write_wifi_arp_boot_smoke_marker(28, status_word(country.status));
+    if !status_ready(country.status) {
+        write_wifi_arp_boot_smoke_marker(1, 0xe107);
+        return false;
+    }
+
+    write_wifi_arp_boot_smoke_marker(27, 8);
+    true
+}
+
+#[cfg(feature = "wifi-net-repl-service-boot-smoke")]
+fn write_wifi_net_repl_service_marker(machine: &lisp::Machine) {
+    write_wifi_arp_boot_smoke_marker(23, status_word(machine.wifi_net_repl_service_last_status()));
+    write_wifi_arp_boot_smoke_marker(
+        24,
+        status_word(machine.wifi_net_repl_service_last_reply_status()),
+    );
+    write_wifi_arp_boot_smoke_marker(29, machine.wifi_net_repl_service_polls());
+    write_wifi_arp_boot_smoke_marker(30, machine.wifi_net_repl_service_requests_handled());
+    write_wifi_arp_boot_smoke_marker(31, machine.wifi_net_repl_service_last_sequence());
 }
 
 #[cfg(feature = "wifi-arp-boot-smoke")]

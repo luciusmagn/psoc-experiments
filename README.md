@@ -79,9 +79,14 @@ less dependent on the flaky serial RX path. `(wifi-net-repl-once)` polls UDP
 port 4665 for one framed request. The request payload is `LPS0`, a big-endian
 32-bit sequence number, and one Lisp expression. The reply payload is `LPS1`,
 the same sequence number, and the pretty-printed result or error text.
-Requests are capped at 96 bytes and replies at 384 bytes. `(wifi-network-bootstrap)`
-runs local association, DHCP, lease status, and router ARP resolution as one
-compact high-level form.
+Requests are capped at 96 bytes and replies at 512 bytes.
+`(wifi-net-repl-service status)`, `(wifi-net-repl-service on)`,
+`(wifi-net-repl-service on 1)`, and `(wifi-net-repl-service off)` control the
+same framed UDP evaluator as a background service from the main firmware loop.
+While polling, the service answers ARP requests for its DHCP lease so host-side
+clients do not need a pinned neighbor entry.
+`(wifi-network-bootstrap)` runs local association, DHCP, lease status, and
+router ARP resolution as one compact high-level form.
 
 For unattended Wi-Fi association and link-status smoke testing on the flaky
 UART RX path:
@@ -146,6 +151,19 @@ Use `tools/send-net-repl.scm --host BOARD_IP '(+ 40 2)'` to send one framed UDP
 request from the host. The script writes the binary request under ignored
 `.local/net-repl/`, calls `nc`, parses the `LPS1` response, and prints response
 lengths, hex, and payload text.
+
+For unattended Wi-Fi association, DHCP, router ARP, DNS, and background framed
+UDP REPL service smoke testing:
+
+```sh
+tools/build-lisp.scm --wifi-net-repl-service-boot-smoke
+tools/flash-lisp.scm
+```
+
+`--wifi-net-repl-service-boot-smoke` implies `--wifi-dns-boot-smoke`, enables
+the background service at boot, and then enters the normal firmware loop. Use
+`tools/send-net-repl.scm` to send requests while it is running. Flash a
+non-smoke image afterward.
 
 For microSD-backed Lisp files, the active `save-file`, `read-file`, `load`,
 `ls`, and `cat` forms use the FAT root directory. The firmware accepts Lisp
