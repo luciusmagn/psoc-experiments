@@ -67,6 +67,7 @@ const STATUS_READY: &[u8] = b"ready";
 const STATUS_NOT_RUN: &[u8] = b"not-run";
 const STATUS_STEP_FAILED: &[u8] = b"step-failed";
 const STATUS_TIMEOUT: &[u8] = b"timeout";
+const STATUS_DUPLICATE: &[u8] = b"duplicate";
 const STEP_DONE: &[u8] = b"done";
 const WIFI_NET_REPL_SERVICE_DEFAULT_POLL_FRAMES: u8 = 1;
 
@@ -110,6 +111,31 @@ const EMPTY_WIFI_NET_REPL_SERVICE_STATE: WifiNetReplServiceState = WifiNetReplSe
     last_response_length: 0,
     last_response_hash: 0,
     last_response_truncated: false,
+};
+
+#[derive(Clone, Copy)]
+struct WifiNetReplResponseCache {
+    valid: bool,
+    source_ip_address: u32,
+    source_mac_hash: u32,
+    sequence: u32,
+    payload_hash: u32,
+    response: NetReplResponseBytes,
+}
+
+const EMPTY_NET_REPL_RESPONSE_BYTES: NetReplResponseBytes = NetReplResponseBytes {
+    len: 0,
+    truncated: false,
+    bytes: [0; NET_REPL_RESPONSE_BYTES],
+};
+
+const EMPTY_WIFI_NET_REPL_RESPONSE_CACHE: WifiNetReplResponseCache = WifiNetReplResponseCache {
+    valid: false,
+    source_ip_address: 0,
+    source_mac_hash: 0,
+    sequence: 0,
+    payload_hash: 0,
+    response: EMPTY_NET_REPL_RESPONSE_BYTES,
 };
 
 pub trait Board {
@@ -2201,6 +2227,7 @@ pub struct Machine {
     wifi_passphrase: StringBytes,
     wifi_passphrase_set: bool,
     wifi_net_repl_service: WifiNetReplServiceState,
+    wifi_net_repl_response_cache: WifiNetReplResponseCache,
 }
 
 #[derive(Clone, Copy)]
@@ -2229,6 +2256,7 @@ impl Machine {
             wifi_passphrase: EMPTY_STRING_BYTES,
             wifi_passphrase_set: false,
             wifi_net_repl_service: EMPTY_WIFI_NET_REPL_SERVICE_STATE,
+            wifi_net_repl_response_cache: EMPTY_WIFI_NET_REPL_RESPONSE_CACHE,
         }
     }
 
@@ -5659,8 +5687,17 @@ impl Machine {
             };
         }
 
-        let (eval_status, response) =
-            self.eval_net_repl_payload(&request.payload[..request.payload_length as usize], board);
+        let (eval_status, response) = match self.cached_wifi_net_repl_response(&request) {
+            Some(response) => (STATUS_DUPLICATE, response),
+            None => {
+                let (eval_status, response) = self.eval_net_repl_payload(
+                    &request.payload[..request.payload_length as usize],
+                    board,
+                );
+                self.store_wifi_net_repl_response(&request, response);
+                (eval_status, response)
+            }
+        };
         let response_length = response.len;
         let response_truncated = response.truncated;
         let response_hash = checksum_bytes(&response.bytes[..response.len as usize]);
@@ -5680,6 +5717,38 @@ impl Machine {
             response_hash,
             response_truncated,
         }
+    }
+
+    fn cached_wifi_net_repl_response(
+        &self,
+        request: &WifiNetReplRequestReport,
+    ) -> Option<NetReplResponseBytes> {
+        let cache = self.wifi_net_repl_response_cache;
+        if cache.valid
+            && cache.source_ip_address == request.source_ip_address
+            && cache.source_mac_hash == request.source_mac_hash
+            && cache.sequence == request.sequence
+            && cache.payload_hash == request.payload_hash
+        {
+            Some(cache.response)
+        } else {
+            None
+        }
+    }
+
+    fn store_wifi_net_repl_response(
+        &mut self,
+        request: &WifiNetReplRequestReport,
+        response: NetReplResponseBytes,
+    ) {
+        self.wifi_net_repl_response_cache = WifiNetReplResponseCache {
+            valid: true,
+            source_ip_address: request.source_ip_address,
+            source_mac_hash: request.source_mac_hash,
+            sequence: request.sequence,
+            payload_hash: request.payload_hash,
+            response,
+        };
     }
 
     fn record_wifi_net_repl_service_cycle(&mut self, cycle: WifiNetReplCycleReport) {

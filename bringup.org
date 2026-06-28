@@ -5262,6 +5262,50 @@ payload.text="boot" 3
 => 3
 #+end_example
 
+* 2026-06-28 Network REPL duplicate sequence cache
+
+Added a single-entry response cache in the Lisp machine for the framed UDP REPL.
+When a valid request repeats the same source IP, source MAC hash, sequence, and
+payload hash as the most recent evaluated request, the firmware reuses the
+cached response bytes instead of evaluating the Lisp form again. The reply is
+still sent to the current packet's UDP source port, which matters because host
+tools such as GNU =nc= may use a fresh local port for each retry.
+
+This is not a full reliability protocol yet. It covers the common retry shape
+and prevents duplicate side effects for one outstanding request. A later frame
+revision should still add explicit ACK/retry behavior and a response checksum.
+
+Validation on the quiet Wi-Fi image started from FAT =boot.lisp=:
+
+#+begin_example
+tools/send-net-repl.scm --host 192.168.0.107 --sequence 90 --wait 3 '(define dup-counter 0)'
+payload.text==> dup-counter
+
+tools/send-net-repl.scm --host 192.168.0.107 --sequence 91 --wait 3 '(define dup-counter (+ dup-counter 1))'
+payload.text==> dup-counter
+
+tools/send-net-repl.scm --host 192.168.0.107 --sequence 91 --wait 3 '(define dup-counter (+ dup-counter 1))'
+payload.text==> dup-counter
+
+tools/send-net-repl.scm --host 192.168.0.107 --sequence 92 --wait 3 'dup-counter'
+payload.text==> 1
+#+end_example
+
+A second duplicate run confirmed that the service status records the duplicate
+path:
+
+#+begin_example
+tools/send-net-repl.scm --host 192.168.0.107 --sequence 95 --wait 3 '(wifi-net-repl-service status)'
+payload.text==> ((enabled . #t)
+    ...
+    (last.eval.status . duplicate)
+    (last.sequence . #x0000005e)
+    ...)
+
+tools/send-net-repl.scm --host 192.168.0.107 --sequence 96 --wait 3 'dup-counter'
+payload.text==> 2
+#+end_example
+
 Transport decision for now: keep UDP as the working board-control path because
 DHCP, ARP, DNS, and framed UDP replies are already live. A future standard
 console should likely be raw TCP first, with minimal telnet option handling on
@@ -5279,8 +5323,7 @@ serial-over-LAN is too heavy for this firmware target.
    for obsolete =target/psoc6_2m.cfg=.
 5. Fix UART/REPL input reliability; boot smoke is only a workaround for
    unattended Wi-Fi tests.
-6. Add ACK/retry, duplicate sequence handling, and a response checksum to the
-   framed UDP protocol.
+6. Add ACK/retry and a response checksum to the framed UDP protocol.
 7. Add TCP or minimal HTTP GET after DNS to prove longer network exchanges.
    Use raw TCP before considering minimal telnet negotiation.
 8. Add generic CDC ioctl/iovar helpers for firmware version, join, and link
