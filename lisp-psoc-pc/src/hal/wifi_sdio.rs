@@ -70,8 +70,10 @@ const BCDC_PROTO_VER: u8 = 2;
 const BCDC_FLAG_VER_SHIFT: u8 = 4;
 const ETHERNET_ADDRESS_BYTES: usize = 6;
 const ETHERNET_HEADER_BYTES: usize = 14;
+const ETHERNET_MIN_FRAME_BYTES: usize = 60;
 const ETHERNET_BROADCAST: [u8; ETHERNET_ADDRESS_BYTES] = [0xff; ETHERNET_ADDRESS_BYTES];
 const IPV4_ETHERTYPE: u16 = 0x0800;
+const ARP_ETHERTYPE: u16 = 0x0806;
 const BRCM_ETHERTYPE: u16 = 0x886c;
 const BRCM_OUI: [u8; 3] = [0x00, 0x10, 0x18];
 const WHD_EVENT_ETH_HEADER_BYTES: usize = 10;
@@ -110,6 +112,13 @@ const DHCP_OPTION_MESSAGE_TYPE: u8 = 53;
 const DHCP_OPTION_SERVER_IDENTIFIER: u8 = 54;
 const DHCP_OPTION_PARAMETER_REQUEST_LIST: u8 = 55;
 const DHCP_OPTION_MAXIMUM_DHCP_MESSAGE_SIZE: u8 = 57;
+const ARP_PACKET_BYTES: usize = 28;
+const ARP_ETHERNET_FRAME_BYTES: usize = ETHERNET_MIN_FRAME_BYTES;
+const ARP_HARDWARE_ETHERNET: u16 = 1;
+const ARP_OPERATION_REQUEST: u16 = 1;
+const ARP_OPERATION_REPLY: u16 = 2;
+const ARP_POLL_FRAMES: u8 = 24;
+const ARP_POLL_DELAY_MS: u32 = 200;
 const WLC_UP_IOCTL: u32 = 2;
 const WLC_GET_VERSION_IOCTL: u32 = 1;
 const WLC_GET_BSSID_IOCTL: u32 = 23;
@@ -521,6 +530,46 @@ pub enum WifiSdioDhcpParseStatus {
 pub enum WifiSdioLeaseStatus {
     Ready,
     NoLease,
+}
+
+#[derive(Clone, Copy)]
+pub enum WifiSdioArpRouterStatus {
+    Ready,
+    NoLease,
+    LeaseMissingAddress,
+    HtRequestFailed,
+    MacReadFailed,
+    MacMissing,
+    RequestSendFailed,
+    ReplyPollFailed,
+    ReplyTimeout,
+}
+
+#[derive(Clone, Copy)]
+pub enum WifiSdioArpPollStatus {
+    NotRun,
+    Ready,
+    Timeout,
+    AckFailed,
+    FrameReadFailed,
+    InvalidFrame,
+}
+
+#[derive(Clone, Copy)]
+pub enum WifiSdioArpParseStatus {
+    NotRun,
+    Ready,
+    EmptyFrame,
+    NonDataChannel,
+    BdcHeaderTooShort,
+    EthernetTooShort,
+    WrongEtherType,
+    ArpTooShort,
+    WrongHardware,
+    WrongProtocol,
+    WrongOperation,
+    WrongSender,
+    WrongTarget,
 }
 
 #[derive(Clone, Copy)]
@@ -1151,6 +1200,8 @@ pub struct WifiSdioControlState {
     dhcp_server_identifier: u32,
     dhcp_lease_seconds: u32,
     dhcp_lease_transaction_id: u32,
+    router_mac_valid: bool,
+    router_mac: [u8; ETHERNET_ADDRESS_BYTES],
 }
 
 impl WifiSdioControlState {
@@ -1168,6 +1219,8 @@ impl WifiSdioControlState {
             dhcp_server_identifier: 0,
             dhcp_lease_seconds: 0,
             dhcp_lease_transaction_id: 0,
+            router_mac_valid: false,
+            router_mac: [0; ETHERNET_ADDRESS_BYTES],
         }
     }
 
@@ -1232,6 +1285,7 @@ impl WifiSdioControlState {
         self.dhcp_server_identifier = 0;
         self.dhcp_lease_seconds = 0;
         self.dhcp_lease_transaction_id = 0;
+        self.clear_router_mac();
     }
 
     fn store_dhcp_lease(&mut self, packet: &ParsedDhcpPacket) {
@@ -1243,6 +1297,17 @@ impl WifiSdioControlState {
         self.dhcp_server_identifier = packet.server_identifier;
         self.dhcp_lease_seconds = packet.lease_seconds;
         self.dhcp_lease_transaction_id = packet.transaction_id;
+        self.clear_router_mac();
+    }
+
+    fn clear_router_mac(&mut self) {
+        self.router_mac_valid = false;
+        self.router_mac = [0; ETHERNET_ADDRESS_BYTES];
+    }
+
+    fn store_router_mac(&mut self, mac: &[u8; ETHERNET_ADDRESS_BYTES]) {
+        self.router_mac_valid = true;
+        self.router_mac = *mac;
     }
 }
 
@@ -1610,6 +1675,46 @@ pub struct WifiSdioLeaseStatusReport {
     pub dns_server: u32,
     pub server_identifier: u32,
     pub lease_seconds: u32,
+    pub host_normal_int: u16,
+    pub host_error_int: u16,
+}
+
+pub struct WifiSdioArpRouterReport {
+    pub status: WifiSdioArpRouterStatus,
+    pub step: &'static [u8],
+    pub lease_valid: bool,
+    pub local_ip_address: u32,
+    pub router_ip_address: u32,
+    pub ht_status: WifiSdioHtRequestStatus,
+    pub ht_attempts: u16,
+    pub ht_write_response: u32,
+    pub ht_read_value: u8,
+    pub ht_read_response: u32,
+    pub ht_available: bool,
+    pub mac_status: WifiSdioLinkGetStatus,
+    pub mac_hash: u32,
+    pub mac_nonzero: bool,
+    pub mac_cdc_status: u32,
+    pub mac_cdc_length: u32,
+    pub request_status: WifiSdioF2ControlStatus,
+    pub request_ethernet_length: u16,
+    pub request_ethernet_hash: u32,
+    pub request_packet_length: u16,
+    pub request_write_response: u32,
+    pub reply_poll_status: WifiSdioArpPollStatus,
+    pub reply_parse_status: WifiSdioArpParseStatus,
+    pub reply_polls: u8,
+    pub reply_frames_read: u8,
+    pub reply_non_data_frames: u8,
+    pub reply_non_arp_frames: u8,
+    pub router_mac_hash: u32,
+    pub router_mac_present: bool,
+    pub router_mac_stored: bool,
+    pub ack_status: WifiSdioInterruptAckStatus,
+    pub ack_last_error: Option<CommandError>,
+    pub ht_last_error: Option<CommandError>,
+    pub request_last_error: Option<CommandError>,
+    pub frame_last_error: Option<CommandError>,
     pub host_normal_int: u16,
     pub host_error_int: u16,
 }
@@ -6145,6 +6250,110 @@ pub fn lease_status(p: &Peripherals, state: &WifiSdioControlState) -> WifiSdioLe
     }
 }
 
+pub fn arp_router(p: &Peripherals, state: &mut WifiSdioControlState) -> WifiSdioArpRouterReport {
+    let mut report = empty_arp_router_report(p);
+    report.lease_valid = state.dhcp_lease_valid;
+    report.local_ip_address = state.dhcp_ip_address;
+    report.router_ip_address = state.dhcp_router;
+    state.clear_router_mac();
+
+    if !state.dhcp_lease_valid {
+        report.status = WifiSdioArpRouterStatus::NoLease;
+        return finish_arp_router_report(p, report);
+    }
+    if state.dhcp_ip_address == 0 || state.dhcp_router == 0 {
+        report.status = WifiSdioArpRouterStatus::LeaseMissingAddress;
+        return finish_arp_router_report(p, report);
+    }
+
+    report.step = b"ht";
+    let ht = request_ht(p);
+    report.ht_status = ht.status;
+    report.ht_attempts = ht.attempts;
+    report.ht_write_response = ht.write_response;
+    report.ht_read_value = ht.read_value;
+    report.ht_read_response = ht.read_response;
+    report.ht_available = ht.ht_available;
+    report.ht_last_error = ht.last_error;
+    if !matches!(ht.status, WifiSdioHtRequestStatus::Ready) {
+        report.status = WifiSdioArpRouterStatus::HtRequestFailed;
+        return finish_arp_router_report(p, report);
+    }
+
+    report.step = b"mac";
+    let mut mac_payload = [0u8; CUR_ETHERADDR_PAYLOAD_BYTES];
+    copy_bytes_to_slice(CUR_ETHERADDR_IOVAR_NAME, &mut mac_payload, 0);
+    let mac = link_control_get_payload(
+        p,
+        state,
+        WLC_GET_VAR_IOCTL,
+        &mac_payload,
+        ETHERNET_ADDRESS_BYTES,
+    );
+    report.mac_status = mac.status;
+    report.mac_cdc_status = mac.cdc_status;
+    report.mac_cdc_length = mac.cdc_length;
+    if !matches!(mac.status, WifiSdioLinkGetStatus::Ready) {
+        report.status = WifiSdioArpRouterStatus::MacReadFailed;
+        return finish_arp_router_report(p, report);
+    }
+    report.mac_hash = checksum_bytes(&mac.bytes[..ETHERNET_ADDRESS_BYTES]);
+    report.mac_nonzero = !slice_all_eq(&mac.bytes[..ETHERNET_ADDRESS_BYTES], 0);
+    if !report.mac_nonzero {
+        report.status = WifiSdioArpRouterStatus::MacMissing;
+        return finish_arp_router_report(p, report);
+    }
+
+    let mut mac_bytes = [0u8; ETHERNET_ADDRESS_BYTES];
+    copy_bytes_to_slice(&mac.bytes[..ETHERNET_ADDRESS_BYTES], &mut mac_bytes, 0);
+    let mut ethernet_frame = [0u8; ARP_ETHERNET_FRAME_BYTES];
+    build_arp_request_frame(
+        &mut ethernet_frame,
+        &mac_bytes,
+        state.dhcp_ip_address,
+        state.dhcp_router,
+    );
+    report.request_ethernet_length = ARP_ETHERNET_FRAME_BYTES as u16;
+    report.request_ethernet_hash = checksum_bytes(&ethernet_frame);
+
+    report.step = b"request";
+    let request = send_data_packet(p, state, &ethernet_frame);
+    report.request_status = request.status;
+    report.request_packet_length = request.packet_length;
+    report.request_write_response = request.write_response;
+    report.request_last_error = request.write_last_error;
+    if !matches!(request.status, WifiSdioF2ControlStatus::Ready) {
+        report.status = WifiSdioArpRouterStatus::RequestSendFailed;
+        return finish_arp_router_report(p, report);
+    }
+
+    report.step = b"reply";
+    let reply = poll_arp_reply(
+        p,
+        state,
+        &mac_bytes,
+        report.local_ip_address,
+        report.router_ip_address,
+    );
+    copy_arp_poll_to_report(&reply, &mut report);
+    if !matches!(reply.status, WifiSdioArpPollStatus::Ready) {
+        report.status = if matches!(reply.status, WifiSdioArpPollStatus::Timeout) {
+            WifiSdioArpRouterStatus::ReplyTimeout
+        } else {
+            WifiSdioArpRouterStatus::ReplyPollFailed
+        };
+        return finish_arp_router_report(p, report);
+    }
+
+    state.store_router_mac(&reply.packet.router_mac);
+    report.router_mac_hash = checksum_bytes(&reply.packet.router_mac);
+    report.router_mac_present = !slice_all_eq(&reply.packet.router_mac, 0);
+    report.router_mac_stored = state.router_mac_valid;
+    report.status = WifiSdioArpRouterStatus::Ready;
+    report.step = b"done";
+    finish_arp_router_report(p, report)
+}
+
 struct LinkControlGet {
     status: WifiSdioLinkGetStatus,
     cdc_status: u32,
@@ -6166,6 +6375,19 @@ struct DhcpPollResult {
     packet: ParsedDhcpPacket,
 }
 
+struct ArpPollResult {
+    status: WifiSdioArpPollStatus,
+    last_parse_status: WifiSdioArpParseStatus,
+    polls: u8,
+    frames_read: u8,
+    non_data_frames: u8,
+    non_arp_frames: u8,
+    ack_status: WifiSdioInterruptAckStatus,
+    ack_last_error: Option<CommandError>,
+    frame_last_error: Option<CommandError>,
+    packet: ParsedArpPacket,
+}
+
 #[derive(Clone, Copy)]
 struct ParsedDhcpPacket {
     status: WifiSdioDhcpParseStatus,
@@ -6177,6 +6399,13 @@ struct ParsedDhcpPacket {
     router: u32,
     dns_server: u32,
     lease_seconds: u32,
+}
+
+#[derive(Clone, Copy)]
+struct ParsedArpPacket {
+    status: WifiSdioArpParseStatus,
+    router_mac: [u8; ETHERNET_ADDRESS_BYTES],
+    router_ip_address: u32,
 }
 
 fn poll_dhcp_response(
@@ -6254,6 +6483,80 @@ fn poll_dhcp_response(
     result
 }
 
+fn poll_arp_reply(
+    p: &Peripherals,
+    state: &mut WifiSdioControlState,
+    local_mac: &[u8; ETHERNET_ADDRESS_BYTES],
+    local_ip_address: u32,
+    router_ip_address: u32,
+) -> ArpPollResult {
+    let mut result = empty_arp_poll_result();
+    let mut frame_bytes = [0u8; WHD_IOCTL_MAX_TX_PACKET_BYTES];
+
+    while result.polls < ARP_POLL_FRAMES {
+        result.polls = result.polls.saturating_add(1);
+
+        let ack = ack_interrupts(p);
+        result.ack_status = ack.status;
+        result.ack_last_error = ack.last_error;
+        if !matches!(ack.status, WifiSdioInterruptAckStatus::Ready) {
+            result.status = WifiSdioArpPollStatus::AckFailed;
+            return result;
+        }
+
+        clear_bytes(&mut frame_bytes);
+        let (frame, copied) =
+            f2_read_frame_copy_all(p, WHD_IOCTL_MAX_TX_PACKET_BYTES as u16, &mut frame_bytes);
+        if frame.channel < 3 {
+            state.update_credit(frame.bus_data_credit);
+        }
+        result.frame_last_error = frame.last_error;
+
+        if is_empty_frame_response(&frame) {
+            result.last_parse_status = WifiSdioArpParseStatus::EmptyFrame;
+            delay_ms(ARP_POLL_DELAY_MS);
+            continue;
+        }
+        if !matches!(frame.status, WifiSdioF2FrameStatus::Ready) {
+            result.status = WifiSdioArpPollStatus::FrameReadFailed;
+            return result;
+        }
+        result.frames_read = result.frames_read.saturating_add(1);
+        if !frame.valid {
+            result.status = WifiSdioArpPollStatus::InvalidFrame;
+            return result;
+        }
+
+        let packet = parse_arp_frame(
+            &frame,
+            &frame_bytes,
+            copied,
+            local_mac,
+            local_ip_address,
+            router_ip_address,
+        );
+        result.last_parse_status = packet.status;
+        result.packet = packet;
+        match packet.status {
+            WifiSdioArpParseStatus::Ready => {
+                result.status = WifiSdioArpPollStatus::Ready;
+                return result;
+            }
+            WifiSdioArpParseStatus::NonDataChannel => {
+                result.non_data_frames = result.non_data_frames.saturating_add(1);
+            }
+            _ => {
+                result.non_arp_frames = result.non_arp_frames.saturating_add(1);
+            }
+        }
+
+        delay_ms(ARP_POLL_DELAY_MS);
+    }
+
+    result.status = WifiSdioArpPollStatus::Timeout;
+    result
+}
+
 fn empty_dhcp_poll_result() -> DhcpPollResult {
     DhcpPollResult {
         status: WifiSdioDhcpPollStatus::NotRun,
@@ -6269,6 +6572,21 @@ fn empty_dhcp_poll_result() -> DhcpPollResult {
     }
 }
 
+fn empty_arp_poll_result() -> ArpPollResult {
+    ArpPollResult {
+        status: WifiSdioArpPollStatus::NotRun,
+        last_parse_status: WifiSdioArpParseStatus::NotRun,
+        polls: 0,
+        frames_read: 0,
+        non_data_frames: 0,
+        non_arp_frames: 0,
+        ack_status: WifiSdioInterruptAckStatus::NotRun,
+        ack_last_error: None,
+        frame_last_error: None,
+        packet: empty_parsed_arp_packet(),
+    }
+}
+
 fn empty_parsed_dhcp_packet() -> ParsedDhcpPacket {
     ParsedDhcpPacket {
         status: WifiSdioDhcpParseStatus::NotRun,
@@ -6281,6 +6599,28 @@ fn empty_parsed_dhcp_packet() -> ParsedDhcpPacket {
         dns_server: 0,
         lease_seconds: 0,
     }
+}
+
+fn empty_parsed_arp_packet() -> ParsedArpPacket {
+    ParsedArpPacket {
+        status: WifiSdioArpParseStatus::NotRun,
+        router_mac: [0; ETHERNET_ADDRESS_BYTES],
+        router_ip_address: 0,
+    }
+}
+
+fn copy_arp_poll_to_report(poll: &ArpPollResult, report: &mut WifiSdioArpRouterReport) {
+    report.reply_poll_status = poll.status;
+    report.reply_parse_status = poll.last_parse_status;
+    report.reply_polls = poll.polls;
+    report.reply_frames_read = poll.frames_read;
+    report.reply_non_data_frames = poll.non_data_frames;
+    report.reply_non_arp_frames = poll.non_arp_frames;
+    report.router_mac_hash = checksum_bytes(&poll.packet.router_mac);
+    report.router_mac_present = !slice_all_eq(&poll.packet.router_mac, 0);
+    report.ack_status = poll.ack_status;
+    report.ack_last_error = poll.ack_last_error;
+    report.frame_last_error = poll.frame_last_error;
 }
 
 fn link_control_get_payload(
@@ -8362,6 +8702,29 @@ fn copy_bytes_to_slice(source: &[u8], destination: &mut [u8], offset: usize) {
     }
 }
 
+fn build_arp_request_frame(
+    frame: &mut [u8; ARP_ETHERNET_FRAME_BYTES],
+    mac: &[u8; ETHERNET_ADDRESS_BYTES],
+    local_ip_address: u32,
+    router_ip_address: u32,
+) {
+    clear_bytes(frame);
+
+    copy_bytes_to_slice(&ETHERNET_BROADCAST, frame, 0);
+    copy_bytes_to_slice(mac, frame, ETHERNET_ADDRESS_BYTES);
+    write_slice_be_u16(frame, 12, ARP_ETHERTYPE);
+
+    let arp_offset = ETHERNET_HEADER_BYTES;
+    write_slice_be_u16(frame, arp_offset, ARP_HARDWARE_ETHERNET);
+    write_slice_be_u16(frame, arp_offset + 2, IPV4_ETHERTYPE);
+    frame[arp_offset + 4] = ETHERNET_ADDRESS_BYTES as u8;
+    frame[arp_offset + 5] = 4;
+    write_slice_be_u16(frame, arp_offset + 6, ARP_OPERATION_REQUEST);
+    copy_bytes_to_slice(mac, frame, arp_offset + 8);
+    write_slice_be_u32(frame, arp_offset + 14, local_ip_address);
+    write_slice_be_u32(frame, arp_offset + 24, router_ip_address);
+}
+
 fn build_dhcp_discover_frame(
     frame: &mut [u8; DHCP_ETHERNET_FRAME_BYTES],
     mac: &[u8; ETHERNET_ADDRESS_BYTES],
@@ -8645,6 +9008,92 @@ fn parse_dhcp_frame(
     }
 
     packet.status = WifiSdioDhcpParseStatus::Ready;
+    packet
+}
+
+fn parse_arp_frame(
+    frame: &WifiSdioF2FrameReport,
+    bytes: &[u8],
+    copied: u16,
+    expected_local_mac: &[u8; ETHERNET_ADDRESS_BYTES],
+    expected_local_ip_address: u32,
+    expected_router_ip_address: u32,
+) -> ParsedArpPacket {
+    let mut packet = empty_parsed_arp_packet();
+    if frame.channel != SDPCM_DATA_CHANNEL {
+        packet.status = WifiSdioArpParseStatus::NonDataChannel;
+        return packet;
+    }
+
+    let copied = copied as usize;
+    let bdc_offset = frame.header_length as usize;
+    if bdc_offset + BDC_HEADER_BYTES > copied {
+        packet.status = WifiSdioArpParseStatus::BdcHeaderTooShort;
+        return packet;
+    }
+
+    let bdc_data_offset_words = bytes[bdc_offset + 3] as usize;
+    let ethernet_offset = bdc_offset + BDC_HEADER_BYTES + bdc_data_offset_words * BDC_HEADER_BYTES;
+    if ethernet_offset + ETHERNET_HEADER_BYTES > copied {
+        packet.status = WifiSdioArpParseStatus::EthernetTooShort;
+        return packet;
+    }
+
+    if read_slice_be_u16(bytes, ethernet_offset + 12) != ARP_ETHERTYPE {
+        packet.status = WifiSdioArpParseStatus::WrongEtherType;
+        return packet;
+    }
+
+    let arp_offset = ethernet_offset + ETHERNET_HEADER_BYTES;
+    if arp_offset + ARP_PACKET_BYTES > copied {
+        packet.status = WifiSdioArpParseStatus::ArpTooShort;
+        return packet;
+    }
+    if read_slice_be_u16(bytes, arp_offset) != ARP_HARDWARE_ETHERNET
+        || bytes[arp_offset + 4] != ETHERNET_ADDRESS_BYTES as u8
+    {
+        packet.status = WifiSdioArpParseStatus::WrongHardware;
+        return packet;
+    }
+    if read_slice_be_u16(bytes, arp_offset + 2) != IPV4_ETHERTYPE || bytes[arp_offset + 5] != 4 {
+        packet.status = WifiSdioArpParseStatus::WrongProtocol;
+        return packet;
+    }
+    if read_slice_be_u16(bytes, arp_offset + 6) != ARP_OPERATION_REPLY {
+        packet.status = WifiSdioArpParseStatus::WrongOperation;
+        return packet;
+    }
+
+    packet.router_ip_address = read_slice_be_u32(bytes, arp_offset + 14);
+    if packet.router_ip_address != expected_router_ip_address {
+        packet.status = WifiSdioArpParseStatus::WrongSender;
+        return packet;
+    }
+    if slice_all_eq(
+        &bytes[arp_offset + 8..arp_offset + 8 + ETHERNET_ADDRESS_BYTES],
+        0,
+    ) {
+        packet.status = WifiSdioArpParseStatus::WrongSender;
+        return packet;
+    }
+
+    let target_ip_address = read_slice_be_u32(bytes, arp_offset + 24);
+    if target_ip_address != expected_local_ip_address
+        || !slice_matches(
+            &bytes[arp_offset + 18..arp_offset + 18 + ETHERNET_ADDRESS_BYTES],
+            expected_local_mac,
+        )
+    {
+        packet.status = WifiSdioArpParseStatus::WrongTarget;
+        return packet;
+    }
+
+    copy_bytes_to_slice(
+        &bytes[arp_offset + 8..arp_offset + 8 + ETHERNET_ADDRESS_BYTES],
+        &mut packet.router_mac,
+        0,
+    );
+    packet.status = WifiSdioArpParseStatus::Ready;
     packet
 }
 
@@ -12385,6 +12834,58 @@ fn finish_dhcp_acquire_report(
     report.host_normal_int = core.normal_int_stat_r.read().bits();
     report.host_error_int = core.error_int_stat_r.read().bits();
     report.host = host_snapshot(p);
+    report
+}
+
+fn empty_arp_router_report(p: &Peripherals) -> WifiSdioArpRouterReport {
+    WifiSdioArpRouterReport {
+        status: WifiSdioArpRouterStatus::NoLease,
+        step: b"start",
+        lease_valid: false,
+        local_ip_address: 0,
+        router_ip_address: 0,
+        ht_status: WifiSdioHtRequestStatus::Timeout,
+        ht_attempts: 0,
+        ht_write_response: 0,
+        ht_read_value: 0,
+        ht_read_response: 0,
+        ht_available: false,
+        mac_status: WifiSdioLinkGetStatus::NotRun,
+        mac_hash: 0,
+        mac_nonzero: false,
+        mac_cdc_status: 0,
+        mac_cdc_length: 0,
+        request_status: WifiSdioF2ControlStatus::NotRun,
+        request_ethernet_length: 0,
+        request_ethernet_hash: 0,
+        request_packet_length: 0,
+        request_write_response: 0,
+        reply_poll_status: WifiSdioArpPollStatus::NotRun,
+        reply_parse_status: WifiSdioArpParseStatus::NotRun,
+        reply_polls: 0,
+        reply_frames_read: 0,
+        reply_non_data_frames: 0,
+        reply_non_arp_frames: 0,
+        router_mac_hash: 0,
+        router_mac_present: false,
+        router_mac_stored: false,
+        ack_status: WifiSdioInterruptAckStatus::NotRun,
+        ack_last_error: None,
+        ht_last_error: None,
+        request_last_error: None,
+        frame_last_error: None,
+        host_normal_int: 0,
+        host_error_int: 0,
+    }
+}
+
+fn finish_arp_router_report(
+    p: &Peripherals,
+    mut report: WifiSdioArpRouterReport,
+) -> WifiSdioArpRouterReport {
+    let core = &p.SDHC0.core;
+    report.host_normal_int = core.normal_int_stat_r.read().bits();
+    report.host_error_int = core.error_int_stat_r.read().bits();
     report
 }
 

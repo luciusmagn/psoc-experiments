@@ -166,6 +166,13 @@ association plus DHCP lease acquisition smoke tests while UART RX is
 unreliable. It implies `--wifi-boot-smoke`, then also runs
 `(wifi-dhcp-acquire)` at boot. Flash a non-smoke image immediately afterward.
 
+Use `tools/build-lisp.scm --wifi-arp-boot-smoke` or
+`tools/build-flash-lisp.scm --wifi-arp-boot-smoke` only for unattended Wi-Fi
+association, DHCP lease acquisition, and router ARP smoke tests while UART is
+unreliable. It implies `--wifi-dhcp-boot-smoke`, runs a UART-silent smoke path,
+and records `WIFI_ARP_BOOT_SMOKE_MARKER` in RAM for SWD inspection. Flash a
+non-smoke image immediately afterward.
+
 Use `tools/build-lisp.scm --storage-boot-smoke` or
 `tools/build-flash-lisp.scm --storage-boot-smoke` only for unattended FAT
 storage smoke tests while UART RX is unreliable. It skips automatic

@@ -4830,6 +4830,46 @@ Validated with =tools/build-lisp.scm --wifi-firmware --wifi-credentials= and
 flashed the quiet image with =tools/flash-lisp.scm=. OpenOCD verified the
 image after programming.
 
+* 2026-06-28 Wi-Fi router ARP resolution
+
+Added =(wifi-arp-router)= above the SDPCM data-channel helpers. It requires a
+stored DHCP lease, reads =cur_etheraddr= internally, sends a padded Ethernet
+ARP request for the leased router, polls data-channel frames for a matching ARP
+reply, and stores the router MAC internally for later IPv4 packet transmit. The
+Lisp report exposes only status fields, lease IP/router words, and MAC hashes,
+not raw MAC bytes.
+
+Added =(wifi-network-bootstrap)= as a compact high-level form for the eventual
+network REPL path. It runs local WPA2 association, DHCP acquisition, lease
+status, and router ARP resolution, then reports the stage statuses in one
+short association list.
+
+Added =--wifi-arp-boot-smoke= to the Chez build scripts and Cargo features. It
+uses a UART-silent smoke path because the serial console was corrupting long
+test output. The smoke image writes =WIFI_ARP_BOOT_SMOKE_MARKER= in CM4 RAM;
+for this build =arm-none-eabi-nm= resolved it to =0x08001000=.
+
+Live SWD marker read after flashing the ARP smoke image:
+
+#+begin_example
+0x08001000: 41525030 00000007 00000001 00000001 00000001 00000001 00000001 00000001
+0x08001020: 00000001 00000001 00000001 00000001 0000041e c0a8006b c0a80001 a1c99d37
+#+end_example
+
+Marker interpretation:
+
+- word 0: magic =ARP0=.
+- word 1: stage =7=, completed through ARP.
+- words 2..9: prepare, join, DHCP, lease-valid, lease-status, ARP,
+  ARP-reply-poll, and ARP-reply-parse were all ready/nonzero.
+- words 10..11: router MAC present and stored.
+- word 12: join flags =#x0000041e=.
+- words 13..14: leased IP =#xc0a8006b= and router =#xc0a80001=.
+- word 15: sanitized router MAC hash =#xa1c99d37=.
+
+After validation, rebuilt with =--wifi-firmware --wifi-credentials= and flashed
+the quiet non-smoke image. OpenOCD verified the quiet image.
+
 * 2026-06-28 FAT-backed Lisp file storage
 
 Moved the active Lisp file forms from the raw Lisp store to the FAT microSD
@@ -4898,8 +4938,9 @@ format cleared that state; afterward the quiet Wi-Fi-capable image loaded
    for obsolete =target/psoc6_2m.cfg=.
 5. Fix UART/REPL input reliability; boot smoke is only a workaround for
    unattended Wi-Fi tests.
-6. Add router ARP resolution using the stored DHCP lease.
-7. Add generic CDC ioctl/iovar helpers for firmware version, join, and link
+6. Add UDP transmit/receive on top of the DHCP lease and router ARP state.
+7. Add DNS or a fixed-IP HTTP smoke test before the network REPL protocol.
+8. Add generic CDC ioctl/iovar helpers for firmware version, join, and link
    status.
-8. Start Wi-Fi from a known-good Infineon or Zephyr sample before trying
+9. Start Wi-Fi from a known-good Infineon or Zephyr sample before trying
    to hand-port the full CYW4343W network stack.

@@ -120,6 +120,7 @@ pub trait Board {
     fn wifi_dhcp_discover(&mut self) -> WifiSdioDhcpDiscoverReport;
     fn wifi_dhcp_acquire(&mut self) -> WifiSdioDhcpAcquireReport;
     fn wifi_lease_status(&mut self) -> WifiSdioLeaseStatusReport;
+    fn wifi_arp_router(&mut self) -> WifiSdioArpRouterReport;
     fn wifi_load_clm(&mut self) -> WifiSdioClmLoadReport;
     fn wifi_get_country(&mut self) -> WifiSdioCountryReport;
     fn wifi_set_country(&mut self, country_code: [u8; 2], revision: i32) -> WifiSdioCountryReport;
@@ -992,6 +993,95 @@ pub struct WifiSdioLeaseStatusReport {
 }
 
 #[derive(Clone, Copy)]
+pub struct WifiSdioArpRouterReport {
+    pub status: &'static [u8],
+    pub step: &'static [u8],
+    pub lease_valid: bool,
+    pub local_ip_address: u32,
+    pub router_ip_address: u32,
+    pub ht_status: &'static [u8],
+    pub ht_attempts: u16,
+    pub ht_write_response: u32,
+    pub ht_read_value: u8,
+    pub ht_read_response: u32,
+    pub ht_available: bool,
+    pub mac_status: &'static [u8],
+    pub mac_hash: u32,
+    pub mac_present: bool,
+    pub mac_cdc_status: u32,
+    pub mac_cdc_length: u32,
+    pub request_status: &'static [u8],
+    pub request_ethernet_length: u16,
+    pub request_ethernet_hash: u32,
+    pub request_packet_length: u16,
+    pub request_write_response: u32,
+    pub reply_poll_status: &'static [u8],
+    pub reply_parse_status: &'static [u8],
+    pub reply_polls: u8,
+    pub reply_frames_read: u8,
+    pub reply_non_data_frames: u8,
+    pub reply_non_arp_frames: u8,
+    pub router_mac_hash: u32,
+    pub router_mac_present: bool,
+    pub router_mac_stored: bool,
+    pub ack_status: &'static [u8],
+    pub ack_last_error: Option<WifiSdioCommandErrorReport>,
+    pub ht_last_error: Option<WifiSdioCommandErrorReport>,
+    pub request_last_error: Option<WifiSdioCommandErrorReport>,
+    pub frame_last_error: Option<WifiSdioCommandErrorReport>,
+    pub host_normal_int: u16,
+    pub host_error_int: u16,
+}
+
+#[derive(Clone, Copy)]
+pub struct WifiNetworkBootstrapReport {
+    pub status: &'static [u8],
+    pub step: &'static [u8],
+    pub prepare_status: &'static [u8],
+    pub join_status: &'static [u8],
+    pub join_flags: u32,
+    pub dhcp_status: &'static [u8],
+    pub lease_status: &'static [u8],
+    pub lease_valid: bool,
+    pub local_ip_address: u32,
+    pub router_ip_address: u32,
+    pub arp_status: &'static [u8],
+    pub arp_reply_poll_status: &'static [u8],
+    pub arp_reply_parse_status: &'static [u8],
+    pub router_mac_hash: u32,
+    pub router_mac_present: bool,
+    pub router_mac_stored: bool,
+}
+
+impl WifiNetworkBootstrapReport {
+    fn new() -> Self {
+        Self {
+            status: STATUS_NOT_RUN,
+            step: b"start",
+            prepare_status: STATUS_NOT_RUN,
+            join_status: STATUS_NOT_RUN,
+            join_flags: 0,
+            dhcp_status: STATUS_NOT_RUN,
+            lease_status: STATUS_NOT_RUN,
+            lease_valid: false,
+            local_ip_address: 0,
+            router_ip_address: 0,
+            arp_status: STATUS_NOT_RUN,
+            arp_reply_poll_status: STATUS_NOT_RUN,
+            arp_reply_parse_status: STATUS_NOT_RUN,
+            router_mac_hash: 0,
+            router_mac_present: false,
+            router_mac_stored: false,
+        }
+    }
+
+    fn mark_failed(&mut self, step: &'static [u8]) {
+        self.status = STATUS_STEP_FAILED;
+        self.step = step;
+    }
+}
+
+#[derive(Clone, Copy)]
 pub struct WifiSdioClmLoadReport {
     pub status: &'static [u8],
     pub ht_status: &'static [u8],
@@ -1624,6 +1714,8 @@ pub enum Primitive {
     WifiDhcpDiscover,
     WifiDhcpAcquire,
     WifiLeaseStatus,
+    WifiArpRouter,
+    WifiNetworkBootstrap,
     WifiLoadClm,
     WifiGetCountry,
     WifiSetCountry,
@@ -1737,6 +1829,8 @@ impl Primitive {
             Self::WifiDhcpDiscover => "wifi-dhcp-discover",
             Self::WifiDhcpAcquire => "wifi-dhcp-acquire",
             Self::WifiLeaseStatus => "wifi-lease-status",
+            Self::WifiArpRouter => "wifi-arp-router",
+            Self::WifiNetworkBootstrap => "wifi-network-bootstrap",
             Self::WifiLoadClm => "wifi-load-clm",
             Self::WifiGetCountry => "wifi-get-country",
             Self::WifiSetCountry => "wifi-set-country",
@@ -2018,6 +2112,8 @@ impl Machine {
         self.install_primitive(b"wifi-dhcp-discover", Primitive::WifiDhcpDiscover)?;
         self.install_primitive(b"wifi-dhcp-acquire", Primitive::WifiDhcpAcquire)?;
         self.install_primitive(b"wifi-lease-status", Primitive::WifiLeaseStatus)?;
+        self.install_primitive(b"wifi-arp-router", Primitive::WifiArpRouter)?;
+        self.install_primitive(b"wifi-network-bootstrap", Primitive::WifiNetworkBootstrap)?;
         self.install_primitive(b"wifi-load-clm", Primitive::WifiLoadClm)?;
         self.install_primitive(b"wifi-get-country", Primitive::WifiGetCountry)?;
         self.install_primitive(b"wifi-set-country", Primitive::WifiSetCountry)?;
@@ -2931,6 +3027,14 @@ impl Machine {
             Primitive::WifiLeaseStatus => {
                 self.expect_count(args, 0)?;
                 self.wifi_sdio_lease_status_report(board.wifi_lease_status())
+            }
+            Primitive::WifiArpRouter => {
+                self.expect_count(args, 0)?;
+                self.wifi_sdio_arp_router_report(board.wifi_arp_router())
+            }
+            Primitive::WifiNetworkBootstrap => {
+                self.expect_count(args, 0)?;
+                self.wifi_network_bootstrap(board)
             }
             Primitive::WifiLoadClm => {
                 self.expect_count(args, 0)?;
@@ -4957,6 +5061,218 @@ impl Machine {
             lease_seconds,
             host_normal_int,
             host_error_int,
+        ];
+        self.make_list_from_values(&entries)
+    }
+
+    fn wifi_sdio_arp_router_report(
+        &mut self,
+        report: WifiSdioArpRouterReport,
+    ) -> LispResult<Value> {
+        let status = self.symbol_entry(b"status", report.status)?;
+        let step = self.symbol_entry(b"step", report.step)?;
+        let lease_valid = self.bool_entry(b"lease.valid", report.lease_valid)?;
+        let local_ip_address = self.word_entry(b"lease.ip", report.local_ip_address)?;
+        let router_ip_address = self.word_entry(b"lease.router", report.router_ip_address)?;
+        let ht_status = self.symbol_entry(b"ht.status", report.ht_status)?;
+        let ht_attempts = self.word_entry(b"ht.attempts", report.ht_attempts as u32)?;
+        let ht_write_response = self.word_entry(b"ht.write-response", report.ht_write_response)?;
+        let ht_read_value = self.word_entry(b"ht.read-value", report.ht_read_value as u32)?;
+        let ht_read_response = self.word_entry(b"ht.read-response", report.ht_read_response)?;
+        let ht_available = self.bool_entry(b"ht.available", report.ht_available)?;
+        let mac_status = self.symbol_entry(b"mac.status", report.mac_status)?;
+        let mac_hash = self.word_entry(b"mac.hash", report.mac_hash)?;
+        let mac_present = self.bool_entry(b"mac.present", report.mac_present)?;
+        let mac_cdc_status = self.word_entry(b"mac.cdc.status", report.mac_cdc_status)?;
+        let mac_cdc_length = self.word_entry(b"mac.cdc.length", report.mac_cdc_length)?;
+        let request_status = self.symbol_entry(b"request.status", report.request_status)?;
+        let request_ethernet_length = self.word_entry(
+            b"request.ethernet-length",
+            report.request_ethernet_length as u32,
+        )?;
+        let request_ethernet_hash =
+            self.word_entry(b"request.ethernet-hash", report.request_ethernet_hash)?;
+        let request_packet_length = self.word_entry(
+            b"request.packet-length",
+            report.request_packet_length as u32,
+        )?;
+        let request_write_response =
+            self.word_entry(b"request.write-response", report.request_write_response)?;
+        let reply_poll_status =
+            self.symbol_entry(b"reply.poll.status", report.reply_poll_status)?;
+        let reply_parse_status =
+            self.symbol_entry(b"reply.parse.status", report.reply_parse_status)?;
+        let reply_polls = self.word_entry(b"reply.polls", report.reply_polls as u32)?;
+        let reply_frames_read =
+            self.word_entry(b"reply.frames-read", report.reply_frames_read as u32)?;
+        let reply_non_data_frames = self.word_entry(
+            b"reply.non-data-frames",
+            report.reply_non_data_frames as u32,
+        )?;
+        let reply_non_arp_frames =
+            self.word_entry(b"reply.non-arp-frames", report.reply_non_arp_frames as u32)?;
+        let router_mac_hash = self.word_entry(b"router.mac.hash", report.router_mac_hash)?;
+        let router_mac_present =
+            self.bool_entry(b"router.mac.present", report.router_mac_present)?;
+        let router_mac_stored = self.bool_entry(b"router.mac.stored", report.router_mac_stored)?;
+        let ack_status = self.symbol_entry(b"ack.status", report.ack_status)?;
+        let host_normal_int = self.word_entry(b"HOST.NORM_INT", report.host_normal_int as u32)?;
+        let host_error_int = self.word_entry(b"HOST.ERR_INT", report.host_error_int as u32)?;
+        let ack_last_error =
+            self.wifi_sdio_error_entry(b"ack.last-error", report.ack_last_error)?;
+        let ht_last_error = self.wifi_sdio_error_entry(b"ht.last-error", report.ht_last_error)?;
+        let request_last_error =
+            self.wifi_sdio_error_entry(b"request.last-error", report.request_last_error)?;
+        let frame_last_error =
+            self.wifi_sdio_error_entry(b"frame.last-error", report.frame_last_error)?;
+        let entries = [
+            status,
+            step,
+            lease_valid,
+            local_ip_address,
+            router_ip_address,
+            ht_status,
+            ht_attempts,
+            ht_write_response,
+            ht_read_value,
+            ht_read_response,
+            ht_available,
+            mac_status,
+            mac_hash,
+            mac_present,
+            mac_cdc_status,
+            mac_cdc_length,
+            request_status,
+            request_ethernet_length,
+            request_ethernet_hash,
+            request_packet_length,
+            request_write_response,
+            reply_poll_status,
+            reply_parse_status,
+            reply_polls,
+            reply_frames_read,
+            reply_non_data_frames,
+            reply_non_arp_frames,
+            router_mac_hash,
+            router_mac_present,
+            router_mac_stored,
+            ack_status,
+            host_normal_int,
+            host_error_int,
+            ack_last_error,
+            ht_last_error,
+            request_last_error,
+            frame_last_error,
+        ];
+        self.make_list_from_values(&entries)
+    }
+
+    fn wifi_network_bootstrap<B: Board>(&mut self, board: &mut B) -> LispResult<Value> {
+        let mut report = WifiNetworkBootstrapReport::new();
+        let ssid =
+            string_bytes_from_slice(wifi_credentials::local_ssid(), "local wifi ssid missing")?;
+        let passphrase = string_bytes_from_slice(
+            wifi_credentials::local_passphrase(),
+            "local wifi passphrase missing",
+        )?;
+
+        report.step = b"wifi-prepare-join";
+        let prepare = board.wifi_prepare_join();
+        report.prepare_status = prepare.status;
+        if !status_ready(prepare.status) {
+            report.mark_failed(b"wifi-prepare-join");
+            return self.wifi_network_bootstrap_report(report);
+        }
+
+        report.step = b"wifi-join-wpa2";
+        let join = board.wifi_join_wpa2(ssid, passphrase);
+        report.join_status = join.status;
+        report.join_flags = join.join_flags;
+        if !status_ready(join.status) {
+            report.mark_failed(b"wifi-join-wpa2");
+            return self.wifi_network_bootstrap_report(report);
+        }
+
+        report.step = b"wifi-dhcp-acquire";
+        let dhcp = board.wifi_dhcp_acquire();
+        report.dhcp_status = dhcp.status;
+        report.lease_valid = dhcp.lease_valid;
+        report.local_ip_address = dhcp.leased_ip_address;
+        report.router_ip_address = dhcp.router;
+        if !status_ready(dhcp.status) {
+            report.mark_failed(b"wifi-dhcp-acquire");
+            return self.wifi_network_bootstrap_report(report);
+        }
+
+        report.step = b"wifi-lease-status";
+        let lease = board.wifi_lease_status();
+        report.lease_status = lease.status;
+        report.lease_valid = lease.lease_valid;
+        report.local_ip_address = lease.ip_address;
+        report.router_ip_address = lease.router;
+        if !status_ready(lease.status) {
+            report.mark_failed(b"wifi-lease-status");
+            return self.wifi_network_bootstrap_report(report);
+        }
+
+        report.step = b"wifi-arp-router";
+        let arp = board.wifi_arp_router();
+        report.arp_status = arp.status;
+        report.arp_reply_poll_status = arp.reply_poll_status;
+        report.arp_reply_parse_status = arp.reply_parse_status;
+        report.router_mac_hash = arp.router_mac_hash;
+        report.router_mac_present = arp.router_mac_present;
+        report.router_mac_stored = arp.router_mac_stored;
+        if !status_ready(arp.status) {
+            report.mark_failed(b"wifi-arp-router");
+            return self.wifi_network_bootstrap_report(report);
+        }
+
+        report.status = STATUS_READY;
+        report.step = STEP_DONE;
+        self.wifi_network_bootstrap_report(report)
+    }
+
+    fn wifi_network_bootstrap_report(
+        &mut self,
+        report: WifiNetworkBootstrapReport,
+    ) -> LispResult<Value> {
+        let status = self.symbol_entry(b"status", report.status)?;
+        let step = self.symbol_entry(b"step", report.step)?;
+        let prepare_status = self.symbol_entry(b"prepare.status", report.prepare_status)?;
+        let join_status = self.symbol_entry(b"join.status", report.join_status)?;
+        let join_flags = self.word_entry(b"join.flags", report.join_flags)?;
+        let dhcp_status = self.symbol_entry(b"dhcp.status", report.dhcp_status)?;
+        let lease_status = self.symbol_entry(b"lease.status", report.lease_status)?;
+        let lease_valid = self.bool_entry(b"lease.valid", report.lease_valid)?;
+        let local_ip_address = self.word_entry(b"lease.ip", report.local_ip_address)?;
+        let router_ip_address = self.word_entry(b"lease.router", report.router_ip_address)?;
+        let arp_status = self.symbol_entry(b"arp.status", report.arp_status)?;
+        let arp_reply_poll_status =
+            self.symbol_entry(b"arp.reply.poll.status", report.arp_reply_poll_status)?;
+        let arp_reply_parse_status =
+            self.symbol_entry(b"arp.reply.parse.status", report.arp_reply_parse_status)?;
+        let router_mac_hash = self.word_entry(b"router.mac.hash", report.router_mac_hash)?;
+        let router_mac_present =
+            self.bool_entry(b"router.mac.present", report.router_mac_present)?;
+        let router_mac_stored = self.bool_entry(b"router.mac.stored", report.router_mac_stored)?;
+        let entries = [
+            status,
+            step,
+            prepare_status,
+            join_status,
+            join_flags,
+            dhcp_status,
+            lease_status,
+            lease_valid,
+            local_ip_address,
+            router_ip_address,
+            arp_status,
+            arp_reply_poll_status,
+            arp_reply_parse_status,
+            router_mac_hash,
+            router_mac_present,
+            router_mac_stored,
         ];
         self.make_list_from_values(&entries)
     }

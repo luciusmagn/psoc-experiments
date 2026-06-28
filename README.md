@@ -69,7 +69,11 @@ presence fields, short fingerprints, RSSI, and CDC status values.
 reports sanitized packet metadata. `(wifi-dhcp-acquire)` sends Discover,
 parses Offer, sends Request, parses Ack, and stores the lease fields in the
 Wi-Fi state for later network primitives. `(wifi-lease-status)` returns the
-stored lease fields without sending SDIO traffic.
+stored lease fields without sending SDIO traffic. `(wifi-arp-router)` uses the
+stored lease to resolve the router MAC and stores it internally while reporting
+only sanitized status fields and a MAC hash. `(wifi-network-bootstrap)` runs
+local association, DHCP, lease status, and router ARP resolution as one compact
+high-level form.
 
 For unattended Wi-Fi association and link-status smoke testing on the flaky
 UART RX path:
@@ -92,6 +96,18 @@ tools/flash-lisp.scm
 
 `--wifi-dhcp-boot-smoke` implies `--wifi-boot-smoke` and additionally runs
 `(wifi-dhcp-acquire)` at boot. Flash a non-smoke image afterward.
+
+For unattended Wi-Fi association, DHCP, and router ARP smoke testing:
+
+```sh
+tools/build-lisp.scm --wifi-arp-boot-smoke
+tools/flash-lisp.scm
+```
+
+`--wifi-arp-boot-smoke` implies `--wifi-dhcp-boot-smoke`. It runs a
+UART-silent smoke path and records a RAM marker named
+`WIFI_ARP_BOOT_SMOKE_MARKER` for SWD inspection. Flash a non-smoke image
+afterward.
 
 For microSD-backed Lisp files, the active `save-file`, `read-file`, `load`,
 `ls`, and `cat` forms use the FAT root directory. The firmware accepts Lisp

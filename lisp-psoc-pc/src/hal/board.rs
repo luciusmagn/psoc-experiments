@@ -568,6 +568,13 @@ impl lisp::Board for PsocBoard<'_> {
         ))
     }
 
+    fn wifi_arp_router(&mut self) -> lisp::WifiSdioArpRouterReport {
+        wifi_sdio_arp_router_report(wifi_sdio::arp_router(
+            self.p,
+            &mut self.state.wifi_control_state,
+        ))
+    }
+
     fn wifi_load_clm(&mut self) -> lisp::WifiSdioClmLoadReport {
         wifi_sdio_clm_load_report(wifi_sdio::load_clm(
             self.p,
@@ -1280,6 +1287,49 @@ fn wifi_sdio_lease_status(status: wifi_sdio::WifiSdioLeaseStatus) -> &'static [u
     match status {
         wifi_sdio::WifiSdioLeaseStatus::Ready => b"ready",
         wifi_sdio::WifiSdioLeaseStatus::NoLease => b"no-lease",
+    }
+}
+
+fn wifi_sdio_arp_router_status(status: wifi_sdio::WifiSdioArpRouterStatus) -> &'static [u8] {
+    match status {
+        wifi_sdio::WifiSdioArpRouterStatus::Ready => b"ready",
+        wifi_sdio::WifiSdioArpRouterStatus::NoLease => b"no-lease",
+        wifi_sdio::WifiSdioArpRouterStatus::LeaseMissingAddress => b"lease-missing-address",
+        wifi_sdio::WifiSdioArpRouterStatus::HtRequestFailed => b"ht-request-failed",
+        wifi_sdio::WifiSdioArpRouterStatus::MacReadFailed => b"mac-read-failed",
+        wifi_sdio::WifiSdioArpRouterStatus::MacMissing => b"mac-missing",
+        wifi_sdio::WifiSdioArpRouterStatus::RequestSendFailed => b"request-send-failed",
+        wifi_sdio::WifiSdioArpRouterStatus::ReplyPollFailed => b"reply-poll-failed",
+        wifi_sdio::WifiSdioArpRouterStatus::ReplyTimeout => b"reply-timeout",
+    }
+}
+
+fn wifi_sdio_arp_poll_status(status: wifi_sdio::WifiSdioArpPollStatus) -> &'static [u8] {
+    match status {
+        wifi_sdio::WifiSdioArpPollStatus::NotRun => b"not-run",
+        wifi_sdio::WifiSdioArpPollStatus::Ready => b"ready",
+        wifi_sdio::WifiSdioArpPollStatus::Timeout => b"timeout",
+        wifi_sdio::WifiSdioArpPollStatus::AckFailed => b"ack-failed",
+        wifi_sdio::WifiSdioArpPollStatus::FrameReadFailed => b"frame-read-failed",
+        wifi_sdio::WifiSdioArpPollStatus::InvalidFrame => b"invalid-frame",
+    }
+}
+
+fn wifi_sdio_arp_parse_status(status: wifi_sdio::WifiSdioArpParseStatus) -> &'static [u8] {
+    match status {
+        wifi_sdio::WifiSdioArpParseStatus::NotRun => b"not-run",
+        wifi_sdio::WifiSdioArpParseStatus::Ready => b"ready",
+        wifi_sdio::WifiSdioArpParseStatus::EmptyFrame => b"empty-frame",
+        wifi_sdio::WifiSdioArpParseStatus::NonDataChannel => b"non-data-channel",
+        wifi_sdio::WifiSdioArpParseStatus::BdcHeaderTooShort => b"bdc-header-too-short",
+        wifi_sdio::WifiSdioArpParseStatus::EthernetTooShort => b"ethernet-too-short",
+        wifi_sdio::WifiSdioArpParseStatus::WrongEtherType => b"wrong-ethertype",
+        wifi_sdio::WifiSdioArpParseStatus::ArpTooShort => b"arp-too-short",
+        wifi_sdio::WifiSdioArpParseStatus::WrongHardware => b"wrong-hardware",
+        wifi_sdio::WifiSdioArpParseStatus::WrongProtocol => b"wrong-protocol",
+        wifi_sdio::WifiSdioArpParseStatus::WrongOperation => b"wrong-operation",
+        wifi_sdio::WifiSdioArpParseStatus::WrongSender => b"wrong-sender",
+        wifi_sdio::WifiSdioArpParseStatus::WrongTarget => b"wrong-target",
     }
 }
 
@@ -2080,6 +2130,52 @@ fn wifi_sdio_lease_status_report(
         dns_server: report.dns_server,
         server_identifier: report.server_identifier,
         lease_seconds: report.lease_seconds,
+        host_normal_int: report.host_normal_int,
+        host_error_int: report.host_error_int,
+    }
+}
+
+fn wifi_sdio_arp_router_report(
+    report: wifi_sdio::WifiSdioArpRouterReport,
+) -> lisp::WifiSdioArpRouterReport {
+    lisp::WifiSdioArpRouterReport {
+        status: wifi_sdio_arp_router_status(report.status),
+        step: report.step,
+        lease_valid: report.lease_valid,
+        local_ip_address: report.local_ip_address,
+        router_ip_address: report.router_ip_address,
+        ht_status: wifi_sdio_ht_request_status(report.ht_status),
+        ht_attempts: report.ht_attempts,
+        ht_write_response: report.ht_write_response,
+        ht_read_value: report.ht_read_value,
+        ht_read_response: report.ht_read_response,
+        ht_available: report.ht_available,
+        mac_status: wifi_sdio_link_get_status(report.mac_status),
+        mac_hash: report.mac_hash,
+        mac_present: report.mac_nonzero,
+        mac_cdc_status: report.mac_cdc_status,
+        mac_cdc_length: report.mac_cdc_length,
+        request_status: wifi_sdio_f2_control_status(report.request_status),
+        request_ethernet_length: report.request_ethernet_length,
+        request_ethernet_hash: report.request_ethernet_hash,
+        request_packet_length: report.request_packet_length,
+        request_write_response: report.request_write_response,
+        reply_poll_status: wifi_sdio_arp_poll_status(report.reply_poll_status),
+        reply_parse_status: wifi_sdio_arp_parse_status(report.reply_parse_status),
+        reply_polls: report.reply_polls,
+        reply_frames_read: report.reply_frames_read,
+        reply_non_data_frames: report.reply_non_data_frames,
+        reply_non_arp_frames: report.reply_non_arp_frames,
+        router_mac_hash: report.router_mac_hash,
+        router_mac_present: report.router_mac_present,
+        router_mac_stored: report.router_mac_stored,
+        ack_status: wifi_sdio_interrupt_ack_status(report.ack_status),
+        ack_last_error: report.ack_last_error.map(wifi_sdio_command_error_report),
+        ht_last_error: report.ht_last_error.map(wifi_sdio_command_error_report),
+        request_last_error: report
+            .request_last_error
+            .map(wifi_sdio_command_error_report),
+        frame_last_error: report.frame_last_error.map(wifi_sdio_command_error_report),
         host_normal_int: report.host_normal_int,
         host_error_int: report.host_error_int,
     }

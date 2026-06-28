@@ -18,6 +18,7 @@ wifi-firmware-blob = []
 wifi-local-credentials = []
 wifi-boot-smoke = []
 wifi-dhcp-boot-smoke = ["wifi-boot-smoke"]
+wifi-arp-boot-smoke = ["wifi-dhcp-boot-smoke"]
 storage-boot-smoke = []
 storage-format-boot-smoke = ["storage-boot-smoke"]
 

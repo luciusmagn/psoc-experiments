@@ -25,12 +25,18 @@ const WIFI_BOOT_SMOKE_FORMS: [&[u8]; 3] = [
     b"(wifi-link-status)",
 ];
 #[cfg(feature = "wifi-dhcp-boot-smoke")]
+#[cfg(not(feature = "wifi-arp-boot-smoke"))]
 const WIFI_BOOT_SMOKE_FORMS: [&[u8]; 4] = [
     b"(console-echo off)",
     b"(wifi-connect-local)",
     b"(wifi-link-status)",
     b"(wifi-dhcp-acquire)",
 ];
+#[cfg(feature = "wifi-arp-boot-smoke")]
+const WIFI_ARP_BOOT_SMOKE_MAGIC: u32 = 0x4152_5030;
+#[cfg(feature = "wifi-arp-boot-smoke")]
+#[no_mangle]
+pub static mut WIFI_ARP_BOOT_SMOKE_MARKER: [u32; 16] = [0; 16];
 #[cfg(feature = "storage-boot-smoke")]
 const STORAGE_BOOT_SMOKE_FORMS: [&[u8]; 4] = [
     b"(save-file \"boot.lisp\" \"(+ 40 2)\")",
@@ -166,6 +172,7 @@ fn main() -> ! {
 }
 
 #[cfg(feature = "wifi-boot-smoke")]
+#[cfg(not(feature = "wifi-arp-boot-smoke"))]
 fn run_wifi_boot_smoke<B: lisp::Board, W: Write>(
     machine: &mut lisp::Machine,
     board: &mut B,
@@ -179,6 +186,140 @@ fn run_wifi_boot_smoke<B: lisp::Board, W: Write>(
         machine.eval_line(form, board, output)?;
     }
     writeln!(output, "wifi boot smoke: done")
+}
+
+#[cfg(feature = "wifi-arp-boot-smoke")]
+fn run_wifi_boot_smoke<B: lisp::Board, W: Write>(
+    _machine: &mut lisp::Machine,
+    board: &mut B,
+    _output: &mut W,
+) -> fmt::Result {
+    clear_wifi_arp_boot_smoke_marker();
+    write_wifi_arp_boot_smoke_marker(0, WIFI_ARP_BOOT_SMOKE_MAGIC);
+    write_wifi_arp_boot_smoke_marker(1, 1);
+
+    let ssid = match static_string_bytes(wifi_credentials::local_ssid()) {
+        Some(value) => value,
+        None => {
+            write_wifi_arp_boot_smoke_marker(1, 0xe001);
+            return Ok(());
+        }
+    };
+    let passphrase = match static_string_bytes(wifi_credentials::local_passphrase()) {
+        Some(value) => value,
+        None => {
+            write_wifi_arp_boot_smoke_marker(1, 0xe002);
+            return Ok(());
+        }
+    };
+
+    let prepare = board.wifi_prepare_join();
+    write_wifi_arp_boot_smoke_marker(1, 2);
+    write_wifi_arp_boot_smoke_marker(2, status_word(prepare.status));
+    if !status_ready(prepare.status) {
+        return Ok(());
+    }
+
+    let join = board.wifi_join_wpa2(ssid, passphrase);
+    write_wifi_arp_boot_smoke_marker(1, 3);
+    write_wifi_arp_boot_smoke_marker(3, status_word(join.status));
+    write_wifi_arp_boot_smoke_marker(12, join.join_flags);
+    if !status_ready(join.status) {
+        return Ok(());
+    }
+
+    let dhcp = board.wifi_dhcp_acquire();
+    write_wifi_arp_boot_smoke_marker(1, 4);
+    write_wifi_arp_boot_smoke_marker(4, status_word(dhcp.status));
+    write_wifi_arp_boot_smoke_marker(5, bool_word(dhcp.lease_valid));
+    write_wifi_arp_boot_smoke_marker(13, dhcp.leased_ip_address);
+    write_wifi_arp_boot_smoke_marker(14, dhcp.router);
+    if !status_ready(dhcp.status) {
+        return Ok(());
+    }
+
+    let lease = board.wifi_lease_status();
+    write_wifi_arp_boot_smoke_marker(1, 5);
+    write_wifi_arp_boot_smoke_marker(6, status_word(lease.status));
+    write_wifi_arp_boot_smoke_marker(5, bool_word(lease.lease_valid));
+    write_wifi_arp_boot_smoke_marker(13, lease.ip_address);
+    write_wifi_arp_boot_smoke_marker(14, lease.router);
+    if !status_ready(lease.status) {
+        return Ok(());
+    }
+
+    let arp = board.wifi_arp_router();
+    write_wifi_arp_boot_smoke_marker(1, 6);
+    write_wifi_arp_boot_smoke_marker(7, status_word(arp.status));
+    write_wifi_arp_boot_smoke_marker(8, status_word(arp.reply_poll_status));
+    write_wifi_arp_boot_smoke_marker(9, status_word(arp.reply_parse_status));
+    write_wifi_arp_boot_smoke_marker(10, bool_word(arp.router_mac_present));
+    write_wifi_arp_boot_smoke_marker(11, bool_word(arp.router_mac_stored));
+    write_wifi_arp_boot_smoke_marker(15, arp.router_mac_hash);
+    if !status_ready(arp.status) {
+        return Ok(());
+    }
+
+    write_wifi_arp_boot_smoke_marker(1, 7);
+    Ok(())
+}
+
+#[cfg(feature = "wifi-arp-boot-smoke")]
+fn static_string_bytes(bytes: &[u8]) -> Option<lisp::StringBytes> {
+    if bytes.is_empty() || bytes.len() > lisp::MAX_STRING_BYTES {
+        return None;
+    }
+
+    let mut value = lisp::StringBytes {
+        len: bytes.len() as u8,
+        bytes: [0; lisp::MAX_STRING_BYTES],
+    };
+    let mut index = 0usize;
+    while index < bytes.len() {
+        value.bytes[index] = bytes[index];
+        index += 1;
+    }
+    Some(value)
+}
+
+#[cfg(feature = "wifi-arp-boot-smoke")]
+fn status_ready(status: &[u8]) -> bool {
+    status == b"ready"
+}
+
+#[cfg(feature = "wifi-arp-boot-smoke")]
+fn status_word(status: &[u8]) -> u32 {
+    bool_word(status_ready(status))
+}
+
+#[cfg(feature = "wifi-arp-boot-smoke")]
+fn bool_word(value: bool) -> u32 {
+    if value {
+        1
+    } else {
+        0
+    }
+}
+
+#[cfg(feature = "wifi-arp-boot-smoke")]
+fn clear_wifi_arp_boot_smoke_marker() {
+    let mut index = 0usize;
+    while index < 16 {
+        write_wifi_arp_boot_smoke_marker(index, 0);
+        index += 1;
+    }
+}
+
+#[cfg(feature = "wifi-arp-boot-smoke")]
+fn write_wifi_arp_boot_smoke_marker(index: usize, value: u32) {
+    if index >= 16 {
+        return;
+    }
+
+    unsafe {
+        let marker = core::ptr::addr_of_mut!(WIFI_ARP_BOOT_SMOKE_MARKER).cast::<u32>();
+        core::ptr::write_volatile(marker.add(index), value);
+    }
 }
 
 #[cfg(feature = "storage-boot-smoke")]
