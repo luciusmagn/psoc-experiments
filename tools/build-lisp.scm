@@ -20,7 +20,7 @@
   (say "--wifi-credentials includes ignored local SSID/passphrase blobs in the CM4 image.")
   (say "--wifi-boot-smoke runs local connect and link-status forms at boot.")
   (say "  It implies --wifi-firmware and --wifi-credentials.")
-  (say "--wifi-dhcp-boot-smoke also runs wifi-dhcp-discover at boot.")
+  (say "--wifi-dhcp-boot-smoke also runs wifi-dhcp-acquire at boot.")
   (say "  It implies --wifi-boot-smoke.")
   (say "--storage-boot-smoke runs FAT save/read/list/load forms at boot.")
   (say "--storage-format-boot-smoke formats FAT32 before the storage smoke.")

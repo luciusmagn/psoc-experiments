@@ -4751,6 +4751,58 @@ flashed the non-smoke image. The first restore flash hit a transient CMSIS-DAP
 command mismatch during programming; rerunning =tools/flash-lisp.scm= succeeded
 and verified the non-smoke image.
 
+* 2026-06-28 Wi-Fi DHCP lease acquisition
+
+Added =(wifi-dhcp-acquire)= above the SDPCM data-channel send/receive helpers.
+It:
+
+1. Reads =cur_etheraddr= internally without printing raw MAC bytes.
+2. Sends DHCP Discover.
+3. Polls SDPCM data-channel frames for a matching DHCP Offer.
+4. Sends DHCP Request with the offered address and server identifier.
+5. Polls for DHCP Ack or Nak.
+6. Stores the lease fields in =WifiSdioControlState= for later UDP/TCP/DNS
+   primitives.
+
+The DHCP frame parser accepts only data-channel frames, skips the BDC header and
+BDC data offset, checks IPv4/UDP server port 67 to client port 68, matches the
+transaction id, and matches the client hardware address. It extracts DHCP
+message type, offered/leased address, server identifier, subnet mask, router,
+DNS server, and lease time.
+
+The =--wifi-dhcp-boot-smoke= feature now runs:
+
+#+begin_example
+(console-echo off)
+(wifi-connect-local)
+(wifi-link-status)
+(wifi-dhcp-acquire)
+#+end_example
+
+Live smoke on the current network completed the DHCP state machine. The serial
+log is still damaged during long output, but the readable fields included:
+
+#+begin_example
+boot> (wifi-dhcp-acquire)
+=> ((status . ready)
+    ...
+    (discover.status . ready)
+    (offer.poll.status . ready)
+    (offer.parse.status . ready)
+    (offer.message-type . #x00000002)
+    (request.status . ready)
+    (request.packet-length . #x00000166)
+    (request.write-response . #x00001000)
+    (ack.poll.status . ready)
+    (ack.parse.status . ready)
+    (ack.message-type . #x00000005)
+    (lease.valid . #t)
+    (ack.status . ready))
+#+end_example
+
+After the smoke test, rebuilt with =--wifi-firmware --wifi-credentials= and
+flashed the non-smoke image. OpenOCD verified the quiet image.
+
 * 2026-06-28 FAT-backed Lisp file storage
 
 Moved the active Lisp file forms from the raw Lisp store to the FAT microSD
@@ -4819,7 +4871,7 @@ format cleared that state; afterward the quiet Wi-Fi-capable image loaded
    for obsolete =target/psoc6_2m.cfg=.
 5. Fix UART/REPL input reliability; boot smoke is only a workaround for
    unattended Wi-Fi tests.
-6. Parse DHCP offers and record a lease after =(wifi-dhcp-discover)=.
+6. Add a compact =(wifi-lease-status)= report to avoid long UART output.
 7. Add generic CDC ioctl/iovar helpers for firmware version, join, and link
    status.
 8. Start Wi-Fi from a known-good Infineon or Zephyr sample before trying

@@ -118,6 +118,7 @@ pub trait Board {
     fn wifi_get_mpc(&mut self) -> WifiSdioGetMpcReport;
     fn wifi_link_status(&mut self) -> WifiSdioLinkStatusReport;
     fn wifi_dhcp_discover(&mut self) -> WifiSdioDhcpDiscoverReport;
+    fn wifi_dhcp_acquire(&mut self) -> WifiSdioDhcpAcquireReport;
     fn wifi_load_clm(&mut self) -> WifiSdioClmLoadReport;
     fn wifi_get_country(&mut self) -> WifiSdioCountryReport;
     fn wifi_set_country(&mut self, country_code: [u8; 2], revision: i32) -> WifiSdioCountryReport;
@@ -921,6 +922,60 @@ pub struct WifiSdioDhcpDiscoverReport {
 }
 
 #[derive(Clone, Copy)]
+pub struct WifiSdioDhcpAcquireReport {
+    pub status: &'static [u8],
+    pub step: &'static [u8],
+    pub ht_status: &'static [u8],
+    pub ht_attempts: u16,
+    pub ht_write_response: u32,
+    pub ht_read_value: u8,
+    pub ht_read_response: u32,
+    pub ht_available: bool,
+    pub mac_status: &'static [u8],
+    pub mac_hash: u32,
+    pub mac_present: bool,
+    pub mac_cdc_status: u32,
+    pub mac_cdc_length: u32,
+    pub transaction_id: u32,
+    pub discover_status: &'static [u8],
+    pub discover_packet_length: u16,
+    pub discover_write_response: u32,
+    pub offer_poll_status: &'static [u8],
+    pub offer_parse_status: &'static [u8],
+    pub offer_polls: u8,
+    pub offer_frames_read: u8,
+    pub offer_non_data_frames: u8,
+    pub offer_non_dhcp_frames: u8,
+    pub offer_message_type: u8,
+    pub offered_ip_address: u32,
+    pub server_identifier: u32,
+    pub request_status: &'static [u8],
+    pub request_packet_length: u16,
+    pub request_write_response: u32,
+    pub ack_poll_status: &'static [u8],
+    pub ack_parse_status: &'static [u8],
+    pub ack_polls: u8,
+    pub ack_frames_read: u8,
+    pub ack_non_data_frames: u8,
+    pub ack_non_dhcp_frames: u8,
+    pub ack_message_type: u8,
+    pub leased_ip_address: u32,
+    pub subnet_mask: u32,
+    pub router: u32,
+    pub dns_server: u32,
+    pub lease_seconds: u32,
+    pub lease_valid: bool,
+    pub ack_status: &'static [u8],
+    pub ack_last_error: Option<WifiSdioCommandErrorReport>,
+    pub ht_last_error: Option<WifiSdioCommandErrorReport>,
+    pub discover_last_error: Option<WifiSdioCommandErrorReport>,
+    pub request_last_error: Option<WifiSdioCommandErrorReport>,
+    pub frame_last_error: Option<WifiSdioCommandErrorReport>,
+    pub host_normal_int: u16,
+    pub host_error_int: u16,
+}
+
+#[derive(Clone, Copy)]
 pub struct WifiSdioClmLoadReport {
     pub status: &'static [u8],
     pub ht_status: &'static [u8],
@@ -1551,6 +1606,7 @@ pub enum Primitive {
     WifiGetMpc,
     WifiLinkStatus,
     WifiDhcpDiscover,
+    WifiDhcpAcquire,
     WifiLoadClm,
     WifiGetCountry,
     WifiSetCountry,
@@ -1662,6 +1718,7 @@ impl Primitive {
             Self::WifiGetMpc => "wifi-get-mpc",
             Self::WifiLinkStatus => "wifi-link-status",
             Self::WifiDhcpDiscover => "wifi-dhcp-discover",
+            Self::WifiDhcpAcquire => "wifi-dhcp-acquire",
             Self::WifiLoadClm => "wifi-load-clm",
             Self::WifiGetCountry => "wifi-get-country",
             Self::WifiSetCountry => "wifi-set-country",
@@ -1941,6 +1998,7 @@ impl Machine {
         self.install_primitive(b"wifi-get-mpc", Primitive::WifiGetMpc)?;
         self.install_primitive(b"wifi-link-status", Primitive::WifiLinkStatus)?;
         self.install_primitive(b"wifi-dhcp-discover", Primitive::WifiDhcpDiscover)?;
+        self.install_primitive(b"wifi-dhcp-acquire", Primitive::WifiDhcpAcquire)?;
         self.install_primitive(b"wifi-load-clm", Primitive::WifiLoadClm)?;
         self.install_primitive(b"wifi-get-country", Primitive::WifiGetCountry)?;
         self.install_primitive(b"wifi-set-country", Primitive::WifiSetCountry)?;
@@ -2846,6 +2904,10 @@ impl Machine {
             Primitive::WifiDhcpDiscover => {
                 self.expect_count(args, 0)?;
                 self.wifi_sdio_dhcp_discover_report(board.wifi_dhcp_discover())
+            }
+            Primitive::WifiDhcpAcquire => {
+                self.expect_count(args, 0)?;
+                self.wifi_sdio_dhcp_acquire_report(board.wifi_dhcp_acquire())
             }
             Primitive::WifiLoadClm => {
                 self.expect_count(args, 0)?;
@@ -4713,6 +4775,134 @@ impl Machine {
             host_error_int,
             ht_last_error,
             send_last_error,
+        ];
+        self.make_list_from_values(&entries)
+    }
+
+    fn wifi_sdio_dhcp_acquire_report(
+        &mut self,
+        report: WifiSdioDhcpAcquireReport,
+    ) -> LispResult<Value> {
+        let status = self.symbol_entry(b"status", report.status)?;
+        let step = self.symbol_entry(b"step", report.step)?;
+        let ht_status = self.symbol_entry(b"ht.status", report.ht_status)?;
+        let ht_attempts = self.word_entry(b"ht.attempts", report.ht_attempts as u32)?;
+        let ht_available = self.bool_entry(b"ht.available", report.ht_available)?;
+        let mac_status = self.symbol_entry(b"mac.status", report.mac_status)?;
+        let mac_present = self.bool_entry(b"mac.present", report.mac_present)?;
+        let mac_hash = self.word_entry(b"mac.hash", report.mac_hash)?;
+        let mac_cdc_status = self.word_entry(b"mac.cdc.status", report.mac_cdc_status)?;
+        let mac_cdc_length = self.word_entry(b"mac.cdc.length", report.mac_cdc_length)?;
+        let transaction_id = self.word_entry(b"dhcp.transaction-id", report.transaction_id)?;
+        let discover_status = self.symbol_entry(b"discover.status", report.discover_status)?;
+        let discover_packet_length = self.word_entry(
+            b"discover.packet-length",
+            report.discover_packet_length as u32,
+        )?;
+        let discover_write_response =
+            self.word_entry(b"discover.write-response", report.discover_write_response)?;
+        let offer_poll_status =
+            self.symbol_entry(b"offer.poll.status", report.offer_poll_status)?;
+        let offer_parse_status =
+            self.symbol_entry(b"offer.parse.status", report.offer_parse_status)?;
+        let offer_polls = self.word_entry(b"offer.polls", report.offer_polls as u32)?;
+        let offer_frames_read =
+            self.word_entry(b"offer.frames-read", report.offer_frames_read as u32)?;
+        let offer_non_data_frames = self.word_entry(
+            b"offer.non-data-frames",
+            report.offer_non_data_frames as u32,
+        )?;
+        let offer_non_dhcp_frames = self.word_entry(
+            b"offer.non-dhcp-frames",
+            report.offer_non_dhcp_frames as u32,
+        )?;
+        let offer_message_type =
+            self.word_entry(b"offer.message-type", report.offer_message_type as u32)?;
+        let offered_ip_address = self.word_entry(b"offer.ip", report.offered_ip_address)?;
+        let server_identifier = self.word_entry(b"dhcp.server", report.server_identifier)?;
+        let request_status = self.symbol_entry(b"request.status", report.request_status)?;
+        let request_packet_length = self.word_entry(
+            b"request.packet-length",
+            report.request_packet_length as u32,
+        )?;
+        let request_write_response =
+            self.word_entry(b"request.write-response", report.request_write_response)?;
+        let ack_poll_status = self.symbol_entry(b"ack.poll.status", report.ack_poll_status)?;
+        let ack_parse_status = self.symbol_entry(b"ack.parse.status", report.ack_parse_status)?;
+        let ack_polls = self.word_entry(b"ack.polls", report.ack_polls as u32)?;
+        let ack_frames_read = self.word_entry(b"ack.frames-read", report.ack_frames_read as u32)?;
+        let ack_non_data_frames =
+            self.word_entry(b"ack.non-data-frames", report.ack_non_data_frames as u32)?;
+        let ack_non_dhcp_frames =
+            self.word_entry(b"ack.non-dhcp-frames", report.ack_non_dhcp_frames as u32)?;
+        let ack_message_type =
+            self.word_entry(b"ack.message-type", report.ack_message_type as u32)?;
+        let leased_ip_address = self.word_entry(b"lease.ip", report.leased_ip_address)?;
+        let subnet_mask = self.word_entry(b"lease.subnet-mask", report.subnet_mask)?;
+        let router = self.word_entry(b"lease.router", report.router)?;
+        let dns_server = self.word_entry(b"lease.dns", report.dns_server)?;
+        let lease_seconds = self.word_entry(b"lease.seconds", report.lease_seconds)?;
+        let lease_valid = self.bool_entry(b"lease.valid", report.lease_valid)?;
+        let ack_status = self.symbol_entry(b"ack.status", report.ack_status)?;
+        let host_normal_int = self.word_entry(b"HOST.NORM_INT", report.host_normal_int as u32)?;
+        let host_error_int = self.word_entry(b"HOST.ERR_INT", report.host_error_int as u32)?;
+        let ht_last_error = self.wifi_sdio_error_entry(b"ht.last-error", report.ht_last_error)?;
+        let discover_last_error =
+            self.wifi_sdio_error_entry(b"discover.last-error", report.discover_last_error)?;
+        let request_last_error =
+            self.wifi_sdio_error_entry(b"request.last-error", report.request_last_error)?;
+        let frame_last_error =
+            self.wifi_sdio_error_entry(b"frame.last-error", report.frame_last_error)?;
+        let ack_last_error =
+            self.wifi_sdio_error_entry(b"ack.last-error", report.ack_last_error)?;
+        let entries = [
+            status,
+            step,
+            ht_status,
+            ht_attempts,
+            ht_available,
+            mac_status,
+            mac_present,
+            mac_hash,
+            mac_cdc_status,
+            mac_cdc_length,
+            transaction_id,
+            discover_status,
+            discover_packet_length,
+            discover_write_response,
+            offer_poll_status,
+            offer_parse_status,
+            offer_polls,
+            offer_frames_read,
+            offer_non_data_frames,
+            offer_non_dhcp_frames,
+            offer_message_type,
+            offered_ip_address,
+            server_identifier,
+            request_status,
+            request_packet_length,
+            request_write_response,
+            ack_poll_status,
+            ack_parse_status,
+            ack_polls,
+            ack_frames_read,
+            ack_non_data_frames,
+            ack_non_dhcp_frames,
+            ack_message_type,
+            leased_ip_address,
+            subnet_mask,
+            router,
+            dns_server,
+            lease_seconds,
+            lease_valid,
+            ack_status,
+            host_normal_int,
+            host_error_int,
+            ht_last_error,
+            discover_last_error,
+            request_last_error,
+            frame_last_error,
+            ack_last_error,
         ];
         self.make_list_from_values(&entries)
     }

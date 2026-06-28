@@ -29,7 +29,7 @@ const WIFI_BOOT_SMOKE_FORMS: [&[u8]; 4] = [
     b"(console-echo off)",
     b"(wifi-connect-local)",
     b"(wifi-link-status)",
-    b"(wifi-dhcp-discover)",
+    b"(wifi-dhcp-acquire)",
 ];
 #[cfg(feature = "storage-boot-smoke")]
 const STORAGE_BOOT_SMOKE_FORMS: [&[u8]; 4] = [

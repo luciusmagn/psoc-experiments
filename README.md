@@ -66,8 +66,9 @@ console. The credential blob script prints paths and byte lengths only.
 `(wifi-link-status)` reports the current link through sanitized MAC/BSSID
 presence fields, short fingerprints, RSSI, and CDC status values.
 `(wifi-dhcp-discover)` sends one DHCP Discover over the SDPCM data channel and
-reports sanitized packet metadata. It does not parse DHCP offers or configure an
-IP address yet.
+reports sanitized packet metadata. `(wifi-dhcp-acquire)` sends Discover,
+parses Offer, sends Request, parses Ack, and stores the lease fields in the
+Wi-Fi state for later network primitives.
 
 For unattended Wi-Fi association and link-status smoke testing on the flaky
 UART RX path:
@@ -81,7 +82,7 @@ tools/flash-lisp.scm
 `(console-echo off)`, `(wifi-connect-local)`, and `(wifi-link-status)` at boot.
 Do not use it for normal quiet images.
 
-For unattended Wi-Fi association plus DHCP Discover transmit testing:
+For unattended Wi-Fi association plus DHCP lease acquisition testing:
 
 ```sh
 tools/build-lisp.scm --wifi-dhcp-boot-smoke
@@ -89,7 +90,7 @@ tools/flash-lisp.scm
 ```
 
 `--wifi-dhcp-boot-smoke` implies `--wifi-boot-smoke` and additionally runs
-`(wifi-dhcp-discover)` at boot. Flash a non-smoke image afterward.
+`(wifi-dhcp-acquire)` at boot. Flash a non-smoke image afterward.
 
 For microSD-backed Lisp files, the active `save-file`, `read-file`, `load`,
 `ls`, and `cat` forms use the FAT root directory. The firmware accepts Lisp

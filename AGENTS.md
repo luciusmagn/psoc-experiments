@@ -162,10 +162,9 @@ firmware and local credential features, then runs `(console-echo off)`,
 
 Use `tools/build-lisp.scm --wifi-dhcp-boot-smoke` or
 `tools/build-flash-lisp.scm --wifi-dhcp-boot-smoke` only for unattended Wi-Fi
-association plus DHCP Discover transmit smoke tests while UART RX is
+association plus DHCP lease acquisition smoke tests while UART RX is
 unreliable. It implies `--wifi-boot-smoke`, then also runs
-`(wifi-dhcp-discover)` at boot. This only proves data-channel transmit, not
-DHCP lease acquisition. Flash a non-smoke image immediately afterward.
+`(wifi-dhcp-acquire)` at boot. Flash a non-smoke image immediately afterward.
 
 Use `tools/build-lisp.scm --storage-boot-smoke` or
 `tools/build-flash-lisp.scm --storage-boot-smoke` only for unattended FAT
