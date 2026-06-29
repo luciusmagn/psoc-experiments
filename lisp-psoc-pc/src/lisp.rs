@@ -213,6 +213,7 @@ pub trait Board {
     fn registers(&mut self) -> RegisterReport;
     fn pdm_status(&mut self) -> PdmStatusReport;
     fn thermistor_status(&mut self) -> ThermistorStatusReport;
+    fn thermistor_read(&mut self) -> ThermistorReadReport;
     fn capsense_status(&mut self) -> CapsenseStatusReport;
     fn sd_status(&mut self) -> SdStatusReport;
     fn sd_pins(&mut self) -> SdPinsReport;
@@ -425,6 +426,39 @@ pub struct ThermistorStatusReport {
     pub gpio_prt10_in: u32,
     pub hsiom_prt10_sel0: u32,
     pub hsiom_prt10_sel1: u32,
+}
+
+#[derive(Clone, Copy)]
+pub enum ThermistorReadStatus {
+    Ready,
+    Timeout,
+}
+
+#[derive(Clone, Copy)]
+pub struct ThermistorReadReport {
+    pub status: ThermistorReadStatus,
+    pub reference_mv: u16,
+    pub out0_counts: u16,
+    pub out1_counts: u16,
+    pub out0_mv: u16,
+    pub out1_mv: u16,
+    pub delta_counts: u16,
+    pub out0_poll_count: u32,
+    pub out1_poll_count: u32,
+    pub sar_ctrl: u32,
+    pub sar_sample_ctrl: u32,
+    pub sar_chan_config0: u32,
+    pub sar_chan_en: u32,
+    pub sar_intr: u32,
+    pub sar_status: u32,
+    pub sar_mux_switch0: u32,
+    pub sar_mux_switch_sq_ctrl: u32,
+    pub peri_clock_sar: u32,
+    pub peri_div8_sar: u32,
+    pub gpio_prt10_cfg: u32,
+    pub gpio_prt10_out: u32,
+    pub gpio_prt10_in: u32,
+    pub hsiom_prt10_sel0: u32,
 }
 
 #[derive(Clone, Copy)]
@@ -2129,6 +2163,7 @@ pub enum Primitive {
     Regs,
     PdmStatus,
     ThermistorStatus,
+    ThermistorRead,
     CapsenseStatus,
     SdStatus,
     SdPins,
@@ -2262,6 +2297,7 @@ impl Primitive {
             Self::Regs => "regs",
             Self::PdmStatus => "pdm-status",
             Self::ThermistorStatus => "thermistor-status",
+            Self::ThermistorRead => "thermistor-read",
             Self::CapsenseStatus => "capsense-status",
             Self::SdStatus => "sd-status",
             Self::SdPins => "sd-pins",
@@ -2573,6 +2609,7 @@ impl Machine {
         self.install_primitive(b"regs", Primitive::Regs)?;
         self.install_primitive(b"pdm-status", Primitive::PdmStatus)?;
         self.install_primitive(b"thermistor-status", Primitive::ThermistorStatus)?;
+        self.install_primitive(b"thermistor-read", Primitive::ThermistorRead)?;
         self.install_primitive(b"capsense-status", Primitive::CapsenseStatus)?;
         self.install_primitive(b"sd-status", Primitive::SdStatus)?;
         self.install_primitive(b"sd-pins", Primitive::SdPins)?;
@@ -3429,6 +3466,10 @@ impl Machine {
             Primitive::ThermistorStatus => {
                 self.expect_count(args, 0)?;
                 self.thermistor_status_report(board.thermistor_status())
+            }
+            Primitive::ThermistorRead => {
+                self.expect_count(args, 0)?;
+                self.thermistor_read_report(board.thermistor_read())
             }
             Primitive::CapsenseStatus => {
                 self.expect_count(args, 0)?;
@@ -4811,6 +4852,7 @@ impl Machine {
             b"regs",
             b"pdm-status",
             b"thermistor-status",
+            b"thermistor-read",
             b"capsense-status",
             b"sd-status",
             b"sd-pins",
@@ -4972,6 +5014,73 @@ impl Machine {
         let hsiom_sel1 = self.word_entry(b"HSIOM.PRT10.SEL1", report.hsiom_prt10_sel1)?;
         let entries = [
             out0, out1, vdd, gnd, part, r36, r37, gpio_cfg, gpio_in, hsiom_sel0, hsiom_sel1,
+        ];
+        self.make_list_from_values(&entries)
+    }
+
+    fn thermistor_read_report(&mut self, report: ThermistorReadReport) -> LispResult<Value> {
+        let status_value = match report.status {
+            ThermistorReadStatus::Ready => STATUS_READY,
+            ThermistorReadStatus::Timeout => STATUS_TIMEOUT,
+        };
+        let status = self.symbol_entry(b"status", status_value)?;
+        let source = self.symbol_entry(b"source", b"RT1")?;
+        let out0 = self.symbol_entry(b"out0", b"P10.1")?;
+        let out1 = self.symbol_entry(b"out1", b"P10.2")?;
+        let reference = self.symbol_entry(b"reference", b"VDDA")?;
+        let reference_mv = self.word_entry(b"reference-mv", report.reference_mv as u32)?;
+        let out0_counts = self.word_entry(b"out0.counts", report.out0_counts as u32)?;
+        let out1_counts = self.word_entry(b"out1.counts", report.out1_counts as u32)?;
+        let out0_mv = self.word_entry(b"out0.mv", report.out0_mv as u32)?;
+        let out1_mv = self.word_entry(b"out1.mv", report.out1_mv as u32)?;
+        let delta_counts = self.word_entry(b"delta.counts", report.delta_counts as u32)?;
+        let powered_after = self.bool_entry(b"powered-after", false)?;
+        let out0_poll_count = self.word_entry(b"out0.polls", report.out0_poll_count)?;
+        let out1_poll_count = self.word_entry(b"out1.polls", report.out1_poll_count)?;
+        let sar_ctrl = self.word_entry(b"SAR.CTRL", report.sar_ctrl)?;
+        let sar_sample_ctrl = self.word_entry(b"SAR.SAMPLE_CTRL", report.sar_sample_ctrl)?;
+        let sar_chan_config0 = self.word_entry(b"SAR.CHAN_CONFIG0", report.sar_chan_config0)?;
+        let sar_chan_en = self.word_entry(b"SAR.CHAN_EN", report.sar_chan_en)?;
+        let sar_intr = self.word_entry(b"SAR.INTR", report.sar_intr)?;
+        let sar_status = self.word_entry(b"SAR.STATUS", report.sar_status)?;
+        let sar_mux_switch0 = self.word_entry(b"SAR.MUX_SWITCH0", report.sar_mux_switch0)?;
+        let sar_mux_switch_sq_ctrl =
+            self.word_entry(b"SAR.MUX_SWITCH_SQ_CTRL", report.sar_mux_switch_sq_ctrl)?;
+        let peri_clock_sar = self.word_entry(b"PERI.CLOCK_CTL.SAR", report.peri_clock_sar)?;
+        let peri_div8_sar = self.word_entry(b"PERI.DIV_8_CTL.SAR", report.peri_div8_sar)?;
+        let gpio_cfg = self.word_entry(b"GPIO.PRT10.CFG", report.gpio_prt10_cfg)?;
+        let gpio_out = self.word_entry(b"GPIO.PRT10.OUT", report.gpio_prt10_out)?;
+        let gpio_in = self.word_entry(b"GPIO.PRT10.IN", report.gpio_prt10_in)?;
+        let hsiom_sel0 = self.word_entry(b"HSIOM.PRT10.SEL0", report.hsiom_prt10_sel0)?;
+        let entries = [
+            status,
+            source,
+            out0,
+            out1,
+            reference,
+            reference_mv,
+            out0_counts,
+            out1_counts,
+            out0_mv,
+            out1_mv,
+            delta_counts,
+            powered_after,
+            out0_poll_count,
+            out1_poll_count,
+            sar_ctrl,
+            sar_sample_ctrl,
+            sar_chan_config0,
+            sar_chan_en,
+            sar_intr,
+            sar_status,
+            sar_mux_switch0,
+            sar_mux_switch_sq_ctrl,
+            peri_clock_sar,
+            peri_div8_sar,
+            gpio_cfg,
+            gpio_out,
+            gpio_in,
+            hsiom_sel0,
         ];
         self.make_list_from_values(&entries)
     }

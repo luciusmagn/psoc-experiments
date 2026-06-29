@@ -2,7 +2,7 @@ use core::ptr::{read_volatile, write_volatile};
 
 use psoc6_pac::Peripherals;
 
-use crate::hal::{micro_sd, wifi_sdio};
+use crate::hal::{micro_sd, thermistor, wifi_sdio};
 use crate::{lisp, lisp_fat, lisp_store, wifi_resources};
 
 const BUTTON0_MASK: u32 = 1 << 4;
@@ -204,6 +204,38 @@ impl lisp::Board for PsocBoard<'_> {
             gpio_prt10_in: self.p.GPIO.prt10.in_.read().bits(),
             hsiom_prt10_sel0: self.p.HSIOM.prt10.port_sel0.read().bits(),
             hsiom_prt10_sel1: self.p.HSIOM.prt10.port_sel1.read().bits(),
+        }
+    }
+
+    fn thermistor_read(&mut self) -> lisp::ThermistorReadReport {
+        let report = thermistor::read(self.p);
+        lisp::ThermistorReadReport {
+            status: match report.status {
+                thermistor::ReadStatus::Ready => lisp::ThermistorReadStatus::Ready,
+                thermistor::ReadStatus::Timeout => lisp::ThermistorReadStatus::Timeout,
+            },
+            reference_mv: report.reference_mv,
+            out0_counts: report.out0_counts,
+            out1_counts: report.out1_counts,
+            out0_mv: report.out0_mv,
+            out1_mv: report.out1_mv,
+            delta_counts: report.delta_counts,
+            out0_poll_count: report.out0_poll_count,
+            out1_poll_count: report.out1_poll_count,
+            sar_ctrl: report.sar_ctrl,
+            sar_sample_ctrl: report.sar_sample_ctrl,
+            sar_chan_config0: report.sar_chan_config0,
+            sar_chan_en: report.sar_chan_en,
+            sar_intr: report.sar_intr,
+            sar_status: report.sar_status,
+            sar_mux_switch0: report.sar_mux_switch0,
+            sar_mux_switch_sq_ctrl: report.sar_mux_switch_sq_ctrl,
+            peri_clock_sar: report.peri_clock_sar,
+            peri_div8_sar: report.peri_div8_sar,
+            gpio_prt10_cfg: report.gpio_prt10_cfg,
+            gpio_prt10_out: report.gpio_prt10_out,
+            gpio_prt10_in: report.gpio_prt10_in,
+            hsiom_prt10_sel0: report.hsiom_prt10_sel0,
         }
     }
 

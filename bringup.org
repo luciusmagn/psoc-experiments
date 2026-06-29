@@ -6240,6 +6240,34 @@ the next useful check is physical: confirm the board is on the KitProg3 USB
 connector, inspect the KitProg UART routing/header area, and test a direct
 KitProg UART loopback or direct jumper into the KitProg RX path if practical.
 
+* 2026-06-29 Thermistor read primitive
+
+Added =(thermistor-read)= as the first active thermistor measurement primitive.
+The HAL code is isolated in =hal::thermistor= and keeps the low-level pin, SAR,
+SARMUX, and SAR-clock setup out of the Lisp evaluator. It powers the RT1
+network only around the measurement by driving =P10.0= as thermistor ground and
+=P10.3= as thermistor VDD, samples =P10.1= and =P10.2= through the SAR, then
+powers the network and SAR path down before returning.
+
+The Lisp report includes status, raw counts, millivolt estimates, poll counts,
+and the relevant SAR/PERI/GPIO/HSIOM register snapshots so the first live
+hardware readings can be debugged from the REPL instead of requiring a new
+firmware image for every register question. The primitive is intentionally not
+in the host-side read-only network client allowlist because it drives pins and
+changes SAR state.
+
+Validation:
+
+#+begin_src sh
+cargo fmt --manifest-path lisp-psoc-pc/Cargo.toml -- --check
+tools/build-lisp.scm --wifi-firmware --wifi-credentials --skip-boot-file
+git diff --check
+#+end_src
+
+Live =(thermistor-read)= output is not validated yet because the KitProg3
+USB-UART path is physically corrupt and the current recovery image skips the
+FAT boot file, so the UDP REPL service is not automatically available.
+
 * Next actions
 
 1. Recover or bypass the KitProg3 USB-UART physical path. SCB5 configuration is
