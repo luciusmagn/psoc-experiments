@@ -25,6 +25,7 @@ wifi-net-repl-service-boot-smoke = ["wifi-dns-boot-smoke"]
 storage-boot-smoke = []
 storage-format-boot-smoke = ["storage-boot-smoke"]
 skip-boot-file = []
+uart-pin-probe = []
 
 [profile.release]
 lto = true

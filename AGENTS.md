@@ -151,6 +151,11 @@ one-off Lisp forms. These scripts encode the current known-good build, pack,
 flash, and serial-console commands and should be kept up to date when that flow
 changes.
 
+Use `tools/build-lisp.scm --uart-pin-probe` or
+`tools/build-flash-lisp.scm --uart-pin-probe` only for USB-UART physical-path
+diagnostics. It bit-bangs a short `P5.1` GPIO probe at 9600 baud and does not
+start the REPL. Flash a normal or recovery image immediately afterward.
+
 Use `tools/build-lisp.scm --wifi-firmware` or
 `tools/build-flash-lisp.scm --wifi-firmware` only when the local CYW4343W
 firmware blob should be embedded in the CM4 image for `(wifi-load-firmware)`.
@@ -275,6 +280,10 @@ and discover Infineon OpenOCD from `OPENOCD_ROOT`,
 `tools/setup-modustoolbox.scm --archive /path/to/ModusToolbox-linux.tar.gz`
 to install a local ModusToolbox tarball into the ignored repo-local tools
 directory.
+The current KitProg3 firmware loader is installed under ignored
+`.local/fw-loader/` when needed. Use its `fw-loader` binary for KitProg3
+device-list, firmware update, mode, and UART flow-control checks, and document
+any device firmware or bridge-setting change in `bringup.org`.
 
 The underlying manual flow for the active console firmware is:
 

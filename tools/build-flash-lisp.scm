@@ -36,7 +36,8 @@
          (string=? (car args) "--wifi-net-repl-service-boot-smoke")
          (string=? (car args) "--storage-boot-smoke")
          (string=? (car args) "--storage-format-boot-smoke")
-         (string=? (car args) "--skip-boot-file"))
+         (string=? (car args) "--skip-boot-file")
+         (string=? (car args) "--uart-pin-probe"))
      (parse (cdr args) (cons (car args) build-args) flash-args))
     (else
      (parse (cdr args) build-args (cons (car args) flash-args)))))
@@ -49,7 +50,7 @@
 
 (let ((args (command-line-tail)))
   (when (and (pair? args) (string=? (car args) "--help"))
-    (say "usage: tools/build-flash-lisp.scm [--wifi-firmware] [--wifi-credentials] [--wifi-boot-smoke] [--wifi-dhcp-boot-smoke] [--wifi-arp-boot-smoke] [--wifi-dns-boot-smoke] [--wifi-net-repl-boot-smoke] [--wifi-net-repl-service-boot-smoke] [--storage-boot-smoke] [--storage-format-boot-smoke] [--skip-boot-file] [flash-lisp arguments]")
+    (say "usage: tools/build-flash-lisp.scm [--wifi-firmware] [--wifi-credentials] [--wifi-boot-smoke] [--wifi-dhcp-boot-smoke] [--wifi-arp-boot-smoke] [--wifi-dns-boot-smoke] [--wifi-net-repl-boot-smoke] [--wifi-net-repl-service-boot-smoke] [--storage-boot-smoke] [--storage-format-boot-smoke] [--skip-boot-file] [--uart-pin-probe] [flash-lisp arguments]")
     (say "")
     (say "Builds lisp-psoc-pc, packs the bootloader, then flashes it.")
     (exit 0))

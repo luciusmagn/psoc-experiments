@@ -6149,17 +6149,109 @@ Wi-Fi bootstrap can still take close to a minute. The remaining startup delay
 is therefore not just FAT; Wi-Fi association/DHCP/ARP startup still needs
 better progress reporting or process-friendly incremental work.
 
+* 2026-06-29 KitProg update and UART pin probe
+
+The user reported the red LED as stuck on. SWD inspection of the target GPIO
+showed =GPIO.PRT13.OUT = #x0000008f= before and after forcing =OUT_SET.7=,
+so LED4 is high and therefore off from the target MCU side. If a red LED still
+appears on, it is likely a KitProg/status LED or another board state rather
+than firmware deliberately holding LED4 on.
+
+UART was retested from the =--wifi-firmware --wifi-credentials
+--skip-boot-file= recovery image. A reset capture at =115200 8N1= produced
+roughly the expected banner length but still decoded as garbage:
+
+#+begin_example
+168 .local/logs/uart-reset-current.bin
+#+end_example
+
+A simple baud-mismatch model against the expected boot banner only matched
+noise-level bytes, so the corruption is not explained by one wrong SCB divider.
+
+Added =--uart-pin-probe= to =tools/build-lisp.scm= and
+=tools/build-flash-lisp.scm=. The feature configures =P5.1= as GPIO, bit-bangs
+this string at =9600 8N1=, and then stays in the diagnostic image without
+starting the REPL:
+
+#+begin_example
+UART-PIN-PROBE P5.1 GPIO 9600 8N1
+#+end_example
+
+Validation before the KitProg update:
+
+#+begin_src sh
+cargo fmt --manifest-path lisp-psoc-pc/Cargo.toml
+tools/build-flash-lisp.scm --uart-pin-probe
+#+end_src
+
+The =9600= capture was still corrupt. A sweep through =4800=, =7200=, =9600=,
+=14400=, =19200=, =28800=, =31250=, =38400=, =57600=, =76800=, and =115200=
+did not find the probe string.
+
+Installed Infineon's =fw-loader= release =3.12.0.2607= under the ignored local
+path =.local/fw-loader=. It reported the connected KitProg3 as outdated:
+
+#+begin_example
+FW Version 1.01.158 [outdated]
+#+end_example
+
+Updated the KitProg3 firmware with:
+
+#+begin_src sh
+.local/fw-loader/fw-loader/bin/fw-loader --update-kp3 1F110B1D03201400
+#+end_src
+
+The update completed successfully and =fw-loader --device-list= now reports:
+
+#+begin_example
+FW Version 2.81.1663
+#+end_example
+
+The updated KitProg3 exposed bulk bridge endpoints, but the UART was still
+corrupt. The updated firmware also defaulted the primary UART flow-control
+mode to =hardware=, so it was changed to the no-flow-control setting expected
+by the kit wiring:
+
+#+begin_src sh
+.local/fw-loader/fw-loader/bin/fw-loader --set-kp3-flow-control 0 none 1F110B1D03201400
+#+end_src
+
+After that change, =fw-loader --get-kp3-flow-control 0= reported =none=, but
+the reset banner remained corrupt. Repeating the =--uart-pin-probe= capture
+after the firmware update and flow-control change also remained corrupt. The
+device does not support KitProg3 dual-UART mode:
+
+#+begin_example
+Error: KitProg3 Dual UART mode is not supported by the device.
+#+end_example
+
+The normal recovery image was restored:
+
+#+begin_src sh
+tools/build-flash-lisp.scm --wifi-firmware --wifi-credentials --skip-boot-file
+#+end_src
+
+Final SWD sanity check showed CM4 in the normal firmware loop at =0x100169b2=
+and =GPIO.PRT13.OUT = #x0000008f=.
+
+Current conclusion: the corrupt serial path is below the SCB5 UART setup. The
+same host bridge receives corrupt data when =P5.1= is driven as plain GPIO, so
+the next useful check is physical: confirm the board is on the KitProg3 USB
+connector, inspect the KitProg UART routing/header area, and test a direct
+KitProg UART loopback or direct jumper into the KitProg RX path if practical.
+
 * Next actions
 
-1. Watch for any remaining UART corruption during longer Wi-Fi association
-   workflows.
+1. Recover or bypass the KitProg3 USB-UART physical path. SCB5 configuration is
+   no longer the primary suspect because the =P5.1= GPIO pin probe also
+   corrupts.
 2. Add REPL history and better editing across continuation lines.
 3. Add FAT long-file-name support or document a PC-side =.LSP= convention for
    Lisp source files.
 4. Test the newer Infineon target =infineon/cy8cxxa.cfg= as a replacement
    for obsolete =target/psoc6_2m.cfg=.
-5. Fix UART/REPL input reliability; boot smoke is only a workaround for
-   unattended Wi-Fi tests.
+5. Keep boot-smoke and UDP REPL validation available while UART is physically
+   unreliable.
 6. Exercise ACK plus host retry behavior under induced packet loss and decide
    whether an ACK should clear or preserve the single-entry response cache.
 7. Extend HTTP from a first response preview into a streamed or file-backed

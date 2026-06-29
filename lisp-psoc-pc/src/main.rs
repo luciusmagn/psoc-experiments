@@ -19,6 +19,8 @@ const SYSCLK_HZ: u32 = 50_000_000;
 const CONSOLE_POLL_DELAY_US: u32 = 50;
 const WIFI_NET_REPL_SERVICE_INTERVAL_MS: u32 = 50;
 const PROCESS_SERVICE_INTERVAL_MS: u32 = 10;
+#[cfg(feature = "uart-pin-probe")]
+const UART_PIN_PROBE_MESSAGE: &[u8] = b"\r\nUART-PIN-PROBE P5.1 GPIO 9600 8N1\r\n";
 #[cfg(feature = "wifi-boot-smoke")]
 #[cfg(not(feature = "wifi-dhcp-boot-smoke"))]
 const WIFI_BOOT_SMOKE_FORMS: [&[u8]; 3] = [
@@ -73,9 +75,18 @@ fn main() -> ! {
     }
 
     board::State::configure_hardware(&p);
+    let mut delay = cortex_m::delay::Delay::new(cp.SYST, SYSCLK_HZ);
+
+    #[cfg(feature = "uart-pin-probe")]
+    {
+        console::write_p5_1_bitbang_probe(&p, &mut delay, UART_PIN_PROBE_MESSAGE);
+        loop {
+            delay.delay_ms(1000);
+        }
+    }
+
     console::Console::configure_hardware(&p);
 
-    let mut delay = cortex_m::delay::Delay::new(cp.SYST, SYSCLK_HZ);
     let mut console = console::Console::new(&p.SCB5);
     let mut machine = lisp::Machine::new();
     let mut board_state = board::State::new();

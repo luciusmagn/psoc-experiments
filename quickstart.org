@@ -52,6 +52,22 @@ Send one serial form:
 tools/send-lisp.scm '(+ 1 2)'
 #+end_src
 
+Current UART note: the KitProg3 USB-UART path is physically suspect. The
+firmware SCB5 setup and KitProg3 firmware/flow-control settings have been
+checked; the =P5.1= GPIO pin probe still captures corrupt bytes.
+
+USB-UART physical-path probe:
+
+#+begin_src sh
+tools/build-flash-lisp.scm --uart-pin-probe
+stty -F /dev/ttyACM0 9600 cs8 -cstopb -parenb -ixon -ixoff -crtscts raw -echo
+timeout 5s cat /dev/ttyACM0
+tools/build-flash-lisp.scm --wifi-firmware --wifi-credentials --skip-boot-file
+#+end_src
+
+The probe should print =UART-PIN-PROBE P5.1 GPIO 9600 8N1=. If it does not,
+inspect the KitProg3 UART physical path before changing SCB5 firmware.
+
 Network REPL, after Wi-Fi and the UDP service are running:
 
 #+begin_src sh
