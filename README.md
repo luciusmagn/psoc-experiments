@@ -170,9 +170,10 @@ image afterward.
 
 Use `tools/send-net-repl.scm --host BOARD_IP '(+ 40 2)'` to send one framed UDP
 request from the host. The script writes a checked `LPS3` binary request under
-ignored `.local/net-repl/`, calls `nc`, parses the `LPS2` response, verifies the
-reply checksum, sends an `LPS4` ACK, and prints request/response/ACK metadata
-plus payload text. Use `--legacy-request` to send an older `LPS0` request frame.
+ignored `.local/net-repl/`, uses `ncat` when available or `nc` as a fallback,
+parses the `LPS2` response, verifies the reply checksum, sends an `LPS4` ACK,
+and prints request/response/ACK metadata plus payload text. Use
+`--legacy-request` to send an older `LPS0` request frame.
 Use `--read-only` to send the current `LPS5` request frame, which has the same
 checksum and payload layout as `LPS3` but asks current firmware to reject forms
 outside its conservative read-only allowlist before evaluation.

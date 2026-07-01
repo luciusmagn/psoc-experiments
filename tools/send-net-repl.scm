@@ -30,6 +30,7 @@
   (say "")
   (say "Sends one framed UDP Lisp request to the board network REPL endpoint.")
   (say "The Lisp form is written to an ignored binary request file, not printed in the shell command.")
+  (say "The client uses ncat when available to receive larger UDP datagrams, falling back to nc.")
   (say "The default request frame is LPS3 with a request checksum.")
   (say "--read-only sends LPS5 with the same checksum and asks current firmware to reject mutating forms.")
   (say "After a verified response, the client sends an LPS4 ACK with the response checksum.")
@@ -483,7 +484,21 @@
   (let* ((process-timeout-seconds (+ wait-seconds 1))
          (command
          (string-append
-          "timeout "
+          "if command -v ncat >/dev/null 2>&1; then timeout "
+          (number->string process-timeout-seconds)
+          " ncat -u -w "
+          (number->string wait-seconds)
+          " -q "
+          (number->string wait-seconds)
+          " "
+          (shell-quote host)
+          " "
+          (number->string port)
+          " < "
+          (shell-quote request)
+          " > "
+          (shell-quote response)
+          " 2>/dev/null; else timeout "
           (number->string process-timeout-seconds)
           " nc -u -w "
           (number->string wait-seconds)
@@ -494,7 +509,8 @@
           " < "
           (shell-quote request)
           " > "
-          (shell-quote response))))
+          (shell-quote response)
+          "; fi")))
     (run-unchecked command verbose?)))
 
 (define (send-ack host port ack-file verbose?)

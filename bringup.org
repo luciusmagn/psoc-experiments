@@ -6689,6 +6689,34 @@ nc -vz -w 5 10.0.0.9 2323
     (HOST.ERR_INT . #x00000000))
 #+end_example
 
+* 2026-07-01 Network REPL client ncat receive path
+
+The passive TCP listener work exposed a host-tooling limit rather than a board
+protocol limit: GNU =nc= captured only 1024 bytes from a larger =LPS2= UDP
+reply, making checksum verification fail. Direct use of =ncat -u -q= captured
+the complete 1412-byte datagram.
+
+Updated =tools/send-net-repl.scm= to prefer =ncat= when it is installed and
+fall back to =nc= otherwise. The fallback is still useful for small responses,
+but large single-datagram diagnostics should use the =ncat= path or a future
+paged response protocol.
+
+Validation against the FAT =boot.lisp=-started UDP service:
+
+#+begin_example
+tools/send-net-repl.scm --host 10.0.0.9 --attempts 1 --wait 5 '(help)'
+
+request.format=LPS3
+response.bytes=1412
+response.format=LPS2
+response.checksum.ok=#t
+payload.bytes=1400
+payload.text==> (help
+    quote
+    if
+    ...)
+#+end_example
+
 * Next actions
 
 1. Keep UART sanity checks in the workflow. If corruption returns, first replug

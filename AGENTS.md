@@ -212,7 +212,8 @@ afterward.
 
 Use `tools/send-net-repl.scm --host BOARD_IP '(form ...)'` for host-side framed
 UDP REPL requests. It writes ignored binary request/response files under
-`.local/net-repl/`, calls `nc`, and prints response metadata plus payload text.
+`.local/net-repl/`, uses `ncat` when available or `nc` as a fallback, and
+prints response metadata plus payload text.
 The script sends `LPS3`, sequence, request checksum, and payload by default.
 With `--read-only`, the script sends `LPS5`, the same sequence/checksum/payload
 layout, and current firmware rejects requests outside its conservative
@@ -241,8 +242,9 @@ It is a one-shot diagnostic for accepting a SYN, replying SYN-ACK, observing the
 host ACK or RST, and sending RST/ACK cleanup; it is not Telnet yet. Start it
 through the UDP REPL in the background, then connect with
 `nc -vz -w 5 BOARD_IP 2323`. Keep its Lisp report compact because the current
-`nc`-based UDP REPL client has only been reliable with single captured replies
-below about 1 KiB, even though the firmware can build larger UDP payloads.
+UDP REPL client falls back to GNU `nc` when `ncat` is unavailable, and that path
+has only been reliable with single captured replies below about 1 KiB. With
+`ncat`, `tools/send-net-repl.scm` has validated full 1412-byte `LPS2` datagrams.
 Use `tools/send-net-repl.scm --color` only when ANSI payload coloring is wanted;
 plain output is the default. Use `--read-only` as a conservative accidental-send
 guard for status, directory, FAT info, Wi-Fi link/lease status, and simple-path

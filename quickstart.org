@@ -98,10 +98,11 @@ the current SD path, but writes and larger reads still need the longer wait.
 Use =--payload-only= for a cleaner REPL-like display. Each client invocation
 uses its own ignored request/response files under =.local/net-repl/=; use
 explicit unique sequences when comparing concurrent UDP requests.
-Current firmware can build UDP REPL replies up to 1400 payload bytes, but the
-repo-local =nc=-based client has only been reliable with single replies below
-about 1 KiB. Keep new diagnostics compact or add paging before depending on a
-larger response over =tools/send-net-repl.scm=.
+Current firmware can build UDP REPL replies up to 1400 payload bytes.
+=tools/send-net-repl.scm= prefers =ncat= when it is installed and falls back to
+=nc=. The =ncat= path has validated full 1412-byte =LPS2= datagrams; the GNU
+=nc= fallback may capture only 1024 bytes, so keep diagnostics compact or use
+=ncat= before depending on larger single replies.
 =--read-only= sends an =LPS5= request to current firmware and also applies a
 host-side allowlist. It is useful for observer/status commands such as
 =(wifi-net-repl-service status)=, =(wifi-link-status)=, =(wifi-lease-status)=,
