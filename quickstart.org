@@ -242,6 +242,10 @@ logs.
 (kill #x00000001)
 #+end_src
 
+LED4 remains off at idle. During a normal FAT =boot.lisp= startup, one short
+pulse means the boot file was read, two pulses mean Wi-Fi bootstrap completed,
+and three pulses mean the UDP REPL service was enabled.
+
 * Processes
 
 The current process runner is cooperative and top-level. It runs at most one

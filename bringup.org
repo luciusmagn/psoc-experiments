@@ -7476,3 +7476,63 @@ A host-side negative guard check also refused
 =(read-file-chunk "long.lisp" 0 97)= before sending. Some concurrent FAT
 requests timed out while the single service was busy; use one FAT request at a
 time until storage operations are made incremental or dispatched by a scheduler.
+
+* 2026-07-01 LED milestone indicators
+
+Added finite LED4 status markers for requested boot progress visibility while
+keeping idle quiet:
+
+- One short pulse after startup successfully reads FAT =boot.lisp=.
+- Two short pulses after =(wifi-network-bootstrap)= completes Wi-Fi
+  association, DHCP, lease check, and router ARP.
+- Three short pulses when =(wifi-net-repl-service on)= transitions the UDP REPL
+  service from disabled to enabled.
+
+All markers disable heartbeat and leave LED4 off afterward. LED4 remains
+active-low on =P13.7=.
+
+Implementation notes:
+
+- =lisp::BoardStatusIndicator= keeps status indication as a board/HAL concern
+  instead of burying LED register writes inside storage or Wi-Fi internals.
+- =Machine::load_file= is only used for startup =boot.lisp= preload, so the FAT
+  pulse is scoped to boot-file read success and not every Lisp =(load ...)=.
+- The direct Wi-Fi service-smoke enable path also emits the three-pulse UDP
+  service marker because it bypasses the Lisp primitive.
+
+Validation built, flashed, and restored the normal non-smoke Wi-Fi image:
+
+#+begin_src sh
+tools/build-flash-lisp.scm --wifi-firmware --wifi-credentials
+tools/send-net-repl.scm --host 10.0.1.6 --sequence 824 \
+  --attempts 2 --wait 15 --payload-only '(+ 6 7)'
+tools/send-net-repl.scm --host 10.0.1.6 --sequence 825 \
+  --attempts 1 --wait 60 --payload-only --read-only \
+  '(read-file-chunk "long.lisp" 96 96)'
+tools/send-net-repl.scm --host 10.0.1.6 --sequence 827 \
+  --attempts 2 --wait 20 --payload-only --read-only \
+  '(wifi-net-repl-service status)'
+#+end_src
+
+Observed:
+
+#+begin_example
+=> 13
+=> ((status . ready)
+    (ready . #t)
+    (content-len . 119)
+    (offset . 96)
+    (requested . 96)
+    (chunk-len . 23)
+    (more . #f)
+    (chunk . " (+ la lb lc ld le lf))"))
+=> ((enabled . #t)
+    (poll-frames . #x00000001)
+    (requests-handled . #x00000002)
+    (acks-received . #x00000002)
+    ...)
+#+end_example
+
+The board remained reachable at =10.0.1.6=. Pulse visibility still needs human
+observation from the physical board; the software paths that emit the markers
+were built into the validated image.

@@ -360,6 +360,7 @@ fn run_wifi_boot_smoke<B: lisp::Board, W: Write>(
     {
         write_wifi_arp_boot_smoke_marker(1, 12);
         _machine.enable_wifi_net_repl_service(WIFI_NET_REPL_SERVICE_BOOT_SMOKE_POLL_FRAMES);
+        board.status_indicator(lisp::BoardStatusIndicator::NetReplReady);
         write_wifi_arp_boot_smoke_marker(25, WIFI_NET_REPL_SERVICE_BOOT_SMOKE_POLL_FRAMES as u32);
         write_wifi_arp_boot_smoke_marker(26, bool_word(_machine.wifi_net_repl_service_enabled()));
         write_wifi_net_repl_service_marker(_machine);

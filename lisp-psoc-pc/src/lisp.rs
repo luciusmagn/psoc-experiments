@@ -53,6 +53,13 @@ pub enum LedAction {
 }
 
 #[derive(Clone, Copy)]
+pub enum BoardStatusIndicator {
+    FatReady,
+    WifiReady,
+    NetReplReady,
+}
+
+#[derive(Clone, Copy)]
 pub struct Error {
     message: &'static str,
 }
@@ -301,6 +308,7 @@ enum ProcessControl {
 pub trait Board {
     fn led(&mut self, action: LedAction) -> bool;
     fn heartbeat(&mut self, enabled: bool) -> bool;
+    fn status_indicator(&mut self, indicator: BoardStatusIndicator);
     fn button_pressed(&mut self, index: i32) -> Result<bool, Error>;
     fn millis(&mut self) -> u32;
     fn read32(&mut self, address: u32) -> Result<u32, Error>;
@@ -3081,7 +3089,16 @@ impl Machine {
         output: &mut W,
     ) -> LispResult<LoadFileOutcome> {
         self.collect_garbage();
-        let result = self.load_file_in_env(path, Value::Nil, board, output, 0);
+        let result = {
+            let report = board.read_file(path);
+            if report.ready {
+                board.status_indicator(BoardStatusIndicator::FatReady);
+                self.eval_loaded_file_in_env(&report.content, Value::Nil, board, output, 0)
+                    .map(LoadFileOutcome::Loaded)
+            } else {
+                Ok(LoadFileOutcome::NotReady(report))
+            }
+        };
         let previous_expression = self.active_expression;
         if let Ok(LoadFileOutcome::Loaded(value)) = result {
             self.active_expression = value;
@@ -4146,7 +4163,7 @@ impl Machine {
                 };
                 self.wifi_net_repl_once(board, poll_frames)
             }
-            Primitive::WifiNetReplService => self.wifi_net_repl_service(args),
+            Primitive::WifiNetReplService => self.wifi_net_repl_service(args, board),
             Primitive::WifiTcpReplService => self.wifi_tcp_repl_service(args, board),
             Primitive::WifiDemuxStatus => {
                 self.expect_count(args, 0)?;
@@ -4744,13 +4761,25 @@ impl Machine {
             return Ok(LoadFileOutcome::NotReady(report));
         }
 
-        let input = &report.content.bytes[..usize::from(report.content.len)];
+        self.eval_loaded_file_in_env(&report.content, env, board, output, depth)
+            .map(LoadFileOutcome::Loaded)
+    }
+
+    fn eval_loaded_file_in_env<B: Board, W: Write>(
+        &mut self,
+        content: &FileBytes,
+        env: Value,
+        board: &mut B,
+        output: &mut W,
+        depth: u8,
+    ) -> LispResult<Value> {
+        let input = &content.bytes[..usize::from(content.len)];
         let expression = self.read(input)?;
         let previous_expression = self.active_expression;
         self.active_expression = expression;
         let result = self.eval(expression, env, board, output, depth);
         self.active_expression = previous_expression;
-        result.map(LoadFileOutcome::Loaded)
+        result
     }
 
     fn save_defs<B: Board>(&mut self, path: StringBytes, board: &mut B) -> LispResult<Value> {
@@ -8141,7 +8170,12 @@ impl Machine {
         self.wifi_net_repl_service.last_response_truncated = cycle.response_truncated;
     }
 
-    fn wifi_net_repl_service(&mut self, args: &[Value]) -> LispResult<Value> {
+    fn wifi_net_repl_service<B: Board>(
+        &mut self,
+        args: &[Value],
+        board: &mut B,
+    ) -> LispResult<Value> {
+        let was_enabled = self.wifi_net_repl_service.enabled;
         match args.len() {
             0 => {}
             1 => match args[0] {
@@ -8170,6 +8204,10 @@ impl Machine {
                     "wifi-net-repl-service expects up to two arguments",
                 ))
             }
+        }
+
+        if self.wifi_net_repl_service.enabled && !was_enabled {
+            board.status_indicator(BoardStatusIndicator::NetReplReady);
         }
 
         self.wifi_net_repl_service_report()
@@ -8809,6 +8847,7 @@ impl Machine {
 
         report.status = STATUS_READY;
         report.step = STEP_DONE;
+        board.status_indicator(BoardStatusIndicator::WifiReady);
         self.wifi_network_bootstrap_report(report)
     }
 

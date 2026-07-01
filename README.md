@@ -235,6 +235,11 @@ For normal quiet Wi-Fi startup from microSD, install a FAT `boot.lisp` with:
 (begin (wifi-network-bootstrap) (wifi-net-repl-service on))
 ```
 
+LED4 stays off at idle. During startup, a finite marker sequence indicates
+progress: one short pulse after FAT `boot.lisp` is read, two pulses after
+`wifi-network-bootstrap` succeeds, and three pulses after the UDP REPL service
+is enabled.
+
 The current installer path uses the temporary service-smoke image, then writes
 the file over the UDP REPL:
 

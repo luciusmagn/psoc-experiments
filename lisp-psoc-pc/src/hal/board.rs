@@ -8,6 +8,8 @@ use crate::{lisp, lisp_fat, lisp_store, wifi_resources};
 const BUTTON0_MASK: u32 = 1 << 4;
 const PERIPHERAL_REGISTER_START: u32 = 0x4000_0000;
 const PERIPHERAL_REGISTER_END: u32 = 0x40ff_fffc;
+const STATUS_PULSE_ON_CYCLES: u32 = 5_000_000;
+const STATUS_PULSE_OFF_CYCLES: u32 = 5_000_000;
 
 pub struct State {
     led_state: bool,
@@ -59,6 +61,25 @@ impl State {
             self.led_state = on;
             led_set(p, on);
             delay.delay_ms(duration_ms);
+        }
+        self.led_state = false;
+        led_set(p, false);
+    }
+
+    fn status_pulse(&mut self, p: &Peripherals, pulse_count: u8) {
+        self.heartbeat_enabled = false;
+        let mut pulse = 0u8;
+        while pulse < pulse_count {
+            self.led_state = true;
+            led_set(p, true);
+            cortex_m::asm::delay(STATUS_PULSE_ON_CYCLES);
+
+            self.led_state = false;
+            led_set(p, false);
+            pulse += 1;
+            if pulse < pulse_count {
+                cortex_m::asm::delay(STATUS_PULSE_OFF_CYCLES);
+            }
         }
         self.led_state = false;
         led_set(p, false);
@@ -131,6 +152,15 @@ impl lisp::Board for PsocBoard<'_> {
     fn heartbeat(&mut self, enabled: bool) -> bool {
         self.state.heartbeat_enabled = enabled;
         self.state.heartbeat_enabled
+    }
+
+    fn status_indicator(&mut self, indicator: lisp::BoardStatusIndicator) {
+        let pulse_count = match indicator {
+            lisp::BoardStatusIndicator::FatReady => 1,
+            lisp::BoardStatusIndicator::WifiReady => 2,
+            lisp::BoardStatusIndicator::NetReplReady => 3,
+        };
+        self.state.status_pulse(self.p, pulse_count);
     }
 
     fn button_pressed(&mut self, index: i32) -> Result<bool, lisp::Error> {

@@ -79,6 +79,10 @@ Treat hardware writes as externally visible side effects.
   the user has asked for the LED to stay off.
 - LED4 on this board is active-low on `P13.7`. Driving `P13.7` high turns
   it off; driving it low turns it on.
+- Finite LED4 startup/status markers are allowed when they indicate requested
+  board state and always leave LED4 off. Current milestone meanings are one
+  short pulse for FAT `boot.lisp` read success, two pulses for successful
+  Wi-Fi network bootstrap, and three pulses for UDP REPL service enable.
 - Confirm pin mappings against the schematic, BSP, or live register
   inspection before programming unfamiliar peripherals.
 - Prefer diagnostic commands that report register state without changing

@@ -5,7 +5,7 @@
 
 The CY8CPROTO-062-4343W board boots a CM0+ loader and a CM4 Rust firmware
 named =lisp-psoc-pc=. The firmware starts quietly, leaves the user LED off
-after the startup marker, and exposes a tiny Lisp machine.
+after finite startup/status markers, and exposes a tiny Lisp machine.
 
 Current working capabilities:
 
@@ -15,6 +15,9 @@ Current working capabilities:
 - Lisp forms over the framed UDP network REPL on port =4665=.
 - Wi-Fi association, DHCP lease acquisition, router ARP, DNS queries, and a
   small HTTP GET smoke test.
+- LED4 milestone pulses during normal startup: one pulse after FAT =boot.lisp=
+  read success, two after Wi-Fi bootstrap success, and three after UDP REPL
+  service enable. LED4 returns off afterward.
 - FAT-backed microSD storage for short source/data files, including =boot.lisp=.
 - File forms such as =ls=, =cat=, =read-file=, =read-file-chunk=,
   =save-file=, =append-file=, =save-defs=, and =load= within the current
