@@ -389,6 +389,55 @@
             (loop (+ index 1)))
            (else #f)))))
 
+(define (ascii-digit? char)
+  (and (char>=? char #\0) (char<=? char #\9)))
+
+(define (safe-uint-token? text maximum)
+  (and (> (string-length text) 0)
+       (let loop ((index 0))
+         (cond
+           ((>= index (string-length text))
+            (let ((value (string->number text)))
+              (and value (integer? value) (<= 0 value maximum))))
+           ((ascii-digit? (string-ref text index))
+            (loop (+ index 1)))
+           (else #f)))))
+
+(define (ascii-words text)
+  (let ((text-len (string-length text)))
+    (let skip ((index 0) (words '()))
+      (cond
+        ((>= index text-len) (reverse words))
+        ((ascii-space? (string-ref text index))
+         (skip (+ index 1) words))
+        (else
+         (let take ((end index))
+           (if (and (< end text-len)
+                    (not (ascii-space? (string-ref text end))))
+               (take (+ end 1))
+               (skip end (cons (substring text index end) words)))))))))
+
+(define (find-char text target start)
+  (let loop ((index start))
+    (cond
+      ((>= index (string-length text)) #f)
+      ((char=? (string-ref text index) target) index)
+      (else (loop (+ index 1))))))
+
+(define (safe-read-string-two-number-call? prefix text second-maximum third-maximum)
+  (let ((prefix-len (string-length prefix))
+        (text-len (string-length text)))
+    (and (string-prefix? prefix text)
+         (string-suffix? ")" text)
+         (> text-len (+ prefix-len 3))
+         (let ((path-end (find-char text #\" prefix-len)))
+           (and path-end
+                (safe-read-path? (substring text prefix-len path-end))
+                (let ((words (ascii-words (substring text (+ path-end 1) (- text-len 1)))))
+                  (and (= (length words) 2)
+                       (safe-uint-token? (car words) second-maximum)
+                       (safe-uint-token? (cadr words) third-maximum))))))))
+
 (define (safe-read-string-call? prefix text)
   (let ((prefix-len (string-length prefix))
         (text-len (string-length text)))
@@ -416,11 +465,16 @@
         (string=? text "(thermistor-status)")
         (string=? text "(capsense-status)")
         (safe-read-string-call? "(cat \"" text)
-        (safe-read-string-call? "(read-file \"" text))))
+        (safe-read-string-call? "(read-file \"" text)
+        (safe-read-string-two-number-call?
+         "(read-file-chunk \""
+         text
+         65535
+         96))))
 
 (define (enforce-read-only form)
   (unless (read-only-form? form)
-    (die "read-only mode allows only status, processes, help, millis, regs, heap, ls, fat-info, sd-status, Wi-Fi link/lease status, demux status, board status, network REPL service status, cat, and read-file forms")))
+    (die "read-only mode allows only status, processes, help, millis, regs, heap, ls, fat-info, sd-status, Wi-Fi link/lease status, demux status, board status, network REPL service status, cat, read-file, and read-file-chunk forms")))
 
 (define (legacy-response? bytes sequence)
   (and (>= (length bytes) 8)

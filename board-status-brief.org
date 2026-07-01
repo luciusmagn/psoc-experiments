@@ -16,8 +16,9 @@ Current working capabilities:
 - Wi-Fi association, DHCP lease acquisition, router ARP, DNS queries, and a
   small HTTP GET smoke test.
 - FAT-backed microSD storage for short source/data files, including =boot.lisp=.
-- File forms such as =ls=, =cat=, =read-file=, =save-file=, =append-file=,
-  =save-defs=, and =load= within the current small-file limits.
+- File forms such as =ls=, =cat=, =read-file=, =read-file-chunk=,
+  =save-file=, =append-file=, =save-defs=, and =load= within the current
+  small-file limits.
 - Cooperative top-level Lisp processes with =spawn=, =yield=, =sleep-ms=,
   =processes=, =process-poll=, and =kill=. Process reports include the last
   evaluated value for completed work.

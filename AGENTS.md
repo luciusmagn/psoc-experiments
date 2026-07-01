@@ -231,13 +231,15 @@ optional `LPS4` ACK with the response checksum, and still accepts legacy `LPS1`
 replies while older flashed images are being replaced. The board records ACK
 counts in `(wifi-net-repl-service status)` and does not evaluate ACK frames.
 Use a longer receive window for FAT-backed forms like `save-file`,
-`append-file`, `save-defs`, `read-file`, `load`, and `cat`; use `--wait 60`
+`append-file`, `save-defs`, `read-file`, `read-file-chunk`, `load`, and
+`cat`; use `--wait 60`
 when validating larger files over the UDP REPL. `save-defs` writes reloadable
 global data and top-level lambdas to one FAT source file, and reports captured
 closures or other non-reloadable bindings as skipped. `load` can read source
 files up to 512 bytes from FAT. `read-file` reports the full length but only
 includes inline content for files that fit in a 96-byte Lisp string; `cat`
-returns an error for larger files.
+returns an error for larger files. Use `read-file-chunk` to inspect any
+currently readable FAT file in bounded 96-byte string windows.
 Use `(http-get "http://example.com/")` as the current high-level Wi-Fi smoke
 test on the TP-Link network. It validates DNS, raw TCP open, HTTP/1.0 GET,
 response preview parsing, and RST/ACK cleanup. Use
@@ -282,11 +284,12 @@ small service cache to a deliberate board-wide network dispatch layer.
 Use `tools/send-net-repl.scm --color` only when ANSI payload coloring is wanted;
 plain output is the default. Use `--read-only` as a conservative accidental-send
 guard for status, directory, FAT info, Wi-Fi link/lease status, demux status,
-and simple-path file-read forms. It is a host-client and firmware guard against
-mistakes, not an authentication or authorization boundary. Use `--payload-only`
-for clean REPL-like output when transport metadata is not needed. Each invocation uses
-per-process ignored files under `.local/net-repl/`; use explicit unique
-sequences when comparing concurrent UDP requests.
+and simple-path file-read forms, including chunked file reads. It is a
+host-client and firmware guard against mistakes, not an authentication or
+authorization boundary. Use `--payload-only` for clean REPL-like output when
+transport metadata is not needed. Each invocation uses per-process ignored
+files under `.local/net-repl/`; use explicit unique sequences when comparing
+concurrent UDP requests.
 
 To make a normal quiet Wi-Fi image start the UDP REPL service from microSD,
 install this `boot.lisp` through the temporary service-smoke image:

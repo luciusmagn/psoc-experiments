@@ -7404,3 +7404,75 @@ in the demux cache, and the UDP service later drained it without a drop. This is
 still a small service-specific cache, not the final board-wide packet
 dispatcher, but it is now observable and can be used as a regression signal
 while the dispatcher shape is designed.
+
+* 2026-07-01 Chunked FAT file reads
+
+Added =(read-file-chunk path offset count)= so larger FAT files that fit in the
+current 512-byte file buffer can be inspected through 96-byte Lisp strings. The
+form returns the existing read status plus =offset=, =requested=, =chunk-len=,
+=more=, and =chunk=. The count is capped at the Lisp string limit. Both the
+firmware =LPS5= verifier and the host =--read-only= guard allow only simple
+paths, non-negative numeric offsets, and counts up to 96.
+
+The local laptop had moved to a =10.0.1.0/24= network. The first normal quiet
+image used stale ignored credential blobs and did not answer on the old board
+address. Re-running =tools/prepare-wifi-credentials.scm= refreshed the ignored
+selected profile from the currently connected IWD PSK profile without printing
+SSID or secret values. The temporary service-smoke image then reached stage 13
+in =WIFI_ARP_BOOT_SMOKE_MARKER=, and the marker reported the board lease as
+=10.0.1.6=.
+
+Validation on the temporary Wi-Fi network-REPL service-smoke image:
+
+#+begin_src sh
+tools/send-net-repl.scm --host 10.0.1.6 --sequence 816 \
+  --attempts 2 --wait 10 --payload-only '(+ 2 2)'
+tools/send-net-repl.scm --host 10.0.1.6 --sequence 817 \
+  --attempts 1 --wait 20 --payload-only --read-only '(ls)'
+tools/send-net-repl.scm --host 10.0.1.6 --sequence 819 \
+  --attempts 1 --wait 60 --payload-only --read-only \
+  '(read-file-chunk "long.lisp" 0 96)'
+tools/send-net-repl.scm --host 10.0.1.6 --sequence 822 \
+  --attempts 2 --wait 60 --payload-only --read-only \
+  '(read-file-chunk "long.lisp" 96 96)'
+tools/send-net-repl.scm --host 10.0.1.6 --sequence 823 \
+  --attempts 1 --wait 60 --payload-only --read-only '(cat "long.lisp")'
+#+end_src
+
+Observed:
+
+#+begin_example
+=> 4
+=> ((status . ready)
+    (ready . #t)
+    (count . 5)
+    ...
+    (files
+        "boot.lisp"
+        "long.lisp"
+        "tiny.lisp"
+        "defs.lisp"
+        "probe.lisp"))
+=> ((status . ready)
+    (ready . #t)
+    (content-len . 119)
+    (offset . 0)
+    (requested . 96)
+    (chunk-len . 96)
+    (more . #t)
+    (chunk . "(begin (define la 10) (define lb 20) (define lc 30) (define ld 40) (define le 50) (define lf 60)"))
+=> ((status . ready)
+    (ready . #t)
+    (content-len . 119)
+    (offset . 96)
+    (requested . 96)
+    (chunk-len . 23)
+    (more . #f)
+    (chunk . " (+ la lb lc ld le lf))"))
+error: file too long for string
+#+end_example
+
+A host-side negative guard check also refused
+=(read-file-chunk "long.lisp" 0 97)= before sending. Some concurrent FAT
+requests timed out while the single service was busy; use one FAT request at a
+time until storage operations are made incremental or dispatched by a scheduler.

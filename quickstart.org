@@ -98,7 +98,7 @@ tools/send-net-repl.scm --host BOARD_IP --payload-only --read-only --color '(wif
 #+end_src
 
 Use =--wait 60= for FAT-backed forms such as =ls=, =cat=, =read-file=,
-=save-file=, =append-file=, =save-defs=, and =load=.
+=read-file-chunk=, =save-file=, =append-file=, =save-defs=, and =load=.
 Simple FAT status and short file reads usually answer within a few seconds on
 the current SD path, but writes and larger reads still need the longer wait.
 Use =--payload-only= for a cleaner REPL-like display. Each client invocation
@@ -113,8 +113,9 @@ Current firmware can build UDP REPL replies up to 1400 payload bytes.
 host-side allowlist. It is useful for observer/status commands such as
 =(wifi-net-repl-service status)=, =(wifi-link-status)=, =(wifi-lease-status)=,
 =(wifi-demux-status)=, =(fat-info)=, =(ls)=, =(cat "boot.lisp")=, and
-=(read-file "boot.lisp")=. Treat it as an accidental-write guard, not as
-authentication.
+=(read-file "boot.lisp")=. It also allows bounded chunk reads such as
+=(read-file-chunk "long.lisp" 0 96)=. Treat it as an accidental-write guard,
+not as authentication.
 The default control transport is still the repo-local framed UDP protocol on
 port 4665. The first inbound TCP diagnostic is
 =(wifi-tcp-listen-once port [poll-frames])=, which accepts one raw TCP
@@ -224,6 +225,7 @@ logs.
 (fat-info)
 (ls)
 (cat "boot.lisp")
+(read-file-chunk "long.lisp" 0 96)
 (wifi-network-bootstrap)
 (wifi-net-repl-service on)
 (wifi-net-repl-service status)

@@ -2483,6 +2483,7 @@ pub enum Primitive {
     AppendFile,
     SaveDefs,
     ReadFile,
+    ReadFileChunk,
     Load,
     Ls,
     Cat,
@@ -2622,6 +2623,7 @@ impl Primitive {
             Self::AppendFile => "append-file",
             Self::SaveDefs => "save-defs",
             Self::ReadFile => "read-file",
+            Self::ReadFileChunk => "read-file-chunk",
             Self::Load => "load",
             Self::Ls => "ls",
             Self::Cat => "cat",
@@ -2941,6 +2943,7 @@ impl Machine {
         self.install_primitive(b"append-file", Primitive::AppendFile)?;
         self.install_primitive(b"save-defs", Primitive::SaveDefs)?;
         self.install_primitive(b"read-file", Primitive::ReadFile)?;
+        self.install_primitive(b"read-file-chunk", Primitive::ReadFileChunk)?;
         self.install_primitive(b"load", Primitive::Load)?;
         self.install_primitive(b"ls", Primitive::Ls)?;
         self.install_primitive(b"cat", Primitive::Cat)?;
@@ -3878,6 +3881,17 @@ impl Machine {
                 self.expect_count(args, 1)?;
                 let path = self.expect_string(args[0])?;
                 self.store_read_report(board.read_file(path))
+            }
+            Primitive::ReadFileChunk => {
+                self.expect_count(args, 3)?;
+                let path = self.expect_string(args[0])?;
+                let offset = self.expect_u16(args[1])?;
+                let count = self.expect_u8(args[2])?;
+                if usize::from(count) > MAX_STRING_BYTES {
+                    return Err(Error::new("chunk too long for string"));
+                }
+                let report = board.read_file(path);
+                self.store_read_chunk_report(report, offset, count)
             }
             Primitive::Load => {
                 self.expect_count(args, 1)?;
@@ -5273,6 +5287,7 @@ impl Machine {
             b"append-file",
             b"save-defs",
             b"read-file",
+            b"read-file-chunk",
             b"load",
             b"ls",
             b"cat",
@@ -5830,6 +5845,56 @@ impl Machine {
             directory_sector,
             data_sector,
             content,
+        ];
+        self.make_list_from_values(&entries)
+    }
+
+    fn store_read_chunk_report(
+        &mut self,
+        report: StoreReadReport,
+        offset: u16,
+        requested_count: u8,
+    ) -> LispResult<Value> {
+        let content_len = usize::from(report.content.len);
+        let offset_index = usize::from(offset);
+        let requested_len = usize::from(requested_count);
+        let chunk_len = if report.ready && offset_index < content_len {
+            core::cmp::min(requested_len, content_len - offset_index)
+        } else {
+            0
+        };
+        let chunk = if report.ready && offset_index < content_len {
+            self.alloc_string(&report.content.bytes[offset_index..offset_index + chunk_len])?
+        } else if report.ready {
+            self.alloc_string(&[])?
+        } else {
+            Value::Nil
+        };
+        let more = report.ready && offset_index + chunk_len < content_len;
+
+        let status = self.symbol_entry(b"status", report.status)?;
+        let ready = self.bool_entry(b"ready", report.ready)?;
+        let path_len = self.int_entry(b"path-len", report.path_len as i32)?;
+        let content_len = self.int_entry(b"content-len", report.content_len as i32)?;
+        let directory_sector = self.word_entry(b"directory-sector", report.directory_sector)?;
+        let data_sector = self.word_entry(b"data-sector", report.data_sector)?;
+        let offset = self.int_entry(b"offset", offset as i32)?;
+        let requested = self.int_entry(b"requested", requested_count as i32)?;
+        let chunk_len = self.int_entry(b"chunk-len", chunk_len as i32)?;
+        let more = self.bool_entry(b"more", more)?;
+        let chunk = self.entry(b"chunk", chunk)?;
+        let entries = [
+            status,
+            ready,
+            path_len,
+            content_len,
+            directory_sector,
+            data_sector,
+            offset,
+            requested,
+            chunk_len,
+            more,
+            chunk,
         ];
         self.make_list_from_values(&entries)
     }
@@ -8388,6 +8453,9 @@ impl Machine {
         if self.symbol_name_eq(symbol, b"cat") || self.symbol_name_eq(symbol, b"read-file") {
             return self.net_repl_read_only_file_arg(args);
         }
+        if self.symbol_name_eq(symbol, b"read-file-chunk") {
+            return self.net_repl_read_only_file_chunk_args(args);
+        }
 
         false
     }
@@ -8424,6 +8492,39 @@ impl Machine {
             },
             None => false,
         }
+    }
+
+    fn net_repl_read_only_file_chunk_args(&self, args: Value) -> bool {
+        let (path_value, tail) = match self.list_next(args) {
+            Ok(Some(pair)) => pair,
+            _ => return false,
+        };
+        let path = match self.expect_string(path_value) {
+            Ok(path) => path,
+            Err(_) => return false,
+        };
+        if !net_repl_read_only_path_safe(path) {
+            return false;
+        }
+
+        let (offset_value, tail) = match self.list_next(tail) {
+            Ok(Some(pair)) => pair,
+            _ => return false,
+        };
+        if self.expect_u16(offset_value).is_err() {
+            return false;
+        }
+
+        let (count_value, tail) = match self.list_next(tail) {
+            Ok(Some(pair)) => pair,
+            _ => return false,
+        };
+        let count = match self.expect_u8(count_value) {
+            Ok(count) => count,
+            Err(_) => return false,
+        };
+
+        tail == Value::Nil && usize::from(count) <= MAX_STRING_BYTES
     }
 
     fn single_list_arg(&self, args: Value) -> Option<Value> {
