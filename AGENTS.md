@@ -275,15 +275,16 @@ tests, keep stdin open long enough for connection setup, for example
 The service is still single-session. The UDP REPL service and Telnet service now
 poll concurrently through a small HAL demux cache that preserves framed UDP REPL
 requests and active TCP REPL packets when the other service reads them first.
+Use `(wifi-demux-status)` to inspect pending counts and cache/drop counters.
 After Telnet turns itself off, validate UDP again with a small form. Do not
 auto-start TCP from `boot.lisp` until the packet dispatcher is promoted from a
 small service cache to a deliberate board-wide network dispatch layer.
 Use `tools/send-net-repl.scm --color` only when ANSI payload coloring is wanted;
 plain output is the default. Use `--read-only` as a conservative accidental-send
-guard for status, directory, FAT info, Wi-Fi link/lease status, and simple-path
-file-read forms. It is a host-client and firmware guard against mistakes, not
-an authentication or authorization boundary. Use `--payload-only` for clean
-REPL-like output when transport metadata is not needed. Each invocation uses
+guard for status, directory, FAT info, Wi-Fi link/lease status, demux status,
+and simple-path file-read forms. It is a host-client and firmware guard against
+mistakes, not an authentication or authorization boundary. Use `--payload-only`
+for clean REPL-like output when transport metadata is not needed. Each invocation uses
 per-process ignored files under `.local/net-repl/`; use explicit unique
 sequences when comparing concurrent UDP requests.
 

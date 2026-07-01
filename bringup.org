@@ -7336,3 +7336,71 @@ tools/send-net-repl.scm --host 10.0.0.9 --sequence 988 \
 Operational conclusion: keep firmware TX pacing because it turns reset banners
 back into useful status output. Do not treat UART RX as reliable yet. Use UDP or
 Telnet for normal control once Wi-Fi has bootstrapped.
+
+* 2026-07-01 Demux cache status counters
+
+Added =(wifi-demux-status)= as a read-only Lisp report for the small HAL packet
+cache shared by the UDP REPL service and Telnet service. The report exposes
+pending queue counts, capacities, cache counts, drain counts, and drop counts
+for both framed UDP REPL packets and active TCP REPL packets.
+
+The queue push helpers now return failure when the matching pending queue is
+full and increment a drop counter. Previously the cache helper reported success
+even when the queue was full.
+
+Initial validation after flashing the normal quiet Wi-Fi image:
+
+#+begin_src sh
+tools/send-net-repl.scm --host 10.0.0.9 --sequence 993 \
+  --payload-only --read-only '(wifi-demux-status)'
+#+end_src
+
+#+begin_example
+=> ((net-repl.pending . #x00000000)
+    (net-repl.capacity . #x00000004)
+    (net-repl.cached . #x00000000)
+    (net-repl.taken . #x00000000)
+    (net-repl.dropped . #x00000000)
+    (tcp-repl.pending . #x00000000)
+    (tcp-repl.capacity . #x00000004)
+    (tcp-repl.cached . #x00000000)
+    (tcp-repl.taken . #x00000000)
+    (tcp-repl.dropped . #x00000000))
+#+end_example
+
+Coexistence validation:
+
+#+begin_src sh
+tools/send-net-repl.scm --host 10.0.0.9 --sequence 994 \
+  --payload-only '(wifi-tcp-repl-service on 2323 1)'
+printf '(+ 11 12)\r\n(wifi-tcp-repl-service off)\r\n' | \
+  timeout 25 ncat 10.0.0.9 2323
+tools/send-net-repl.scm --host 10.0.0.9 --sequence 995 \
+  --payload-only '(+ 90 9)'
+tools/send-net-repl.scm --host 10.0.0.9 --sequence 996 \
+  --payload-only --read-only '(wifi-demux-status)'
+#+end_src
+
+Observed:
+
+#+begin_example
+lisp> => 23
+lisp> => ((enabled . #f) ...)
+=> 99
+=> ((net-repl.pending . #x00000000)
+    (net-repl.capacity . #x00000004)
+    (net-repl.cached . #x00000001)
+    (net-repl.taken . #x00000001)
+    (net-repl.dropped . #x00000000)
+    (tcp-repl.pending . #x00000000)
+    (tcp-repl.capacity . #x00000004)
+    (tcp-repl.cached . #x00000000)
+    (tcp-repl.taken . #x00000000)
+    (tcp-repl.dropped . #x00000000))
+#+end_example
+
+That proves the TCP-side poller did read one UDP REPL packet first, preserved it
+in the demux cache, and the UDP service later drained it without a drop. This is
+still a small service-specific cache, not the final board-wide packet
+dispatcher, but it is now observable and can be used as a regression signal
+while the dispatcher shape is designed.

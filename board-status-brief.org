@@ -29,7 +29,8 @@ Current working capabilities:
   persistent TCP session state, IAC command parsing, WONT/DONT option refusal,
   NVT line endings, prompts, and pretty-printed Lisp results.
 - A small HAL demux cache that lets the UDP REPL service and Telnet service
-  poll concurrently without discarding each other's framed packets.
+  poll concurrently without discarding each other's framed packets, with
+  =(wifi-demux-status)= counters for cached, drained, and dropped packets.
 
 * Core Usage
 

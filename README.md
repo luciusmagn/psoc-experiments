@@ -196,14 +196,16 @@ outside its conservative read-only allowlist before evaluation.
 `tools/send-net-repl.scm --color` wraps payload text in ANSI color. Plain output
 is the default so logs and scripts do not receive escape codes. Use
 `--payload-only` for a cleaner REPL-like display without transport metadata.
-Use `--read-only` for status, directory, FAT info, Wi-Fi link/lease status, and
-simple-path file-read operations:
+Use `--read-only` for status, directory, FAT info, Wi-Fi link/lease status,
+demux status, and simple-path file-read operations:
 
 ```sh
 tools/send-net-repl.scm --host BOARD_IP --payload-only --read-only --color \
   '(wifi-net-repl-service status)'
 tools/send-net-repl.scm --host BOARD_IP --payload-only --read-only \
   '(wifi-tcp-repl-service status)'
+tools/send-net-repl.scm --host BOARD_IP --payload-only --read-only \
+  '(wifi-demux-status)'
 ```
 
 This guard is for avoiding accidental writes from the host client and current

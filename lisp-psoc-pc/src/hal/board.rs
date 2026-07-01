@@ -815,6 +815,10 @@ impl lisp::Board for PsocBoard<'_> {
         ))
     }
 
+    fn wifi_demux_status(&mut self) -> lisp::WifiDemuxReport {
+        wifi_sdio_demux_report(wifi_sdio::demux_status(&self.state.wifi_control_state))
+    }
+
     fn wifi_load_clm(&mut self) -> lisp::WifiSdioClmLoadReport {
         wifi_sdio_clm_load_report(wifi_sdio::load_clm(
             self.p,
@@ -2964,6 +2968,21 @@ fn wifi_sdio_net_repl_reply_report(
         send_last_error: report.send_last_error.map(wifi_sdio_command_error_report),
         host_normal_int: report.host_normal_int,
         host_error_int: report.host_error_int,
+    }
+}
+
+fn wifi_sdio_demux_report(report: wifi_sdio::WifiSdioDemuxReport) -> lisp::WifiDemuxReport {
+    lisp::WifiDemuxReport {
+        net_repl_pending: report.net_repl_pending,
+        net_repl_capacity: report.net_repl_capacity,
+        net_repl_cached: report.net_repl_cached,
+        net_repl_taken: report.net_repl_taken,
+        net_repl_dropped: report.net_repl_dropped,
+        tcp_repl_pending: report.tcp_repl_pending,
+        tcp_repl_capacity: report.tcp_repl_capacity,
+        tcp_repl_cached: report.tcp_repl_cached,
+        tcp_repl_taken: report.tcp_repl_taken,
+        tcp_repl_dropped: report.tcp_repl_dropped,
     }
 }
 

@@ -93,6 +93,7 @@ tools/send-net-repl.scm --host BOARD_IP '(+ 1 2)'
 tools/send-net-repl.scm --host BOARD_IP --payload-only '(+ 1 2)'
 tools/send-net-repl.scm --host BOARD_IP --read-only '(wifi-net-repl-service status)'
 tools/send-net-repl.scm --host BOARD_IP --read-only '(wifi-tcp-repl-service status)'
+tools/send-net-repl.scm --host BOARD_IP --read-only '(wifi-demux-status)'
 tools/send-net-repl.scm --host BOARD_IP --payload-only --read-only --color '(wifi-net-repl-service status)'
 #+end_src
 
@@ -111,8 +112,9 @@ Current firmware can build UDP REPL replies up to 1400 payload bytes.
 =--read-only= sends an =LPS5= request to current firmware and also applies a
 host-side allowlist. It is useful for observer/status commands such as
 =(wifi-net-repl-service status)=, =(wifi-link-status)=, =(wifi-lease-status)=,
-=(fat-info)=, =(ls)=, =(cat "boot.lisp")=, and =(read-file "boot.lisp")=.
-Treat it as an accidental-write guard, not as authentication.
+=(wifi-demux-status)=, =(fat-info)=, =(ls)=, =(cat "boot.lisp")=, and
+=(read-file "boot.lisp")=. Treat it as an accidental-write guard, not as
+authentication.
 The default control transport is still the repo-local framed UDP protocol on
 port 4665. The first inbound TCP diagnostic is
 =(wifi-tcp-listen-once port [poll-frames])=, which accepts one raw TCP
@@ -130,7 +132,8 @@ one TCP session, sends a prompt, parses Telnet IAC commands, refuses
 unsupported options with WONT/DONT, handles NVT CR/LF line endings, evaluates
 complete Lisp lines, and keeps the session open until the peer closes. The UDP
 REPL and Telnet service poll concurrently through a small HAL demux cache, so
-UDP status checks can still work while Telnet is enabled.
+UDP status checks can still work while Telnet is enabled. Use
+=(wifi-demux-status)= to inspect cache, drain, and drop counters.
 
 Raw inbound TCP smoke test, with the UDP REPL already running:
 
@@ -224,6 +227,7 @@ logs.
 (wifi-network-bootstrap)
 (wifi-net-repl-service on)
 (wifi-net-repl-service status)
+(wifi-demux-status)
 (wifi-tcp-listen-once 2323 80)
 (wifi-tcp-receive-once 2323 80)
 (wifi-tcp-repl-once 2323 80)

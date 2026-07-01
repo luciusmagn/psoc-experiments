@@ -1503,9 +1503,15 @@ pub struct WifiSdioControlState {
     tcp_repl_ack_number: u32,
     pending_net_repl_head: u8,
     pending_net_repl_count: u8,
+    pending_net_repl_cached: u32,
+    pending_net_repl_taken: u32,
+    pending_net_repl_dropped: u32,
     pending_net_repl_packets: [ParsedNetReplRequest; RX_PENDING_NET_REPL_PACKETS],
     pending_tcp_repl_head: u8,
     pending_tcp_repl_count: u8,
+    pending_tcp_repl_cached: u32,
+    pending_tcp_repl_taken: u32,
+    pending_tcp_repl_dropped: u32,
     pending_tcp_repl_packets: [ParsedTcpPacket; RX_PENDING_TCP_REPL_PACKETS],
 }
 
@@ -1545,10 +1551,16 @@ impl WifiSdioControlState {
             tcp_repl_ack_number: 0,
             pending_net_repl_head: 0,
             pending_net_repl_count: 0,
+            pending_net_repl_cached: 0,
+            pending_net_repl_taken: 0,
+            pending_net_repl_dropped: 0,
             pending_net_repl_packets: [empty_parsed_net_repl_request();
                 RX_PENDING_NET_REPL_PACKETS],
             pending_tcp_repl_head: 0,
             pending_tcp_repl_count: 0,
+            pending_tcp_repl_cached: 0,
+            pending_tcp_repl_taken: 0,
+            pending_tcp_repl_dropped: 0,
             pending_tcp_repl_packets: [empty_parsed_tcp_packet(); RX_PENDING_TCP_REPL_PACKETS],
         }
     }
@@ -1563,6 +1575,7 @@ impl WifiSdioControlState {
         self.tcp_sequence = TCP_CLIENT_SEQUENCE_INITIAL;
         self.clear_local_mac();
         self.clear_dhcp_lease();
+        self.clear_pending_rx_counters();
     }
 
     fn available_tx_credits(&self) -> u8 {
@@ -1638,6 +1651,15 @@ impl WifiSdioControlState {
         self.clear_pending_tcp_repl_packets();
     }
 
+    fn clear_pending_rx_counters(&mut self) {
+        self.pending_net_repl_cached = 0;
+        self.pending_net_repl_taken = 0;
+        self.pending_net_repl_dropped = 0;
+        self.pending_tcp_repl_cached = 0;
+        self.pending_tcp_repl_taken = 0;
+        self.pending_tcp_repl_dropped = 0;
+    }
+
     fn clear_pending_net_repl_packets(&mut self) {
         self.pending_net_repl_head = 0;
         self.pending_net_repl_count = 0;
@@ -1653,6 +1675,7 @@ impl WifiSdioControlState {
 
     fn push_pending_net_repl_packet(&mut self, packet: ParsedNetReplRequest) -> bool {
         if self.pending_net_repl_count as usize >= RX_PENDING_NET_REPL_PACKETS {
+            self.pending_net_repl_dropped = self.pending_net_repl_dropped.wrapping_add(1);
             return false;
         }
 
@@ -1660,6 +1683,7 @@ impl WifiSdioControlState {
             % RX_PENDING_NET_REPL_PACKETS;
         self.pending_net_repl_packets[index] = packet;
         self.pending_net_repl_count = self.pending_net_repl_count.saturating_add(1);
+        self.pending_net_repl_cached = self.pending_net_repl_cached.wrapping_add(1);
         true
     }
 
@@ -1673,11 +1697,13 @@ impl WifiSdioControlState {
         self.pending_net_repl_packets[index] = empty_parsed_net_repl_request();
         self.pending_net_repl_head = ((index + 1) % RX_PENDING_NET_REPL_PACKETS) as u8;
         self.pending_net_repl_count = self.pending_net_repl_count.saturating_sub(1);
+        self.pending_net_repl_taken = self.pending_net_repl_taken.wrapping_add(1);
         Some(packet)
     }
 
     fn push_pending_tcp_repl_packet(&mut self, packet: ParsedTcpPacket) -> bool {
         if self.pending_tcp_repl_count as usize >= RX_PENDING_TCP_REPL_PACKETS {
+            self.pending_tcp_repl_dropped = self.pending_tcp_repl_dropped.wrapping_add(1);
             return false;
         }
 
@@ -1685,6 +1711,7 @@ impl WifiSdioControlState {
             % RX_PENDING_TCP_REPL_PACKETS;
         self.pending_tcp_repl_packets[index] = packet;
         self.pending_tcp_repl_count = self.pending_tcp_repl_count.saturating_add(1);
+        self.pending_tcp_repl_cached = self.pending_tcp_repl_cached.wrapping_add(1);
         true
     }
 
@@ -1698,6 +1725,7 @@ impl WifiSdioControlState {
         self.pending_tcp_repl_packets[index] = empty_parsed_tcp_packet();
         self.pending_tcp_repl_head = ((index + 1) % RX_PENDING_TCP_REPL_PACKETS) as u8;
         self.pending_tcp_repl_count = self.pending_tcp_repl_count.saturating_sub(1);
+        self.pending_tcp_repl_taken = self.pending_tcp_repl_taken.wrapping_add(1);
         Some(packet)
     }
 
@@ -2553,6 +2581,19 @@ pub struct WifiSdioNetReplReplyReport {
     pub send_last_error: Option<CommandError>,
     pub host_normal_int: u16,
     pub host_error_int: u16,
+}
+
+pub struct WifiSdioDemuxReport {
+    pub net_repl_pending: u8,
+    pub net_repl_capacity: u8,
+    pub net_repl_cached: u32,
+    pub net_repl_taken: u32,
+    pub net_repl_dropped: u32,
+    pub tcp_repl_pending: u8,
+    pub tcp_repl_capacity: u8,
+    pub tcp_repl_cached: u32,
+    pub tcp_repl_taken: u32,
+    pub tcp_repl_dropped: u32,
 }
 
 pub struct WifiSdioWlcUpReport {
@@ -8947,6 +8988,21 @@ pub fn net_repl_reply(
     finish_net_repl_reply_report(p, report)
 }
 
+pub fn demux_status(state: &WifiSdioControlState) -> WifiSdioDemuxReport {
+    WifiSdioDemuxReport {
+        net_repl_pending: state.pending_net_repl_count,
+        net_repl_capacity: RX_PENDING_NET_REPL_PACKETS as u8,
+        net_repl_cached: state.pending_net_repl_cached,
+        net_repl_taken: state.pending_net_repl_taken,
+        net_repl_dropped: state.pending_net_repl_dropped,
+        tcp_repl_pending: state.pending_tcp_repl_count,
+        tcp_repl_capacity: RX_PENDING_TCP_REPL_PACKETS as u8,
+        tcp_repl_cached: state.pending_tcp_repl_cached,
+        tcp_repl_taken: state.pending_tcp_repl_taken,
+        tcp_repl_dropped: state.pending_tcp_repl_dropped,
+    }
+}
+
 struct LinkControlGet {
     status: WifiSdioLinkGetStatus,
     cdc_status: u32,
@@ -9359,8 +9415,7 @@ fn cache_net_repl_frame(
         packet.status,
         WifiSdioNetReplParseStatus::Ready | WifiSdioNetReplParseStatus::Ack
     ) {
-        state.push_pending_net_repl_packet(packet);
-        return true;
+        return state.push_pending_net_repl_packet(packet);
     }
 
     false
@@ -9389,8 +9444,7 @@ fn cache_tcp_repl_frame(
             packet.status,
             WifiSdioTcpParseStatus::Ready | WifiSdioTcpParseStatus::Reset
         ) {
-            state.push_pending_tcp_repl_packet(packet);
-            return true;
+            return state.push_pending_tcp_repl_packet(packet);
         }
     } else if state.tcp_repl_listen_port != 0 {
         let packet = parse_tcp_listen_syn_frame(
@@ -9401,8 +9455,7 @@ fn cache_tcp_repl_frame(
             state.tcp_repl_listen_port,
         );
         if matches!(packet.status, WifiSdioTcpParseStatus::Ready) {
-            state.push_pending_tcp_repl_packet(packet);
-            return true;
+            return state.push_pending_tcp_repl_packet(packet);
         }
     }
 

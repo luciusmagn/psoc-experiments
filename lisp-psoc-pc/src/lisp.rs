@@ -390,6 +390,7 @@ pub trait Board {
         sequence: u32,
         payload: NetReplResponseBytes,
     ) -> WifiNetReplReplyReport;
+    fn wifi_demux_status(&mut self) -> WifiDemuxReport;
     fn wifi_load_clm(&mut self) -> WifiSdioClmLoadReport;
     fn wifi_get_country(&mut self) -> WifiSdioCountryReport;
     fn wifi_set_country(&mut self, country_code: [u8; 2], revision: i32) -> WifiSdioCountryReport;
@@ -1667,6 +1668,20 @@ pub struct WifiNetReplReplyReport {
 }
 
 #[derive(Clone, Copy)]
+pub struct WifiDemuxReport {
+    pub net_repl_pending: u8,
+    pub net_repl_capacity: u8,
+    pub net_repl_cached: u32,
+    pub net_repl_taken: u32,
+    pub net_repl_dropped: u32,
+    pub tcp_repl_pending: u8,
+    pub tcp_repl_capacity: u8,
+    pub tcp_repl_cached: u32,
+    pub tcp_repl_taken: u32,
+    pub tcp_repl_dropped: u32,
+}
+
+#[derive(Clone, Copy)]
 pub struct WifiNetworkBootstrapReport {
     pub status: &'static [u8],
     pub step: &'static [u8],
@@ -2511,6 +2526,7 @@ pub enum Primitive {
     WifiNetReplOnce,
     WifiNetReplService,
     WifiTcpReplService,
+    WifiDemuxStatus,
     WifiNetworkBootstrap,
     WifiLoadClm,
     WifiGetCountry,
@@ -2649,6 +2665,7 @@ impl Primitive {
             Self::WifiNetReplOnce => "wifi-net-repl-once",
             Self::WifiNetReplService => "wifi-net-repl-service",
             Self::WifiTcpReplService => "wifi-tcp-repl-service",
+            Self::WifiDemuxStatus => "wifi-demux-status",
             Self::WifiNetworkBootstrap => "wifi-network-bootstrap",
             Self::WifiLoadClm => "wifi-load-clm",
             Self::WifiGetCountry => "wifi-get-country",
@@ -2973,6 +2990,7 @@ impl Machine {
         self.install_primitive(b"wifi-net-repl-once", Primitive::WifiNetReplOnce)?;
         self.install_primitive(b"wifi-net-repl-service", Primitive::WifiNetReplService)?;
         self.install_primitive(b"wifi-tcp-repl-service", Primitive::WifiTcpReplService)?;
+        self.install_primitive(b"wifi-demux-status", Primitive::WifiDemuxStatus)?;
         self.install_primitive(b"wifi-network-bootstrap", Primitive::WifiNetworkBootstrap)?;
         self.install_primitive(b"wifi-load-clm", Primitive::WifiLoadClm)?;
         self.install_primitive(b"wifi-get-country", Primitive::WifiGetCountry)?;
@@ -4116,6 +4134,10 @@ impl Machine {
             }
             Primitive::WifiNetReplService => self.wifi_net_repl_service(args),
             Primitive::WifiTcpReplService => self.wifi_tcp_repl_service(args, board),
+            Primitive::WifiDemuxStatus => {
+                self.expect_count(args, 0)?;
+                self.wifi_demux_report(board.wifi_demux_status())
+            }
             Primitive::WifiNetworkBootstrap => {
                 self.expect_count(args, 0)?;
                 self.wifi_network_bootstrap(board)
@@ -5294,6 +5316,7 @@ impl Machine {
             b"wifi-net-repl-once",
             b"wifi-net-repl-service",
             b"wifi-tcp-repl-service",
+            b"wifi-demux-status",
             b"wifi-network-bootstrap",
             b"wifi-load-clm",
             b"wifi-get-country",
@@ -8134,6 +8157,37 @@ impl Machine {
         self.make_list_from_values(&entries)
     }
 
+    fn wifi_demux_report(&mut self, report: WifiDemuxReport) -> LispResult<Value> {
+        let net_repl_pending =
+            self.word_entry(b"net-repl.pending", report.net_repl_pending as u32)?;
+        let net_repl_capacity =
+            self.word_entry(b"net-repl.capacity", report.net_repl_capacity as u32)?;
+        let net_repl_cached = self.word_entry(b"net-repl.cached", report.net_repl_cached)?;
+        let net_repl_taken = self.word_entry(b"net-repl.taken", report.net_repl_taken)?;
+        let net_repl_dropped = self.word_entry(b"net-repl.dropped", report.net_repl_dropped)?;
+        let tcp_repl_pending =
+            self.word_entry(b"tcp-repl.pending", report.tcp_repl_pending as u32)?;
+        let tcp_repl_capacity =
+            self.word_entry(b"tcp-repl.capacity", report.tcp_repl_capacity as u32)?;
+        let tcp_repl_cached = self.word_entry(b"tcp-repl.cached", report.tcp_repl_cached)?;
+        let tcp_repl_taken = self.word_entry(b"tcp-repl.taken", report.tcp_repl_taken)?;
+        let tcp_repl_dropped = self.word_entry(b"tcp-repl.dropped", report.tcp_repl_dropped)?;
+
+        let entries = [
+            net_repl_pending,
+            net_repl_capacity,
+            net_repl_cached,
+            net_repl_taken,
+            net_repl_dropped,
+            tcp_repl_pending,
+            tcp_repl_capacity,
+            tcp_repl_cached,
+            tcp_repl_taken,
+            tcp_repl_dropped,
+        ];
+        self.make_list_from_values(&entries)
+    }
+
     fn record_wifi_tcp_repl_service_cycle(&mut self, cycle: WifiTcpReplCycleReport) {
         let reply_status = match cycle.reply {
             Some(reply) => reply.status,
@@ -8352,6 +8406,7 @@ impl Machine {
             || self.symbol_name_eq(symbol, b"capsense-status")
             || self.symbol_name_eq(symbol, b"wifi-link-status")
             || self.symbol_name_eq(symbol, b"wifi-lease-status")
+            || self.symbol_name_eq(symbol, b"wifi-demux-status")
     }
 
     fn net_repl_read_only_status_arg(&self, args: Value) -> bool {
