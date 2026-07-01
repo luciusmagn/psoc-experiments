@@ -1,0 +1,74 @@
+#+title: PSoC 6 Lisp Machine Status Brief
+#+date: 2026-07-01
+
+* What Works Now
+
+The CY8CPROTO-062-4343W board boots a CM0+ loader and a CM4 Rust firmware
+named =lisp-psoc-pc=. The firmware starts quietly, leaves the user LED off
+after the startup marker, and exposes a tiny Lisp machine.
+
+Current working capabilities:
+
+- UART banner and prompt over KitProg3 USB serial at =115200 8N1= on
+  =/dev/ttyACM0=. The UART path is usable for startup and recovery, but the
+  stream can still corrupt bytes.
+- Lisp forms over the framed UDP network REPL on port =4665=.
+- Wi-Fi association, DHCP lease acquisition, router ARP, DNS queries, and a
+  small HTTP GET smoke test.
+- FAT-backed microSD storage for short source/data files, including =boot.lisp=.
+- File forms such as =ls=, =cat=, =read-file=, =save-file=, =append-file=,
+  =save-defs=, and =load= within the current small-file limits.
+- Cooperative top-level Lisp processes with =spawn=, =yield=, =sleep-ms=,
+  =processes=, =process-poll=, and =kill=.
+- Raw inbound TCP diagnostics for handshake and payload receive.
+- A one-shot TCP Lisp REPL form, =(wifi-tcp-repl-once port [poll-frames])=,
+  which accepts one TCP connection, evaluates one received Lisp form, sends the
+  pretty-printed result back over TCP, and closes.
+
+* Core Usage
+
+Only the board's cores are split today:
+
+- CM0+: bootloader, reset/setup, CM4 image handoff.
+- CM4: Lisp evaluator, heap and GC, UART console, FAT storage, Wi-Fi SDIO
+  driver, UDP REPL service, TCP diagnostics, and cooperative process polling.
+
+The CYW4343W Wi-Fi/Bluetooth module is driven over SDIO from CM4. The second
+PSoC core is not yet used as a live console or I/O front end after boot. A
+future split can move always-responsive I/O and framing to CM0+ while CM4 keeps
+the evaluator and heavier Wi-Fi/storage work.
+
+* The Lisp
+
+The language is a small Scheme-like Lisp implemented in Rust for this board.
+It has s-expressions, integers, machine words, booleans, symbols, strings,
+pairs/lists, globals, closures, recursion, and a pretty printer. Core special
+forms include =quote=, =if=, =define=, =lambda=, =begin=, and =let=.
+
+The runtime has a mark-sweep heap and a direct recursive evaluator. That means
+one Lisp form runs until it returns; long primitives such as FAT writes or Wi-Fi
+SDIO operations still block the firmware loop while they execute. The current
+process system schedules only between top-level forms, not inside arbitrary
+evaluator frames.
+
+Hardware and network operations are Lisp primitives layered through a Rust
+Board trait and HAL modules. Command parsing, evaluation, storage, Wi-Fi, and
+board peripherals stay separate so low-level register or packet work does not
+leak into Lisp reader/evaluator code.
+
+* Closest Planned Features
+
+Near-term work should focus on making interaction less fragile:
+
+1. Turn the one-shot TCP REPL into a persistent network REPL service.
+2. Decide whether the persistent TCP service should be plain line TCP, a tiny
+   Telnet subset, or a custom framed stream.
+3. Keep the UART console working as a recovery path and continue reducing byte
+   corruption.
+4. Add paging or streaming for network REPL responses larger than one UDP
+   packet.
+5. Replace the current top-level process runner with resumable evaluator frames
+   so processes can yield inside longer Lisp computations.
+6. Expand FAT loading/saving beyond the current small-file limits.
+7. Consider moving console/network framing to CM0+ later, leaving CM4 to
+   evaluate Lisp and run heavier storage/Wi-Fi work.

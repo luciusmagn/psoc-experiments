@@ -6783,23 +6783,83 @@ The host-side reset is expected for this diagnostic. The next TCP REPL slice
 should keep enough accepted-connection state to send a response payload before
 closing.
 
+* 2026-07-01 One-shot TCP Lisp REPL
+
+Added =(wifi-tcp-repl-once port [poll-frames])= as the first TCP path that
+returns evaluated Lisp output over the accepted TCP connection. The form is
+still driven from the existing UDP REPL: it accepts one connection, receives
+one Lisp payload up to the current 96-byte request limit, evaluates it with the
+normal Lisp reader/evaluator/printer, sends the pretty-printed response as one
+TCP payload, and closes with FIN/ACK.
+
+The implementation keeps accepted TCP peer state in =WifiSdioControlState=
+only between request receipt and reply send. It does not change the existing
+=wifi-tcp-receive-once= diagnostic, which still closes with RST/ACK after
+capturing a payload.
+
+Validation after flashing the normal quiet Wi-Fi image:
+
+#+begin_example
+tools/build-lisp.scm --wifi-firmware --wifi-credentials
+tools/flash-lisp.scm
+
+tools/send-net-repl.scm --host 10.0.0.9 --attempts 3 --wait 10 '(+ 1 2)'
+payload.text==> 3
+
+(tools/send-net-repl.scm --host 10.0.0.9 --attempts 1 --wait 60 \
+  --payload-only '(wifi-tcp-repl-once 2323 80)') &
+printf '(+ 40 2)\n' | ncat -w 8 -q 3 10.0.0.9 2323
+=> 42
+
+=> ((status . ready)
+    (request.status . ready)
+    (request.step . done)
+    (local.ip . #x0a000009)
+    (listen.port . #x00000913)
+    (request.peer.ip . #x0a000005)
+    (request.peer.port . #x0000acd2)
+    (request.listen.status . ready)
+    (request.ack.status . ready)
+    (request.payload.status . ready)
+    (request.payload.parse . ready)
+    (request.payload.bytes . #x00000009)
+    (eval.status . ready)
+    (response.length . #x00000006)
+    (response.truncated . #f)
+    (reply.status . ready)
+    (reply.step . done)
+    (reply.peer.valid . #t)
+    (reply.send.status . ready)
+    (request.HOST.ERR_INT . #x00000000)
+    (reply.HOST.ERR_INT . #x00000000))
+
+tools/send-net-repl.scm --host 10.0.0.9 --attempts 2 --wait 10 \
+  --payload-only '(+ 4 5)'
+=> 9
+#+end_example
+
+UART after the flash still showed the startup banner and prompt, but the log
+also contained corrupted bytes. Treat UART as a recovery/status path for now
+and prefer the UDP REPL or the new one-shot TCP path for interactive work.
+
 * Next actions
 
 1. Keep UART sanity checks in the workflow. If corruption returns, first replug
    and reset host tty state before changing SCB5 firmware.
-2. Add REPL history and better editing across continuation lines.
-3. Stream or page UDP REPL responses if future payloads need more than one
+2. Turn the one-shot TCP REPL into a persistent network REPL service.
+3. Add REPL history and better editing across continuation lines.
+4. Stream or page UDP REPL responses if future payloads need more than one
    unfragmented packet.
-4. Add FAT long-file-name support or document a PC-side =.LSP= convention for
+5. Add FAT long-file-name support or document a PC-side =.LSP= convention for
    Lisp source files.
-5. Test the newer Infineon target =infineon/cy8cxxa.cfg= as a replacement
+6. Test the newer Infineon target =infineon/cy8cxxa.cfg= as a replacement
    for obsolete =target/psoc6_2m.cfg=.
-6. Keep boot-smoke and UDP REPL validation available for unattended runs.
-7. Exercise ACK plus host retry behavior under induced packet loss and decide
+7. Keep boot-smoke and UDP REPL validation available for unattended runs.
+8. Exercise ACK plus host retry behavior under induced packet loss and decide
    whether an ACK should clear or preserve the single-entry response cache.
-8. Extend HTTP from a first response preview into a streamed or file-backed
+9. Extend HTTP from a first response preview into a streamed or file-backed
    body reader, probably saving larger responses to FAT.
-9. Add generic CDC ioctl/iovar helpers for firmware version, join, and link
+10. Add generic CDC ioctl/iovar helpers for firmware version, join, and link
    status.
-10. Add real PDM sample and CapSense scan primitives on top of the existing
+11. Add real PDM sample and CapSense scan primitives on top of the existing
     status forms.

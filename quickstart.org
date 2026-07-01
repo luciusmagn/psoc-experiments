@@ -116,6 +116,10 @@ Telnet-like console, not the console itself.
 =(wifi-tcp-receive-once port [poll-frames])= extends that path by accepting one
 connection, receiving one TCP payload frame, reporting a 96-byte preview, and
 then sending RST/ACK cleanup.
+=(wifi-tcp-repl-once port [poll-frames])= accepts one TCP connection, evaluates
+one received Lisp form, sends the pretty-printed result over TCP, and closes.
+It is still a one-shot diagnostic driven from the UDP REPL, not a persistent
+Telnet service.
 
 Raw inbound TCP smoke test, with the UDP REPL already running:
 
@@ -148,6 +152,23 @@ cat .local/logs/tcp-receive.out
 A successful run reports =(payload.status . ready)=, =(payload.bytes . ...)=,
 and a =preview= string matching the payload. The host currently sees a reset
 because this diagnostic closes the connection without sending a TCP response.
+
+One-shot TCP REPL smoke test:
+
+#+begin_src sh
+(tools/send-net-repl.scm --host BOARD_IP --attempts 1 --wait 60 \
+  --payload-only '(wifi-tcp-repl-once 2323 80)' \
+  > .local/logs/tcp-repl.out 2>&1) &
+sleep 2
+printf '(+ 40 2)\n' | ncat -w 8 -q 3 BOARD_IP 2323
+wait
+cat .local/logs/tcp-repl.out
+#+end_src
+
+A successful run prints ==> 42= from =ncat= and the board report includes
+=(status . ready)=, =(request.status . ready)=, =(eval.status . ready)=, and
+=(reply.status . ready)=. The TCP response uses the same pretty printer as the
+UDP REPL.
 
 If a Wi-Fi smoke marker or UART status shows a valid lease and an enabled UDP
 service but host requests still time out, check host routing and ARP/neighbour

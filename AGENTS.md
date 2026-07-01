@@ -8,10 +8,10 @@ quiet serial-console firmware that will grow into a tiny Lisp machine
 with microSD storage and Wi-Fi support.
 
 Keep `README.md` for stable project setup, `quickstart.org` for the short
-operator workflow, `runtime-processes.org` for the cooperative-process design
-direction, and `bringup.org` for dated, experiment-level notes, measured
-hardware facts, toolchain decisions, and commands that are known to work on
-the attached board.
+operator workflow, `board-status-brief.org` for a short human-readable status
+overview, `runtime-processes.org` for the cooperative-process design direction,
+and `bringup.org` for dated, experiment-level notes, measured hardware facts,
+toolchain decisions, and commands that are known to work on the attached board.
 
 ## Project Structure
 
@@ -27,6 +27,8 @@ the attached board.
 - `backups/`: flash and firmware backups captured before risky changes.
 - `quickstart.org`: short build, flash, console, network REPL, and recovery
   workflow.
+- `board-status-brief.org`: short readable overview of current board
+  capabilities, core usage, Lisp shape, and nearest planned features.
 - `runtime-processes.org`: current Lisp process/coroutine status and the
   cooperative scheduler design direction.
 - `bringup.org`: running lab notebook. Update it when a command,
@@ -251,6 +253,12 @@ smoke test. Start it through the UDP REPL in the background, then run
 currently reports a reset because the diagnostic closes with RST/ACK after
 capturing the payload; success is the board report showing `payload.status` as
 `ready` and the expected preview string.
+Use `(wifi-tcp-repl-once 2323 80)` as the current one-shot TCP Lisp REPL smoke
+test. Start it through the UDP REPL in the background, then run
+`printf '(+ 40 2)\n' | ncat -w 8 -q 3 BOARD_IP 2323`. Success is `ncat`
+printing `=> 42` and the board report showing `request.status`, `eval.status`,
+and `reply.status` as `ready`. This is a one-shot diagnostic and not a
+persistent Telnet service yet.
 Use `tools/send-net-repl.scm --color` only when ANSI payload coloring is wanted;
 plain output is the default. Use `--read-only` as a conservative accidental-send
 guard for status, directory, FAT info, Wi-Fi link/lease status, and simple-path

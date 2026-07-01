@@ -86,8 +86,10 @@ and probes a numeric IPv4 address directly, which is useful while DNS behavior
 is being debugged. `(wifi-tcp-listen-once 2323 80)` accepts one inbound TCP
 handshake and closes it with RST/ACK cleanup. `(wifi-tcp-receive-once 2323 80)`
 accepts one inbound TCP connection, captures one payload frame preview, and
-then closes with RST/ACK cleanup. `(http-get "http://example.com/")` resolves
-the host, opens a raw TCP connection to port 80, sends an HTTP/1.0 GET with
+then closes with RST/ACK cleanup. `(wifi-tcp-repl-once 2323 80)` accepts one
+TCP connection, evaluates one received Lisp form, sends the pretty-printed
+result over TCP, and closes. `(http-get "http://example.com/")` resolves the
+host, opens a raw TCP connection to port 80, sends an HTTP/1.0 GET with
 `Connection: close`, captures a short response preview, and sends RST/ACK
 cleanup. Plain HTTP only is implemented; HTTPS/TLS is not. Dotted numeric URLs
 such as

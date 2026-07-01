@@ -732,8 +732,21 @@ pub enum WifiSdioTcpReceiveStatus {
     PayloadPollFailed,
     PayloadTimeout,
     PayloadRejected,
+    PayloadTooLarge,
     PeerReset,
     ResetFailed,
+}
+
+#[derive(Clone, Copy)]
+pub enum WifiSdioTcpReplReplyStatus {
+    Ready,
+    NoLease,
+    LeaseMissingAddress,
+    NoPeer,
+    LocalMacMissing,
+    HtRequestFailed,
+    PayloadTooLarge,
+    SendFailed,
 }
 
 #[derive(Clone, Copy)]
@@ -1476,6 +1489,13 @@ pub struct WifiSdioControlState {
     net_repl_peer_ip_address: u32,
     net_repl_peer_port: u16,
     net_repl_peer_sequence: u32,
+    tcp_repl_peer_valid: bool,
+    tcp_repl_peer_mac: [u8; ETHERNET_ADDRESS_BYTES],
+    tcp_repl_peer_ip_address: u32,
+    tcp_repl_peer_port: u16,
+    tcp_repl_listen_port: u16,
+    tcp_repl_local_sequence: u32,
+    tcp_repl_ack_number: u32,
 }
 
 impl WifiSdioControlState {
@@ -1505,6 +1525,13 @@ impl WifiSdioControlState {
             net_repl_peer_ip_address: 0,
             net_repl_peer_port: 0,
             net_repl_peer_sequence: 0,
+            tcp_repl_peer_valid: false,
+            tcp_repl_peer_mac: [0; ETHERNET_ADDRESS_BYTES],
+            tcp_repl_peer_ip_address: 0,
+            tcp_repl_peer_port: 0,
+            tcp_repl_listen_port: 0,
+            tcp_repl_local_sequence: 0,
+            tcp_repl_ack_number: 0,
         }
     }
 
@@ -1599,6 +1626,7 @@ impl WifiSdioControlState {
         self.dhcp_lease_transaction_id = 0;
         self.clear_router_mac();
         self.clear_net_repl_peer();
+        self.clear_tcp_repl_peer();
     }
 
     fn store_dhcp_lease(&mut self, packet: &ParsedDhcpPacket) {
@@ -1647,6 +1675,33 @@ impl WifiSdioControlState {
         self.net_repl_peer_ip_address = packet.source_ip_address;
         self.net_repl_peer_port = packet.source_port;
         self.net_repl_peer_sequence = packet.sequence;
+    }
+
+    fn clear_tcp_repl_peer(&mut self) {
+        self.tcp_repl_peer_valid = false;
+        self.tcp_repl_peer_mac = [0; ETHERNET_ADDRESS_BYTES];
+        self.tcp_repl_peer_ip_address = 0;
+        self.tcp_repl_peer_port = 0;
+        self.tcp_repl_listen_port = 0;
+        self.tcp_repl_local_sequence = 0;
+        self.tcp_repl_ack_number = 0;
+    }
+
+    fn store_tcp_repl_peer(
+        &mut self,
+        packet: &ParsedTcpPacket,
+        listen_port: u16,
+        local_sequence: u32,
+    ) {
+        self.tcp_repl_peer_valid = true;
+        self.tcp_repl_peer_mac = packet.remote_mac;
+        self.tcp_repl_peer_ip_address = packet.remote_ip_address;
+        self.tcp_repl_peer_port = packet.remote_port;
+        self.tcp_repl_listen_port = listen_port;
+        self.tcp_repl_local_sequence = local_sequence;
+        self.tcp_repl_ack_number = packet
+            .remote_sequence
+            .wrapping_add(tcp_sequence_consumed(packet.flags, packet.payload_length));
     }
 }
 
@@ -2218,6 +2273,7 @@ pub struct WifiSdioTcpReceiveReport {
     pub payload_preview_length: u8,
     pub payload_preview_hash: u32,
     pub payload_preview: [u8; HTTP_RESPONSE_PREVIEW_BYTES],
+    pub payload: [u8; NET_REPL_REQUEST_PAYLOAD_MAX_BYTES],
     pub reset_status: WifiSdioF2ControlStatus,
     pub reset_packet_length: u16,
     pub interrupt_ack_status: WifiSdioInterruptAckStatus,
@@ -2228,6 +2284,38 @@ pub struct WifiSdioTcpReceiveReport {
     pub ack_last_error: Option<CommandError>,
     pub payload_last_error: Option<CommandError>,
     pub reset_last_error: Option<CommandError>,
+    pub host_normal_int: u16,
+    pub host_error_int: u16,
+}
+
+pub struct WifiSdioTcpReplReplyReport {
+    pub status: WifiSdioTcpReplReplyStatus,
+    pub step: &'static [u8],
+    pub lease_valid: bool,
+    pub local_ip_address: u32,
+    pub peer_valid: bool,
+    pub peer_ip_address: u32,
+    pub peer_port: u16,
+    pub peer_mac_hash: u32,
+    pub listen_port: u16,
+    pub local_sequence: u32,
+    pub ack_number: u32,
+    pub local_mac_present: bool,
+    pub ht_status: WifiSdioHtRequestStatus,
+    pub ht_attempts: u16,
+    pub ht_write_response: u32,
+    pub ht_read_value: u8,
+    pub ht_read_response: u32,
+    pub ht_available: bool,
+    pub payload_length: u16,
+    pub payload_hash: u32,
+    pub ethernet_length: u16,
+    pub ethernet_hash: u32,
+    pub send_status: WifiSdioF2ControlStatus,
+    pub send_packet_length: u16,
+    pub send_write_response: u32,
+    pub ht_last_error: Option<CommandError>,
+    pub send_last_error: Option<CommandError>,
     pub host_normal_int: u16,
     pub host_error_int: u16,
 }
@@ -7565,18 +7653,7 @@ pub fn tcp_receive_once(
         payload.packet
     };
 
-    report.payload_bytes = payload_packet.payload_length;
-    report.payload_preview_length = payload_packet.payload_preview_length;
-    copy_bytes_to_slice(
-        &payload_packet.payload_preview[..payload_packet.payload_preview_length as usize],
-        &mut report.payload_preview,
-        0,
-    );
-    report.payload_preview_hash =
-        checksum_bytes(&report.payload_preview[..report.payload_preview_length as usize]);
-    report.peer_sequence = payload_packet.remote_sequence;
-    report.ack_number = payload_packet.ack_number;
-    report.flags = payload_packet.flags;
+    copy_tcp_payload_packet_to_receive_report(&payload_packet, &mut report);
 
     let reset_ack = payload_packet
         .remote_sequence
@@ -7610,6 +7687,336 @@ pub fn tcp_receive_once(
     report.status = WifiSdioTcpReceiveStatus::Ready;
     report.step = b"done";
     finish_tcp_receive_report(p, report)
+}
+
+pub fn tcp_repl_poll(
+    p: &Peripherals,
+    state: &mut WifiSdioControlState,
+    listen_port: u16,
+    poll_frames: u8,
+) -> WifiSdioTcpReceiveReport {
+    state.clear_tcp_repl_peer();
+
+    let mut report = empty_tcp_receive_report(p);
+    report.lease_valid = state.dhcp_lease_valid;
+    report.local_ip_address = state.dhcp_ip_address;
+    report.listen_port = listen_port;
+    report.local_mac_present = state.local_mac_valid;
+
+    if listen_port == 0 {
+        report.status = WifiSdioTcpReceiveStatus::BadPort;
+        return finish_tcp_receive_report(p, report);
+    }
+    if !state.dhcp_lease_valid {
+        report.status = WifiSdioTcpReceiveStatus::NoLease;
+        return finish_tcp_receive_report(p, report);
+    }
+    if state.dhcp_ip_address == 0 {
+        report.status = WifiSdioTcpReceiveStatus::LeaseMissingAddress;
+        return finish_tcp_receive_report(p, report);
+    }
+
+    report.step = b"ht";
+    let ht = request_ht(p);
+    report.ht_last_error = ht.last_error;
+    if !matches!(ht.status, WifiSdioHtRequestStatus::Ready) {
+        report.status = WifiSdioTcpReceiveStatus::HtRequestFailed;
+        return finish_tcp_receive_report(p, report);
+    }
+
+    report.step = b"mac";
+    let mut mac_payload = [0u8; CUR_ETHERADDR_PAYLOAD_BYTES];
+    copy_bytes_to_slice(CUR_ETHERADDR_IOVAR_NAME, &mut mac_payload, 0);
+    let mac = link_control_get_payload(
+        p,
+        state,
+        WLC_GET_VAR_IOCTL,
+        &mac_payload,
+        ETHERNET_ADDRESS_BYTES,
+    );
+    if !matches!(mac.status, WifiSdioLinkGetStatus::Ready) {
+        report.status = WifiSdioTcpReceiveStatus::LocalMacMissing;
+        return finish_tcp_receive_report(p, report);
+    }
+    if slice_all_eq(&mac.bytes[..ETHERNET_ADDRESS_BYTES], 0) {
+        report.status = WifiSdioTcpReceiveStatus::LocalMacMissing;
+        return finish_tcp_receive_report(p, report);
+    }
+
+    let mut local_mac = [0u8; ETHERNET_ADDRESS_BYTES];
+    copy_bytes_to_slice(&mac.bytes[..ETHERNET_ADDRESS_BYTES], &mut local_mac, 0);
+    state.store_local_mac(&local_mac);
+    report.local_mac_present = true;
+    let local_sequence = state.allocate_tcp_sequence();
+    report.local_sequence = local_sequence;
+
+    report.step = b"listen";
+    let listen = poll_tcp_listen_syn(p, state, state.dhcp_ip_address, listen_port, poll_frames);
+    report.listen_poll_status = listen.status;
+    report.listen_parse_status = listen.last_parse_status;
+    report.listen_polls = listen.polls;
+    report.listen_frames_read = listen.frames_read;
+    report.interrupt_ack_status = listen.ack_status;
+    report.interrupt_ack_last_error = listen.ack_last_error;
+    report.listen_last_error = listen.frame_last_error;
+    report.peer_ip_address = listen.packet.remote_ip_address;
+    report.peer_port = listen.packet.remote_port;
+    report.peer_sequence = listen.packet.remote_sequence;
+    report.ack_number = listen.packet.ack_number;
+    report.flags = listen.packet.flags;
+    if !matches!(listen.status, WifiSdioTcpPollStatus::Ready) {
+        report.status = if matches!(listen.status, WifiSdioTcpPollStatus::Timeout) {
+            WifiSdioTcpReceiveStatus::ListenTimeout
+        } else {
+            WifiSdioTcpReceiveStatus::ListenPollFailed
+        };
+        return finish_tcp_receive_report(p, report);
+    }
+    if !matches!(listen.packet.status, WifiSdioTcpParseStatus::Ready) {
+        report.status = WifiSdioTcpReceiveStatus::SynRejected;
+        return finish_tcp_receive_report(p, report);
+    }
+
+    let mut ethernet_frame = [0u8; TCP_ETHERNET_FRAME_BYTES];
+    let syn_ack_length = build_tcp_frame(
+        &mut ethernet_frame,
+        &listen.packet.remote_mac,
+        &local_mac,
+        state.dhcp_ip_address,
+        listen.packet.remote_ip_address,
+        listen_port,
+        listen.packet.remote_port,
+        local_sequence,
+        listen.packet.remote_sequence.wrapping_add(1),
+        TCP_FLAG_SYN | TCP_FLAG_ACK,
+    );
+
+    report.step = b"syn-ack";
+    let syn_ack = send_data_packet(p, state, &ethernet_frame[..syn_ack_length]);
+    report.syn_ack_status = syn_ack.status;
+    report.syn_ack_packet_length = syn_ack.packet_length;
+    report.syn_ack_last_error = syn_ack.write_last_error;
+    if !matches!(syn_ack.status, WifiSdioF2ControlStatus::Ready) {
+        report.status = WifiSdioTcpReceiveStatus::SynAckSendFailed;
+        return finish_tcp_receive_report(p, report);
+    }
+
+    let expected_peer_sequence = listen.packet.remote_sequence.wrapping_add(1);
+    let expected_ack_number = local_sequence.wrapping_add(1);
+
+    report.step = b"ack";
+    let ack = poll_tcp_listen_ack(
+        p,
+        state,
+        state.dhcp_ip_address,
+        listen.packet.remote_ip_address,
+        listen_port,
+        listen.packet.remote_port,
+        expected_peer_sequence,
+        expected_ack_number,
+    );
+    report.ack_poll_status = ack.status;
+    report.ack_parse_status = ack.last_parse_status;
+    report.ack_polls = ack.polls;
+    report.ack_frames_read = ack.frames_read;
+    report.interrupt_ack_status = ack.ack_status;
+    report.interrupt_ack_last_error = ack.ack_last_error;
+    report.ack_last_error = ack.frame_last_error;
+    report.ack_number = ack.packet.ack_number;
+    report.flags = ack.packet.flags;
+    if !matches!(ack.status, WifiSdioTcpPollStatus::Ready) {
+        report.status = if matches!(ack.status, WifiSdioTcpPollStatus::Timeout) {
+            WifiSdioTcpReceiveStatus::AckTimeout
+        } else {
+            WifiSdioTcpReceiveStatus::AckPollFailed
+        };
+        return finish_tcp_receive_report(p, report);
+    }
+    if matches!(ack.packet.status, WifiSdioTcpParseStatus::Reset) {
+        report.status = WifiSdioTcpReceiveStatus::PeerReset;
+        report.step = b"done";
+        return finish_tcp_receive_report(p, report);
+    }
+    if !matches!(ack.packet.status, WifiSdioTcpParseStatus::Ready) {
+        report.status = WifiSdioTcpReceiveStatus::AckRejected;
+        return finish_tcp_receive_report(p, report);
+    }
+
+    let payload_packet = if ack.packet.payload_length > 0 {
+        report.payload_poll_status = WifiSdioTcpPollStatus::Ready;
+        report.payload_parse_status = WifiSdioTcpParseStatus::Ready;
+        ack.packet
+    } else {
+        report.step = b"payload";
+        let payload = poll_tcp_payload_response(
+            p,
+            state,
+            state.dhcp_ip_address,
+            listen.packet.remote_ip_address,
+            listen_port,
+            listen.packet.remote_port,
+            expected_peer_sequence,
+            expected_ack_number,
+        );
+        report.payload_poll_status = payload.status;
+        report.payload_parse_status = payload.last_parse_status;
+        report.payload_polls = payload.polls;
+        report.payload_frames_read = payload.frames_read;
+        report.interrupt_ack_status = payload.ack_status;
+        report.interrupt_ack_last_error = payload.ack_last_error;
+        report.payload_last_error = payload.frame_last_error;
+        report.ack_number = payload.packet.ack_number;
+        report.flags = payload.packet.flags;
+        if !matches!(payload.status, WifiSdioTcpPollStatus::Ready) {
+            report.status = if matches!(payload.status, WifiSdioTcpPollStatus::Timeout) {
+                WifiSdioTcpReceiveStatus::PayloadTimeout
+            } else {
+                WifiSdioTcpReceiveStatus::PayloadPollFailed
+            };
+            return finish_tcp_receive_report(p, report);
+        }
+        if matches!(payload.packet.status, WifiSdioTcpParseStatus::Reset) {
+            report.status = WifiSdioTcpReceiveStatus::PeerReset;
+            report.step = b"done";
+            return finish_tcp_receive_report(p, report);
+        }
+        if !matches!(payload.packet.status, WifiSdioTcpParseStatus::Ready) {
+            report.status = WifiSdioTcpReceiveStatus::PayloadRejected;
+            return finish_tcp_receive_report(p, report);
+        }
+        payload.packet
+    };
+
+    copy_tcp_payload_packet_to_receive_report(&payload_packet, &mut report);
+
+    if payload_packet.payload_length > NET_REPL_REQUEST_PAYLOAD_MAX_BYTES as u16 {
+        let reset_ack = payload_packet
+            .remote_sequence
+            .wrapping_add(tcp_sequence_consumed(
+                payload_packet.flags,
+                payload_packet.payload_length,
+            ));
+        let reset_length = build_tcp_frame(
+            &mut ethernet_frame,
+            &listen.packet.remote_mac,
+            &local_mac,
+            state.dhcp_ip_address,
+            listen.packet.remote_ip_address,
+            listen_port,
+            listen.packet.remote_port,
+            local_sequence.wrapping_add(1),
+            reset_ack,
+            TCP_FLAG_RST | TCP_FLAG_ACK,
+        );
+
+        report.step = b"reset";
+        let reset = send_data_packet(p, state, &ethernet_frame[..reset_length]);
+        report.reset_status = reset.status;
+        report.reset_packet_length = reset.packet_length;
+        report.reset_last_error = reset.write_last_error;
+        report.status = WifiSdioTcpReceiveStatus::PayloadTooLarge;
+        report.step = b"done";
+        return finish_tcp_receive_report(p, report);
+    }
+
+    state.store_tcp_repl_peer(&payload_packet, listen_port, local_sequence.wrapping_add(1));
+    report.status = WifiSdioTcpReceiveStatus::Ready;
+    report.step = b"done";
+    finish_tcp_receive_report(p, report)
+}
+
+pub fn tcp_repl_reply(
+    p: &Peripherals,
+    state: &mut WifiSdioControlState,
+    payload: &[u8],
+) -> WifiSdioTcpReplReplyReport {
+    let mut report = empty_tcp_repl_reply_report(p);
+    report.lease_valid = state.dhcp_lease_valid;
+    report.local_ip_address = state.dhcp_ip_address;
+    report.peer_valid = state.tcp_repl_peer_valid;
+    report.peer_ip_address = state.tcp_repl_peer_ip_address;
+    report.peer_port = state.tcp_repl_peer_port;
+    report.peer_mac_hash = checksum_bytes(&state.tcp_repl_peer_mac);
+    report.listen_port = state.tcp_repl_listen_port;
+    report.local_sequence = state.tcp_repl_local_sequence;
+    report.ack_number = state.tcp_repl_ack_number;
+    report.local_mac_present = state.local_mac_valid;
+    report.payload_length = payload.len() as u16;
+    report.payload_hash = checksum_bytes(payload);
+
+    if !state.dhcp_lease_valid {
+        report.status = WifiSdioTcpReplReplyStatus::NoLease;
+        return finish_tcp_repl_reply_report(p, report);
+    }
+    if state.dhcp_ip_address == 0 {
+        report.status = WifiSdioTcpReplReplyStatus::LeaseMissingAddress;
+        return finish_tcp_repl_reply_report(p, report);
+    }
+    if !state.tcp_repl_peer_valid {
+        report.status = WifiSdioTcpReplReplyStatus::NoPeer;
+        return finish_tcp_repl_reply_report(p, report);
+    }
+    if !state.local_mac_valid {
+        report.status = WifiSdioTcpReplReplyStatus::LocalMacMissing;
+        return finish_tcp_repl_reply_report(p, report);
+    }
+    if payload.len() > NET_REPL_RESPONSE_PAYLOAD_MAX_BYTES {
+        report.status = WifiSdioTcpReplReplyStatus::PayloadTooLarge;
+        return finish_tcp_repl_reply_report(p, report);
+    }
+
+    report.step = b"ht";
+    let ht = request_ht(p);
+    report.ht_status = ht.status;
+    report.ht_attempts = ht.attempts;
+    report.ht_write_response = ht.write_response;
+    report.ht_read_value = ht.read_value;
+    report.ht_read_response = ht.read_response;
+    report.ht_available = ht.ht_available;
+    report.ht_last_error = ht.last_error;
+    if !matches!(ht.status, WifiSdioHtRequestStatus::Ready) {
+        report.status = WifiSdioTcpReplReplyStatus::HtRequestFailed;
+        return finish_tcp_repl_reply_report(p, report);
+    }
+
+    let mut ethernet_frame = [0u8; NET_REPL_ETHERNET_FRAME_MAX_BYTES];
+    let ethernet_length = match build_tcp_frame_with_payload(
+        &mut ethernet_frame,
+        &state.tcp_repl_peer_mac,
+        &state.local_mac,
+        state.dhcp_ip_address,
+        state.tcp_repl_peer_ip_address,
+        state.tcp_repl_listen_port,
+        state.tcp_repl_peer_port,
+        state.tcp_repl_local_sequence,
+        state.tcp_repl_ack_number,
+        TCP_FLAG_PSH | TCP_FLAG_ACK | TCP_FLAG_FIN,
+        payload,
+    ) {
+        Some(length) => length,
+        None => {
+            report.status = WifiSdioTcpReplReplyStatus::PayloadTooLarge;
+            return finish_tcp_repl_reply_report(p, report);
+        }
+    };
+    report.ethernet_length = ethernet_length as u16;
+    report.ethernet_hash = checksum_bytes(&ethernet_frame[..ethernet_length]);
+
+    report.step = b"reply";
+    let send = send_data_packet(p, state, &ethernet_frame[..ethernet_length]);
+    report.send_status = send.status;
+    report.send_packet_length = send.packet_length;
+    report.send_write_response = send.write_response;
+    report.send_last_error = send.write_last_error;
+    if !matches!(send.status, WifiSdioF2ControlStatus::Ready) {
+        report.status = WifiSdioTcpReplReplyStatus::SendFailed;
+        return finish_tcp_repl_reply_report(p, report);
+    }
+
+    state.clear_tcp_repl_peer();
+    report.status = WifiSdioTcpReplReplyStatus::Ready;
+    report.step = b"done";
+    finish_tcp_repl_reply_report(p, report)
 }
 
 pub fn http_get(
@@ -9243,6 +9650,29 @@ fn copy_tcp_poll_to_report(poll: &TcpPollResult, report: &mut WifiSdioTcpSynRepo
     report.ack_status = poll.ack_status;
     report.ack_last_error = poll.ack_last_error;
     report.response_last_error = poll.frame_last_error;
+}
+
+fn copy_tcp_payload_packet_to_receive_report(
+    packet: &ParsedTcpPacket,
+    report: &mut WifiSdioTcpReceiveReport,
+) {
+    report.payload_bytes = packet.payload_length;
+    report.payload_preview_length = packet.payload_preview_length;
+    copy_bytes_to_slice(
+        &packet.payload_preview[..packet.payload_preview_length as usize],
+        &mut report.payload_preview,
+        0,
+    );
+    report.payload_preview_hash =
+        checksum_bytes(&report.payload_preview[..report.payload_preview_length as usize]);
+    copy_bytes_to_slice(
+        &packet.payload_preview[..packet.payload_preview_length as usize],
+        &mut report.payload,
+        0,
+    );
+    report.peer_sequence = packet.remote_sequence;
+    report.ack_number = packet.ack_number;
+    report.flags = packet.flags;
 }
 
 fn copy_net_repl_poll_to_report(
@@ -16912,6 +17342,7 @@ fn empty_tcp_receive_report(p: &Peripherals) -> WifiSdioTcpReceiveReport {
         payload_preview_length: 0,
         payload_preview_hash: 0,
         payload_preview: [0; HTTP_RESPONSE_PREVIEW_BYTES],
+        payload: [0; NET_REPL_REQUEST_PAYLOAD_MAX_BYTES],
         reset_status: WifiSdioF2ControlStatus::NotRun,
         reset_packet_length: 0,
         interrupt_ack_status: WifiSdioInterruptAckStatus::NotRun,
@@ -16931,6 +17362,51 @@ fn finish_tcp_receive_report(
     p: &Peripherals,
     mut report: WifiSdioTcpReceiveReport,
 ) -> WifiSdioTcpReceiveReport {
+    let core = &p.SDHC0.core;
+    report.host_normal_int = core.normal_int_stat_r.read().bits();
+    report.host_error_int = core.error_int_stat_r.read().bits();
+    report
+}
+
+fn empty_tcp_repl_reply_report(p: &Peripherals) -> WifiSdioTcpReplReplyReport {
+    let core = &p.SDHC0.core;
+    WifiSdioTcpReplReplyReport {
+        status: WifiSdioTcpReplReplyStatus::NoPeer,
+        step: b"start",
+        lease_valid: false,
+        local_ip_address: 0,
+        peer_valid: false,
+        peer_ip_address: 0,
+        peer_port: 0,
+        peer_mac_hash: 0,
+        listen_port: 0,
+        local_sequence: 0,
+        ack_number: 0,
+        local_mac_present: false,
+        ht_status: WifiSdioHtRequestStatus::Timeout,
+        ht_attempts: 0,
+        ht_write_response: 0,
+        ht_read_value: 0,
+        ht_read_response: 0,
+        ht_available: false,
+        payload_length: 0,
+        payload_hash: 0,
+        ethernet_length: 0,
+        ethernet_hash: 0,
+        send_status: WifiSdioF2ControlStatus::NotRun,
+        send_packet_length: 0,
+        send_write_response: 0,
+        ht_last_error: None,
+        send_last_error: None,
+        host_normal_int: core.normal_int_stat_r.read().bits(),
+        host_error_int: core.error_int_stat_r.read().bits(),
+    }
+}
+
+fn finish_tcp_repl_reply_report(
+    p: &Peripherals,
+    mut report: WifiSdioTcpReplReplyReport,
+) -> WifiSdioTcpReplReplyReport {
     let core = &p.SDHC0.core;
     report.host_normal_int = core.normal_int_stat_r.read().bits();
     report.host_error_int = core.error_int_stat_r.read().bits();

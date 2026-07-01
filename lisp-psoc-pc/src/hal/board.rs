@@ -738,6 +738,26 @@ impl lisp::Board for PsocBoard<'_> {
         ))
     }
 
+    fn wifi_tcp_repl_poll(&mut self, port: u16, poll_frames: u8) -> lisp::WifiSdioTcpReceiveReport {
+        wifi_sdio_tcp_receive_report(wifi_sdio::tcp_repl_poll(
+            self.p,
+            &mut self.state.wifi_control_state,
+            port,
+            poll_frames,
+        ))
+    }
+
+    fn wifi_tcp_repl_reply(
+        &mut self,
+        payload: lisp::NetReplResponseBytes,
+    ) -> lisp::WifiSdioTcpReplReplyReport {
+        wifi_sdio_tcp_repl_reply_report(wifi_sdio::tcp_repl_reply(
+            self.p,
+            &mut self.state.wifi_control_state,
+            &payload.bytes[..payload.len as usize],
+        ))
+    }
+
     fn http_get(&mut self, url: lisp::StringBytes) -> lisp::WifiSdioHttpGetReport {
         wifi_sdio_http_get_report(wifi_sdio::http_get(
             self.p,
@@ -1632,8 +1652,22 @@ fn wifi_sdio_tcp_receive_status(status: wifi_sdio::WifiSdioTcpReceiveStatus) -> 
         wifi_sdio::WifiSdioTcpReceiveStatus::PayloadPollFailed => b"payload-poll-failed",
         wifi_sdio::WifiSdioTcpReceiveStatus::PayloadTimeout => b"payload-timeout",
         wifi_sdio::WifiSdioTcpReceiveStatus::PayloadRejected => b"payload-rejected",
+        wifi_sdio::WifiSdioTcpReceiveStatus::PayloadTooLarge => b"payload-too-large",
         wifi_sdio::WifiSdioTcpReceiveStatus::PeerReset => b"peer-reset",
         wifi_sdio::WifiSdioTcpReceiveStatus::ResetFailed => b"reset-failed",
+    }
+}
+
+fn wifi_sdio_tcp_repl_reply_status(status: wifi_sdio::WifiSdioTcpReplReplyStatus) -> &'static [u8] {
+    match status {
+        wifi_sdio::WifiSdioTcpReplReplyStatus::Ready => b"ready",
+        wifi_sdio::WifiSdioTcpReplReplyStatus::NoLease => b"no-lease",
+        wifi_sdio::WifiSdioTcpReplReplyStatus::LeaseMissingAddress => b"lease-missing-address",
+        wifi_sdio::WifiSdioTcpReplReplyStatus::NoPeer => b"no-peer",
+        wifi_sdio::WifiSdioTcpReplReplyStatus::LocalMacMissing => b"local-mac-missing",
+        wifi_sdio::WifiSdioTcpReplReplyStatus::HtRequestFailed => b"ht-request-failed",
+        wifi_sdio::WifiSdioTcpReplReplyStatus::PayloadTooLarge => b"payload-too-large",
+        wifi_sdio::WifiSdioTcpReplReplyStatus::SendFailed => b"send-failed",
     }
 }
 
@@ -2752,8 +2786,49 @@ fn wifi_sdio_tcp_receive_report(
         payload_bytes: report.payload_bytes,
         payload_hash: report.payload_preview_hash,
         payload_preview: lisp_string_bytes(&report.payload_preview, report.payload_preview_length),
+        payload: report.payload,
         reset_status: wifi_sdio_f2_control_status(report.reset_status),
         interrupt_ack_status: wifi_sdio_interrupt_ack_status(report.interrupt_ack_status),
+        ack_last_error: report.ack_last_error.map(wifi_sdio_command_error_report),
+        payload_last_error: report
+            .payload_last_error
+            .map(wifi_sdio_command_error_report),
+        host_normal_int: report.host_normal_int,
+        host_error_int: report.host_error_int,
+    }
+}
+
+fn wifi_sdio_tcp_repl_reply_report(
+    report: wifi_sdio::WifiSdioTcpReplReplyReport,
+) -> lisp::WifiSdioTcpReplReplyReport {
+    lisp::WifiSdioTcpReplReplyReport {
+        status: wifi_sdio_tcp_repl_reply_status(report.status),
+        step: report.step,
+        lease_valid: report.lease_valid,
+        local_ip_address: report.local_ip_address,
+        peer_valid: report.peer_valid,
+        peer_ip_address: report.peer_ip_address,
+        peer_port: report.peer_port,
+        peer_mac_hash: report.peer_mac_hash,
+        listen_port: report.listen_port,
+        local_sequence: report.local_sequence,
+        ack_number: report.ack_number,
+        local_mac_present: report.local_mac_present,
+        ht_status: wifi_sdio_ht_request_status(report.ht_status),
+        ht_attempts: report.ht_attempts,
+        ht_write_response: report.ht_write_response,
+        ht_read_value: report.ht_read_value,
+        ht_read_response: report.ht_read_response,
+        ht_available: report.ht_available,
+        payload_length: report.payload_length,
+        payload_hash: report.payload_hash,
+        ethernet_length: report.ethernet_length,
+        ethernet_hash: report.ethernet_hash,
+        send_status: wifi_sdio_f2_control_status(report.send_status),
+        send_packet_length: report.send_packet_length,
+        send_write_response: report.send_write_response,
+        ht_last_error: report.ht_last_error.map(wifi_sdio_command_error_report),
+        send_last_error: report.send_last_error.map(wifi_sdio_command_error_report),
         host_normal_int: report.host_normal_int,
         host_error_int: report.host_error_int,
     }

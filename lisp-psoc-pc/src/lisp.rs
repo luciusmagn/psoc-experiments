@@ -93,6 +93,17 @@ struct WifiNetReplCycleReport {
 }
 
 #[derive(Clone, Copy)]
+struct WifiTcpReplCycleReport {
+    status: &'static [u8],
+    request: WifiSdioTcpReceiveReport,
+    reply: Option<WifiSdioTcpReplReplyReport>,
+    eval_status: &'static [u8],
+    response_length: u16,
+    response_hash: u32,
+    response_truncated: bool,
+}
+
+#[derive(Clone, Copy)]
 struct WifiNetReplServiceState {
     enabled: bool,
     poll_frames: u8,
@@ -281,6 +292,8 @@ pub trait Board {
     fn wifi_tcp_syn_ip(&mut self, remote_ip_address: u32, port: u16) -> WifiSdioTcpSynReport;
     fn wifi_tcp_listen_once(&mut self, port: u16, poll_frames: u8) -> WifiSdioTcpListenReport;
     fn wifi_tcp_receive_once(&mut self, port: u16, poll_frames: u8) -> WifiSdioTcpReceiveReport;
+    fn wifi_tcp_repl_poll(&mut self, port: u16, poll_frames: u8) -> WifiSdioTcpReceiveReport;
+    fn wifi_tcp_repl_reply(&mut self, payload: NetReplResponseBytes) -> WifiSdioTcpReplReplyReport;
     fn http_get(&mut self, url: StringBytes) -> WifiSdioHttpGetReport;
     fn wifi_net_repl_poll(&mut self, poll_frames: u8) -> WifiNetReplRequestReport;
     fn wifi_net_repl_reply(
@@ -1432,8 +1445,44 @@ pub struct WifiSdioTcpReceiveReport {
     pub payload_bytes: u16,
     pub payload_hash: u32,
     pub payload_preview: StringBytes,
+    pub payload: [u8; NET_REPL_REQUEST_PAYLOAD_BYTES],
     pub reset_status: &'static [u8],
     pub interrupt_ack_status: &'static [u8],
+    pub ack_last_error: Option<WifiSdioCommandErrorReport>,
+    pub payload_last_error: Option<WifiSdioCommandErrorReport>,
+    pub host_normal_int: u16,
+    pub host_error_int: u16,
+}
+
+#[derive(Clone, Copy)]
+pub struct WifiSdioTcpReplReplyReport {
+    pub status: &'static [u8],
+    pub step: &'static [u8],
+    pub lease_valid: bool,
+    pub local_ip_address: u32,
+    pub peer_valid: bool,
+    pub peer_ip_address: u32,
+    pub peer_port: u16,
+    pub peer_mac_hash: u32,
+    pub listen_port: u16,
+    pub local_sequence: u32,
+    pub ack_number: u32,
+    pub local_mac_present: bool,
+    pub ht_status: &'static [u8],
+    pub ht_attempts: u16,
+    pub ht_write_response: u32,
+    pub ht_read_value: u8,
+    pub ht_read_response: u32,
+    pub ht_available: bool,
+    pub payload_length: u16,
+    pub payload_hash: u32,
+    pub ethernet_length: u16,
+    pub ethernet_hash: u32,
+    pub send_status: &'static [u8],
+    pub send_packet_length: u16,
+    pub send_write_response: u32,
+    pub ht_last_error: Option<WifiSdioCommandErrorReport>,
+    pub send_last_error: Option<WifiSdioCommandErrorReport>,
     pub host_normal_int: u16,
     pub host_error_int: u16,
 }
@@ -2302,6 +2351,7 @@ pub enum Primitive {
     WifiTcpSynIp,
     WifiTcpListenOnce,
     WifiTcpReceiveOnce,
+    WifiTcpReplOnce,
     HttpGet,
     WifiNetReplOnce,
     WifiNetReplService,
@@ -2438,6 +2488,7 @@ impl Primitive {
             Self::WifiTcpSynIp => "wifi-tcp-syn-ip",
             Self::WifiTcpListenOnce => "wifi-tcp-listen-once",
             Self::WifiTcpReceiveOnce => "wifi-tcp-receive-once",
+            Self::WifiTcpReplOnce => "wifi-tcp-repl-once",
             Self::HttpGet => "http-get",
             Self::WifiNetReplOnce => "wifi-net-repl-once",
             Self::WifiNetReplService => "wifi-net-repl-service",
@@ -2758,6 +2809,7 @@ impl Machine {
         self.install_primitive(b"wifi-tcp-syn-ip", Primitive::WifiTcpSynIp)?;
         self.install_primitive(b"wifi-tcp-listen-once", Primitive::WifiTcpListenOnce)?;
         self.install_primitive(b"wifi-tcp-receive-once", Primitive::WifiTcpReceiveOnce)?;
+        self.install_primitive(b"wifi-tcp-repl-once", Primitive::WifiTcpReplOnce)?;
         self.install_primitive(b"http-get", Primitive::HttpGet)?;
         self.install_primitive(b"wifi-net-repl-once", Primitive::WifiNetReplOnce)?;
         self.install_primitive(b"wifi-net-repl-service", Primitive::WifiNetReplService)?;
@@ -3847,6 +3899,22 @@ impl Machine {
                     _ => unreachable!(),
                 };
                 self.wifi_sdio_tcp_receive_report(board.wifi_tcp_receive_once(port, poll_frames))
+            }
+            Primitive::WifiTcpReplOnce => {
+                let port = match args.len() {
+                    1 | 2 => self.expect_u16(args[0])?,
+                    _ => {
+                        return Err(Error::new(
+                            "wifi-tcp-repl-once expects port and optional poll count",
+                        ))
+                    }
+                };
+                let poll_frames = match args.len() {
+                    1 => 32,
+                    2 => self.expect_u8(args[1])?,
+                    _ => unreachable!(),
+                };
+                self.wifi_tcp_repl_once(board, port, poll_frames)
             }
             Primitive::HttpGet => {
                 self.expect_count(args, 1)?;
@@ -5029,6 +5097,7 @@ impl Machine {
             b"wifi-tcp-syn-ip",
             b"wifi-tcp-listen-once",
             b"wifi-tcp-receive-once",
+            b"wifi-tcp-repl-once",
             b"http-get",
             b"wifi-net-repl-once",
             b"wifi-net-repl-service",
@@ -7078,6 +7147,245 @@ impl Machine {
             interrupt_ack_status,
             host_normal_int,
             host_error_int,
+        ];
+        self.make_list_from_values(&entries)
+    }
+
+    fn wifi_tcp_repl_once<B: Board>(
+        &mut self,
+        board: &mut B,
+        port: u16,
+        poll_frames: u8,
+    ) -> LispResult<Value> {
+        let cycle = self.run_wifi_tcp_repl_cycle(board, port, poll_frames);
+        self.wifi_tcp_repl_once_report(
+            cycle.status,
+            cycle.request,
+            cycle.reply,
+            cycle.eval_status,
+            cycle.response_length,
+            cycle.response_hash,
+            cycle.response_truncated,
+        )
+    }
+
+    fn run_wifi_tcp_repl_cycle<B: Board>(
+        &mut self,
+        board: &mut B,
+        port: u16,
+        poll_frames: u8,
+    ) -> WifiTcpReplCycleReport {
+        let request = board.wifi_tcp_repl_poll(port, poll_frames);
+        if !status_ready(request.status) {
+            return WifiTcpReplCycleReport {
+                status: request.status,
+                request,
+                reply: None,
+                eval_status: STATUS_NOT_RUN,
+                response_length: 0,
+                response_hash: 0,
+                response_truncated: false,
+            };
+        }
+
+        let (eval_status, response) = self.eval_net_repl_payload(
+            &request.payload[..request.payload_bytes as usize],
+            false,
+            board,
+        );
+        let response_length = response.len;
+        let response_truncated = response.truncated;
+        let response_hash = checksum_bytes(&response.bytes[..response.len as usize]);
+        let reply = board.wifi_tcp_repl_reply(response);
+        let status: &'static [u8] = if status_ready(reply.status) {
+            b"ready"
+        } else {
+            b"reply-failed"
+        };
+
+        WifiTcpReplCycleReport {
+            status,
+            request,
+            reply: Some(reply),
+            eval_status,
+            response_length,
+            response_hash,
+            response_truncated,
+        }
+    }
+
+    fn wifi_tcp_repl_once_report(
+        &mut self,
+        status_value: &'static [u8],
+        request: WifiSdioTcpReceiveReport,
+        reply: Option<WifiSdioTcpReplReplyReport>,
+        eval_status_value: &'static [u8],
+        response_length_value: u16,
+        response_hash_value: u32,
+        response_truncated_value: bool,
+    ) -> LispResult<Value> {
+        let status = self.symbol_entry(b"status", status_value)?;
+        let request_status = self.symbol_entry(b"request.status", request.status)?;
+        let request_step = self.symbol_entry(b"request.step", request.step)?;
+        let local_ip_address = self.word_entry(b"local.ip", request.local_ip_address)?;
+        let listen_port = self.word_entry(b"listen.port", request.listen_port as u32)?;
+        let peer_ip_address = self.word_entry(b"request.peer.ip", request.peer_ip_address)?;
+        let peer_port = self.word_entry(b"request.peer.port", request.peer_port as u32)?;
+        let listen_status =
+            self.symbol_entry(b"request.listen.status", request.listen_poll_status)?;
+        let ack_status = self.symbol_entry(b"request.ack.status", request.ack_poll_status)?;
+        let payload_status =
+            self.symbol_entry(b"request.payload.status", request.payload_poll_status)?;
+        let payload_parse =
+            self.symbol_entry(b"request.payload.parse", request.payload_parse_status)?;
+        let payload_bytes =
+            self.word_entry(b"request.payload.bytes", request.payload_bytes as u32)?;
+        let payload_hash = self.word_entry(b"request.payload.hash", request.payload_hash)?;
+        let eval_status = self.symbol_entry(b"eval.status", eval_status_value)?;
+        let response_length = self.word_entry(b"response.length", response_length_value as u32)?;
+        let response_hash = self.word_entry(b"response.hash", response_hash_value)?;
+        let response_truncated =
+            self.bool_entry(b"response.truncated", response_truncated_value)?;
+
+        let (
+            reply_status_value,
+            reply_step_value,
+            reply_peer_valid_value,
+            reply_peer_ip_value,
+            reply_peer_port_value,
+            reply_peer_mac_hash_value,
+            reply_payload_length_value,
+            reply_payload_hash_value,
+            reply_ethernet_length_value,
+            reply_ethernet_hash_value,
+            reply_send_status_value,
+            reply_send_packet_length_value,
+            reply_send_write_response_value,
+            reply_host_normal_int_value,
+            reply_host_error_int_value,
+            reply_ht_last_error_value,
+            reply_send_last_error_value,
+        ) = match reply {
+            Some(reply) => (
+                reply.status,
+                reply.step,
+                reply.peer_valid,
+                reply.peer_ip_address,
+                reply.peer_port,
+                reply.peer_mac_hash,
+                reply.payload_length,
+                reply.payload_hash,
+                reply.ethernet_length,
+                reply.ethernet_hash,
+                reply.send_status,
+                reply.send_packet_length,
+                reply.send_write_response,
+                reply.host_normal_int,
+                reply.host_error_int,
+                reply.ht_last_error,
+                reply.send_last_error,
+            ),
+            None => (
+                STATUS_NOT_RUN,
+                STATUS_NOT_RUN,
+                false,
+                0u32,
+                0u16,
+                0u32,
+                0u16,
+                0u32,
+                0u16,
+                0u32,
+                STATUS_NOT_RUN,
+                0u16,
+                0u32,
+                0u16,
+                0u16,
+                None,
+                None,
+            ),
+        };
+
+        let reply_status = self.symbol_entry(b"reply.status", reply_status_value)?;
+        let reply_step = self.symbol_entry(b"reply.step", reply_step_value)?;
+        let reply_peer_valid = self.bool_entry(b"reply.peer.valid", reply_peer_valid_value)?;
+        let reply_peer_ip = self.word_entry(b"reply.peer.ip", reply_peer_ip_value)?;
+        let reply_peer_port = self.word_entry(b"reply.peer.port", reply_peer_port_value as u32)?;
+        let reply_peer_mac_hash =
+            self.word_entry(b"reply.peer.mac-hash", reply_peer_mac_hash_value)?;
+        let reply_payload_length =
+            self.word_entry(b"reply.payload.length", reply_payload_length_value as u32)?;
+        let reply_payload_hash =
+            self.word_entry(b"reply.payload.hash", reply_payload_hash_value)?;
+        let reply_ethernet_length =
+            self.word_entry(b"reply.ethernet.length", reply_ethernet_length_value as u32)?;
+        let reply_ethernet_hash =
+            self.word_entry(b"reply.ethernet.hash", reply_ethernet_hash_value)?;
+        let reply_send_status = self.symbol_entry(b"reply.send.status", reply_send_status_value)?;
+        let reply_send_packet_length = self.word_entry(
+            b"reply.send.packet-length",
+            reply_send_packet_length_value as u32,
+        )?;
+        let reply_send_write_response = self.word_entry(
+            b"reply.send.write-response",
+            reply_send_write_response_value,
+        )?;
+        let request_host_normal_int =
+            self.word_entry(b"request.HOST.NORM_INT", request.host_normal_int as u32)?;
+        let request_host_error_int =
+            self.word_entry(b"request.HOST.ERR_INT", request.host_error_int as u32)?;
+        let reply_host_normal_int =
+            self.word_entry(b"reply.HOST.NORM_INT", reply_host_normal_int_value as u32)?;
+        let reply_host_error_int =
+            self.word_entry(b"reply.HOST.ERR_INT", reply_host_error_int_value as u32)?;
+        let request_ack_last_error =
+            self.wifi_sdio_error_entry(b"request.ack.last-error", request.ack_last_error)?;
+        let request_payload_last_error =
+            self.wifi_sdio_error_entry(b"request.payload.last-error", request.payload_last_error)?;
+        let reply_ht_last_error =
+            self.wifi_sdio_error_entry(b"reply.ht.last-error", reply_ht_last_error_value)?;
+        let reply_send_last_error =
+            self.wifi_sdio_error_entry(b"reply.send.last-error", reply_send_last_error_value)?;
+
+        let entries = [
+            status,
+            request_status,
+            request_step,
+            local_ip_address,
+            listen_port,
+            peer_ip_address,
+            peer_port,
+            listen_status,
+            ack_status,
+            payload_status,
+            payload_parse,
+            payload_bytes,
+            payload_hash,
+            eval_status,
+            response_length,
+            response_hash,
+            response_truncated,
+            reply_status,
+            reply_step,
+            reply_peer_valid,
+            reply_peer_ip,
+            reply_peer_port,
+            reply_peer_mac_hash,
+            reply_payload_length,
+            reply_payload_hash,
+            reply_ethernet_length,
+            reply_ethernet_hash,
+            reply_send_status,
+            reply_send_packet_length,
+            reply_send_write_response,
+            request_host_normal_int,
+            request_host_error_int,
+            reply_host_normal_int,
+            reply_host_error_int,
+            request_ack_last_error,
+            request_payload_last_error,
+            reply_ht_last_error,
+            reply_send_last_error,
         ];
         self.make_list_from_values(&entries)
     }
