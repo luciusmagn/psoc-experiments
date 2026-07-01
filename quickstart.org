@@ -246,8 +246,10 @@ top-level form from one ready process every 10 ms:
 (processes)
 #+end_src
 
-Use =yield= or =sleep-ms= inside spawned code. A long-running single form or
-blocking primitive still blocks the firmware loop until it returns.
+Use =yield= or =sleep-ms= inside spawned code. =(processes)= reports each
+process slot's state and =last-value=, so it is the current way to inspect a
+completed asynchronous result. A long-running single form or blocking primitive
+still blocks the firmware loop until it returns.
 
 * Boot File
 

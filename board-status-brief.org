@@ -19,7 +19,8 @@ Current working capabilities:
 - File forms such as =ls=, =cat=, =read-file=, =save-file=, =append-file=,
   =save-defs=, and =load= within the current small-file limits.
 - Cooperative top-level Lisp processes with =spawn=, =yield=, =sleep-ms=,
-  =processes=, =process-poll=, and =kill=.
+  =processes=, =process-poll=, and =kill=. Process reports include the last
+  evaluated value for completed work.
 - Raw inbound TCP diagnostics for handshake and payload receive.
 - A one-shot TCP Lisp REPL form, =(wifi-tcp-repl-once port [poll-frames])=,
   which accepts one TCP connection, evaluates one received Lisp form, sends the

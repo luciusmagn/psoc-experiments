@@ -4660,8 +4660,9 @@ impl Machine {
         let state = self.symbol_entry(b"state", Self::process_state_name(process.state))?;
         let wake_ms = self.word_entry(b"wake-ms", process.wake_ms)?;
         let steps = self.word_entry(b"steps", process.steps)?;
+        let last_value = self.entry(b"last-value", process.last_value)?;
         let error = self.string_entry(b"error", process.error.as_bytes())?;
-        let entries = [pid, state, wake_ms, steps, error];
+        let entries = [pid, state, wake_ms, steps, last_value, error];
         self.make_list_from_values(&entries)
     }
 

@@ -7210,3 +7210,70 @@ Operational conclusion: the repo serial tools are usable again for startup
 observation and tiny recovery forms when they own the device and use the
 default slow pacing. UART remains too lossy for routine interaction; prefer the
 UDP or Telnet network REPL once Wi-Fi is up.
+
+* 2026-07-01 Process result reporting and post-flash smoke
+
+Added =last-value= to each =(processes)= report so a completed cooperative
+process exposes its most recent Lisp value instead of only reporting =done=.
+The process table already rooted =last_value= for GC; this change only exposes
+the existing field through the report list.
+
+Validation on the normal quiet image flashed with Wi-Fi firmware and local
+credentials:
+
+#+begin_src sh
+tools/build-lisp.scm --wifi-firmware --wifi-credentials
+tools/flash-lisp.scm
+tools/send-net-repl.scm --host 10.0.0.9 --sequence 970 --payload-only '(+ 1 2)'
+tools/send-net-repl.scm --host 10.0.0.9 --sequence 972 --payload-only \
+  '(spawn (quote (begin (sleep-ms 1000) (+ 40 2))))'
+tools/send-net-repl.scm --host 10.0.0.9 --sequence 973 --payload-only \
+  --read-only '(processes)'
+#+end_src
+
+Observed:
+
+#+begin_example
+=> 3
+=> #x00000001
+=> (((pid . #x00000001)
+        (state . done)
+        (wake-ms . #x0000655e)
+        (steps . #x00000002)
+        (last-value . 42)
+        (error . "")))
+#+end_example
+
+The same image also passed the current network and storage smoke checks:
+
+#+begin_example
+(fat-info)              ; status ready, FAT32 partition, 5 root entries
+(cat "probe.lisp")      ; "(+ 30 12)"
+(load "probe.lisp")     ; => 42
+(+ 20 23)               ; => 43 after a Telnet session shut itself off
+#+end_example
+
+Telnet was enabled temporarily with =(wifi-tcp-repl-service on 2323 1)=.
+A TCP client sent =(+ 2 3)= and =(wifi-tcp-repl-service off)=; the session
+returned a result of =5= and then a disabled service status. UDP still answered
+after the Telnet service closed, which revalidates the packet demux path.
+
+UART did not pass the same run. A serial reader open across SWD reset captured
+66 bytes with non-ASCII corruption in =.local/logs/serial-post-flash-reset-validation.log=,
+and a paced =tools/send-lisp.scm '(+ 4 5)'= did not produce a usable logged
+round trip. Register inspection over UDP still showed sane SCB5 and pin state:
+
+#+begin_example
+(regs)
+=> ((SCB5.CTRL . #x8200080f)
+    (PERI.CLOCK5 . #x00000200)
+    (PERI.DIV16_5.0 . #x00001a21)
+    (HSIOM.PRT5.SEL0 . #x00001212)
+    (GPIO.PRT5.CFG . #x00000068) ...)
+#+end_example
+
+A reversible KitProg3 mode flip from =kp3-hid= to =kp3-bulk= re-enumerated
+the bridge and made the reset text more recognizable, but it was still corrupt.
+The mode was restored to =kp3-hid=. This keeps the current conclusion intact:
+UART remains a fragile recovery path, and normal control should use UDP or
+Telnet once Wi-Fi is up.

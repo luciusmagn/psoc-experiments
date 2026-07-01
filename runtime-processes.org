@@ -18,7 +18,9 @@ Processes are stored in a fixed-size runtime table. Each process owns a quoted
 top-level form or a quoted =begin= body. The firmware loop polls the table
 every 10 ms and runs at most one top-level form per poll. =(yield)= advances
 to the next top-level form without delay, and =(sleep-ms n)= parks the process
-until the board millisecond counter reaches the wake time.
+until the board millisecond counter reaches the wake time. =processes= reports
+each live slot's pid, state, wake time, step count, last evaluated value, and
+error string.
 
 This is not a full continuation system yet. A single top-level Lisp form still
 uses the direct recursive evaluator until it returns, and blocking primitives
@@ -51,6 +53,10 @@ The automatic poller normally advances ready processes without manual
 =(process-poll)=. Manual polling remains useful in a debugger session or in a
 future recovery image with the automatic poller disabled.
 
+Completed processes keep their last evaluated value in the process table until
+the slot is reused or killed, so =(processes)= is the current way to inspect a
+finished asynchronous result.
+
 * 2026-07-01 Live Validation
 
 The current normal Wi-Fi image, started through FAT =boot.lisp= and controlled
@@ -72,15 +78,16 @@ Observed result:
 => #x00000001
 => (((pid . #x00000001)
         (state . done)
-        (wake-ms . #x0000b892)
+        (wake-ms . #x0000655e)
         (steps . #x00000002)
+        (last-value . 42)
         (error . "")))
 #+end_example
 
-This was revalidated after the KitProg3 HID-mode switch on the normal
-FAT-booted Wi-Fi image. The process runner stayed usable while UART long-form
-input was still corrupt, which reinforces the current rule that the UDP REPL
-is the practical control plane for scheduler work.
+This was revalidated after flashing the normal FAT-booted Wi-Fi image with
+process =last-value= reporting. The process runner stayed usable while UART
+long-form input was still corrupt, which reinforces the current rule that the
+UDP REPL is the practical control plane for scheduler work.
 
 * Remaining Architecture
 
