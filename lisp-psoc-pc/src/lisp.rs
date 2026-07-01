@@ -75,11 +75,14 @@ const STATUS_READY: &[u8] = b"ready";
 const STATUS_NOT_RUN: &[u8] = b"not-run";
 const STATUS_STEP_FAILED: &[u8] = b"step-failed";
 const STATUS_TIMEOUT: &[u8] = b"timeout";
+const STATUS_LISTEN_TIMEOUT: &[u8] = b"listen-timeout";
 const STATUS_DUPLICATE: &[u8] = b"duplicate";
 const STATUS_ACK: &[u8] = b"ack";
 const STATUS_READ_ONLY_DENIED: &[u8] = b"read-only-denied";
 const STEP_DONE: &[u8] = b"done";
 const WIFI_NET_REPL_SERVICE_DEFAULT_POLL_FRAMES: u8 = 1;
+const WIFI_TCP_REPL_SERVICE_DEFAULT_PORT: u16 = 2323;
+const WIFI_TCP_REPL_SERVICE_DEFAULT_POLL_FRAMES: u8 = 1;
 
 #[derive(Clone, Copy)]
 struct WifiNetReplCycleReport {
@@ -123,6 +126,26 @@ struct WifiNetReplServiceState {
     last_ack_response_hash: u32,
 }
 
+#[derive(Clone, Copy)]
+struct WifiTcpReplServiceState {
+    enabled: bool,
+    listen_port: u16,
+    poll_frames: u8,
+    polls: u32,
+    requests_handled: u32,
+    last_status: &'static [u8],
+    last_request_status: &'static [u8],
+    last_reply_status: &'static [u8],
+    last_eval_status: &'static [u8],
+    last_peer_ip_address: u32,
+    last_peer_port: u16,
+    last_payload_length: u16,
+    last_payload_hash: u32,
+    last_response_length: u16,
+    last_response_hash: u32,
+    last_response_truncated: bool,
+}
+
 const EMPTY_WIFI_NET_REPL_SERVICE_STATE: WifiNetReplServiceState = WifiNetReplServiceState {
     enabled: false,
     poll_frames: WIFI_NET_REPL_SERVICE_DEFAULT_POLL_FRAMES,
@@ -140,6 +163,25 @@ const EMPTY_WIFI_NET_REPL_SERVICE_STATE: WifiNetReplServiceState = WifiNetReplSe
     last_response_truncated: false,
     last_ack_sequence: 0,
     last_ack_response_hash: 0,
+};
+
+const EMPTY_WIFI_TCP_REPL_SERVICE_STATE: WifiTcpReplServiceState = WifiTcpReplServiceState {
+    enabled: false,
+    listen_port: WIFI_TCP_REPL_SERVICE_DEFAULT_PORT,
+    poll_frames: WIFI_TCP_REPL_SERVICE_DEFAULT_POLL_FRAMES,
+    polls: 0,
+    requests_handled: 0,
+    last_status: STATUS_NOT_RUN,
+    last_request_status: STATUS_NOT_RUN,
+    last_reply_status: STATUS_NOT_RUN,
+    last_eval_status: STATUS_NOT_RUN,
+    last_peer_ip_address: 0,
+    last_peer_port: 0,
+    last_payload_length: 0,
+    last_payload_hash: 0,
+    last_response_length: 0,
+    last_response_hash: 0,
+    last_response_truncated: false,
 };
 
 #[derive(Clone, Copy)]
@@ -2355,6 +2397,7 @@ pub enum Primitive {
     HttpGet,
     WifiNetReplOnce,
     WifiNetReplService,
+    WifiTcpReplService,
     WifiNetworkBootstrap,
     WifiLoadClm,
     WifiGetCountry,
@@ -2492,6 +2535,7 @@ impl Primitive {
             Self::HttpGet => "http-get",
             Self::WifiNetReplOnce => "wifi-net-repl-once",
             Self::WifiNetReplService => "wifi-net-repl-service",
+            Self::WifiTcpReplService => "wifi-tcp-repl-service",
             Self::WifiNetworkBootstrap => "wifi-network-bootstrap",
             Self::WifiLoadClm => "wifi-load-clm",
             Self::WifiGetCountry => "wifi-get-country",
@@ -2643,6 +2687,7 @@ pub struct Machine {
     wifi_passphrase: StringBytes,
     wifi_passphrase_set: bool,
     wifi_net_repl_service: WifiNetReplServiceState,
+    wifi_tcp_repl_service: WifiTcpReplServiceState,
     wifi_net_repl_response_cache: WifiNetReplResponseCache,
 }
 
@@ -2675,6 +2720,7 @@ impl Machine {
             wifi_passphrase: EMPTY_STRING_BYTES,
             wifi_passphrase_set: false,
             wifi_net_repl_service: EMPTY_WIFI_NET_REPL_SERVICE_STATE,
+            wifi_tcp_repl_service: EMPTY_WIFI_TCP_REPL_SERVICE_STATE,
             wifi_net_repl_response_cache: EMPTY_WIFI_NET_REPL_RESPONSE_CACHE,
         }
     }
@@ -2813,6 +2859,7 @@ impl Machine {
         self.install_primitive(b"http-get", Primitive::HttpGet)?;
         self.install_primitive(b"wifi-net-repl-once", Primitive::WifiNetReplOnce)?;
         self.install_primitive(b"wifi-net-repl-service", Primitive::WifiNetReplService)?;
+        self.install_primitive(b"wifi-tcp-repl-service", Primitive::WifiTcpReplService)?;
         self.install_primitive(b"wifi-network-bootstrap", Primitive::WifiNetworkBootstrap)?;
         self.install_primitive(b"wifi-load-clm", Primitive::WifiLoadClm)?;
         self.install_primitive(b"wifi-get-country", Primitive::WifiGetCountry)?;
@@ -2957,6 +3004,27 @@ impl Machine {
 
     pub fn wifi_net_repl_service_last_sequence(&self) -> u32 {
         self.wifi_net_repl_service.last_sequence
+    }
+
+    pub fn wifi_tcp_repl_service_enabled(&self) -> bool {
+        self.wifi_tcp_repl_service.enabled
+    }
+
+    pub fn enable_wifi_tcp_repl_service(&mut self, listen_port: u16, poll_frames: u8) {
+        self.wifi_tcp_repl_service.enabled = true;
+        self.wifi_tcp_repl_service.listen_port = listen_port;
+        self.wifi_tcp_repl_service.poll_frames = poll_frames;
+    }
+
+    pub fn poll_wifi_tcp_repl_service<B: Board>(&mut self, board: &mut B) {
+        if !self.wifi_tcp_repl_service.enabled {
+            return;
+        }
+
+        let listen_port = self.wifi_tcp_repl_service.listen_port;
+        let poll_frames = self.wifi_tcp_repl_service.poll_frames;
+        let cycle = self.run_wifi_tcp_repl_cycle(board, listen_port, poll_frames);
+        self.record_wifi_tcp_repl_service_cycle(cycle);
     }
 
     fn clear_wifi_passphrase(&mut self) {
@@ -3934,6 +4002,7 @@ impl Machine {
                 self.wifi_net_repl_once(board, poll_frames)
             }
             Primitive::WifiNetReplService => self.wifi_net_repl_service(args),
+            Primitive::WifiTcpReplService => self.wifi_tcp_repl_service(args),
             Primitive::WifiNetworkBootstrap => {
                 self.expect_count(args, 0)?;
                 self.wifi_network_bootstrap(board)
@@ -4890,6 +4959,15 @@ impl Machine {
         }
     }
 
+    fn expect_tcp_repl_service_port(&self, value: Value) -> LispResult<u16> {
+        let port = self.expect_u16(value)?;
+        if port == 0 {
+            Err(Error::new("expected non-zero TCP port"))
+        } else {
+            Ok(port)
+        }
+    }
+
     fn truthy(&self, value: Value) -> bool {
         !matches!(value, Value::Nil | Value::Bool(false))
     }
@@ -5101,6 +5179,7 @@ impl Machine {
             b"http-get",
             b"wifi-net-repl-once",
             b"wifi-net-repl-service",
+            b"wifi-tcp-repl-service",
             b"wifi-network-bootstrap",
             b"wifi-load-clm",
             b"wifi-get-country",
@@ -7661,6 +7740,122 @@ impl Machine {
         self.make_list_from_values(&entries)
     }
 
+    fn record_wifi_tcp_repl_service_cycle(&mut self, cycle: WifiTcpReplCycleReport) {
+        let reply_status = match cycle.reply {
+            Some(reply) => reply.status,
+            None => STATUS_NOT_RUN,
+        };
+
+        self.wifi_tcp_repl_service.polls = self.wifi_tcp_repl_service.polls.saturating_add(1);
+        if cycle.reply.is_none() && cycle.request.status == STATUS_LISTEN_TIMEOUT {
+            return;
+        }
+
+        if cycle.reply.is_some() {
+            self.wifi_tcp_repl_service.requests_handled = self
+                .wifi_tcp_repl_service
+                .requests_handled
+                .saturating_add(1);
+        }
+
+        self.wifi_tcp_repl_service.last_status = cycle.status;
+        self.wifi_tcp_repl_service.last_request_status = cycle.request.status;
+        self.wifi_tcp_repl_service.last_reply_status = reply_status;
+        self.wifi_tcp_repl_service.last_eval_status = cycle.eval_status;
+        self.wifi_tcp_repl_service.last_peer_ip_address = cycle.request.peer_ip_address;
+        self.wifi_tcp_repl_service.last_peer_port = cycle.request.peer_port;
+        self.wifi_tcp_repl_service.last_payload_length = cycle.request.payload_bytes;
+        self.wifi_tcp_repl_service.last_payload_hash = cycle.request.payload_hash;
+        self.wifi_tcp_repl_service.last_response_length = cycle.response_length;
+        self.wifi_tcp_repl_service.last_response_hash = cycle.response_hash;
+        self.wifi_tcp_repl_service.last_response_truncated = cycle.response_truncated;
+    }
+
+    fn wifi_tcp_repl_service(&mut self, args: &[Value]) -> LispResult<Value> {
+        match args.len() {
+            0 => {}
+            1 => match args[0] {
+                Value::Symbol(symbol) if symbol == self.specials.status => {}
+                Value::Symbol(symbol) if symbol == self.specials.on => {
+                    self.wifi_tcp_repl_service.enabled = true;
+                }
+                Value::Symbol(symbol) if symbol == self.specials.off => {
+                    self.wifi_tcp_repl_service.enabled = false;
+                }
+                _ => {
+                    return Err(Error::new(
+                        "wifi-tcp-repl-service expects status, on, or off",
+                    ))
+                }
+            },
+            2 | 3 => match args[0] {
+                Value::Symbol(symbol) if symbol == self.specials.on => {
+                    let listen_port = self.expect_tcp_repl_service_port(args[1])?;
+                    let poll_frames = if args.len() == 3 {
+                        self.expect_net_repl_service_poll_frames(args[2])?
+                    } else {
+                        WIFI_TCP_REPL_SERVICE_DEFAULT_POLL_FRAMES
+                    };
+                    self.enable_wifi_tcp_repl_service(listen_port, poll_frames);
+                }
+                _ => return Err(Error::new("wifi-tcp-repl-service port requires on")),
+            },
+            _ => {
+                return Err(Error::new(
+                    "wifi-tcp-repl-service expects up to three arguments",
+                ))
+            }
+        }
+
+        self.wifi_tcp_repl_service_report()
+    }
+
+    fn wifi_tcp_repl_service_report(&mut self) -> LispResult<Value> {
+        let service = self.wifi_tcp_repl_service;
+        let enabled = self.bool_entry(b"enabled", service.enabled)?;
+        let listen_port = self.word_entry(b"listen-port", service.listen_port as u32)?;
+        let poll_frames = self.word_entry(b"poll-frames", service.poll_frames as u32)?;
+        let polls = self.word_entry(b"polls", service.polls)?;
+        let requests_handled = self.word_entry(b"requests-handled", service.requests_handled)?;
+        let last_status = self.symbol_entry(b"last.status", service.last_status)?;
+        let last_request_status =
+            self.symbol_entry(b"last.request.status", service.last_request_status)?;
+        let last_reply_status =
+            self.symbol_entry(b"last.reply.status", service.last_reply_status)?;
+        let last_eval_status = self.symbol_entry(b"last.eval.status", service.last_eval_status)?;
+        let last_peer_ip = self.word_entry(b"last.peer.ip", service.last_peer_ip_address)?;
+        let last_peer_port = self.word_entry(b"last.peer.port", service.last_peer_port as u32)?;
+        let last_payload_length =
+            self.word_entry(b"last.payload.length", service.last_payload_length as u32)?;
+        let last_payload_hash = self.word_entry(b"last.payload.hash", service.last_payload_hash)?;
+        let last_response_length =
+            self.word_entry(b"last.response.length", service.last_response_length as u32)?;
+        let last_response_hash =
+            self.word_entry(b"last.response.hash", service.last_response_hash)?;
+        let last_response_truncated =
+            self.bool_entry(b"last.response.truncated", service.last_response_truncated)?;
+
+        let entries = [
+            enabled,
+            listen_port,
+            poll_frames,
+            polls,
+            requests_handled,
+            last_status,
+            last_request_status,
+            last_reply_status,
+            last_eval_status,
+            last_peer_ip,
+            last_peer_port,
+            last_payload_length,
+            last_payload_hash,
+            last_response_length,
+            last_response_hash,
+            last_response_truncated,
+        ];
+        self.make_list_from_values(&entries)
+    }
+
     fn eval_net_repl_payload<B: Board>(
         &mut self,
         input: &[u8],
@@ -7727,6 +7922,9 @@ impl Machine {
             return args == Value::Nil;
         }
         if self.symbol_name_eq(symbol, b"wifi-net-repl-service") {
+            return self.net_repl_read_only_status_arg(args);
+        }
+        if self.symbol_name_eq(symbol, b"wifi-tcp-repl-service") {
             return self.net_repl_read_only_status_arg(args);
         }
         if self.symbol_name_eq(symbol, b"cat") || self.symbol_name_eq(symbol, b"read-file") {

@@ -400,6 +400,7 @@
 (define (read-only-form? form)
   (let ((text (trim-ascii form)))
     (or (string=? text "(wifi-net-repl-service status)")
+        (string=? text "(wifi-tcp-repl-service status)")
         (string=? text "(processes)")
         (string=? text "(ls)")
         (string=? text "(fat-info)")
@@ -418,7 +419,7 @@
 
 (define (enforce-read-only form)
   (unless (read-only-form? form)
-    (die "read-only mode allows only status, processes, help, millis, regs, heap, ls, fat-info, sd-status, Wi-Fi link/lease status, board status, cat, and read-file forms")))
+    (die "read-only mode allows only status, processes, help, millis, regs, heap, ls, fat-info, sd-status, Wi-Fi link/lease status, board status, network REPL service status, cat, and read-file forms")))
 
 (define (legacy-response? bytes sequence)
   (and (>= (length bytes) 8)

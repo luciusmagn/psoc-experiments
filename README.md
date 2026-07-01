@@ -88,7 +88,10 @@ handshake and closes it with RST/ACK cleanup. `(wifi-tcp-receive-once 2323 80)`
 accepts one inbound TCP connection, captures one payload frame preview, and
 then closes with RST/ACK cleanup. `(wifi-tcp-repl-once 2323 80)` accepts one
 TCP connection, evaluates one received Lisp form, sends the pretty-printed
-result over TCP, and closes. `(http-get "http://example.com/")` resolves the
+result over TCP, and closes. `(wifi-tcp-repl-service on 2323 1)` enables the
+current background plain-TCP Lisp REPL service: one Lisp form per TCP
+connection, then a pretty-printed reply and close. It is a stepping stone
+toward Telnet, not Telnet yet. `(http-get "http://example.com/")` resolves the
 host, opens a raw TCP connection to port 80, sends an HTTP/1.0 GET with
 `Connection: close`, captures a short response preview, and sends RST/ACK
 cleanup. Plain HTTP only is implemented; HTTPS/TLS is not. Dotted numeric URLs
@@ -112,6 +115,11 @@ Requests are capped at 96 bytes and replies at 512 bytes.
 same framed UDP evaluator as a background service from the main firmware loop.
 While polling, the service answers ARP requests for its DHCP lease so host-side
 clients do not need a pinned neighbor entry.
+`(wifi-tcp-repl-service status)`, `(wifi-tcp-repl-service on)`,
+`(wifi-tcp-repl-service on 2323 1)`, and `(wifi-tcp-repl-service off)` control
+the background plain-TCP evaluator. The UDP and TCP services currently poll the
+same SDIO RX queue independently, so keep UDP retries in scripts while both
+services are running.
 `(wifi-network-bootstrap)` runs local association, DHCP, lease status, and
 router ARP resolution as one compact high-level form.
 
@@ -193,6 +201,8 @@ simple-path file-read operations:
 ```sh
 tools/send-net-repl.scm --host BOARD_IP --payload-only --read-only --color \
   '(wifi-net-repl-service status)'
+tools/send-net-repl.scm --host BOARD_IP --payload-only --read-only \
+  '(wifi-tcp-repl-service status)'
 ```
 
 This guard is for avoiding accidental writes from the host client and current

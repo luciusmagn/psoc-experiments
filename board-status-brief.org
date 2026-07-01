@@ -24,6 +24,9 @@ Current working capabilities:
 - A one-shot TCP Lisp REPL form, =(wifi-tcp-repl-once port [poll-frames])=,
   which accepts one TCP connection, evaluates one received Lisp form, sends the
   pretty-printed result back over TCP, and closes.
+- A background plain-TCP Lisp REPL service,
+  =(wifi-tcp-repl-service on 2323 1)=, which accepts one Lisp form per TCP
+  connection and re-arms after replying.
 
 * Core Usage
 
@@ -34,9 +37,10 @@ Only the board's cores are split today:
   driver, UDP REPL service, TCP diagnostics, and cooperative process polling.
 
 The CYW4343W Wi-Fi/Bluetooth module is driven over SDIO from CM4. The second
-PSoC core is not yet used as a live console or I/O front end after boot. A
-future split can move always-responsive I/O and framing to CM0+ while CM4 keeps
-the evaluator and heavier Wi-Fi/storage work.
+PSoC core is not yet used as a live console or I/O front end after boot. The
+preferred next architecture is to move always-responsive I/O, Telnet or stream
+framing, and health signalling to CM0+ as soon as the single-core service
+boundaries are stable enough to define a small shared-memory IPC contract.
 
 * The Lisp
 
@@ -60,15 +64,14 @@ leak into Lisp reader/evaluator code.
 
 Near-term work should focus on making interaction less fragile:
 
-1. Turn the one-shot TCP REPL into a persistent network REPL service.
-2. Decide whether the persistent TCP service should be plain line TCP, a tiny
-   Telnet subset, or a custom framed stream.
-3. Keep the UART console working as a recovery path and continue reducing byte
+1. Add Telnet IAC option handling on top of the plain-TCP REPL service.
+2. Add a shared packet dispatcher so UDP and TCP services no longer race on the
+   same Wi-Fi RX queue.
+3. Start the CM0+ live-I/O split once the IPC surface is small and explicit.
+4. Keep the UART console working as a recovery path and continue reducing byte
    corruption.
-4. Add paging or streaming for network REPL responses larger than one UDP
+5. Add paging or streaming for network REPL responses larger than one UDP
    packet.
-5. Replace the current top-level process runner with resumable evaluator frames
+6. Replace the current top-level process runner with resumable evaluator frames
    so processes can yield inside longer Lisp computations.
-6. Expand FAT loading/saving beyond the current small-file limits.
-7. Consider moving console/network framing to CM0+ later, leaving CM4 to
-   evaluate Lisp and run heavier storage/Wi-Fi work.
+7. Expand FAT loading/saving beyond the current small-file limits.

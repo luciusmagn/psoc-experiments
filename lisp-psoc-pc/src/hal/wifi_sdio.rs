@@ -1705,6 +1705,36 @@ impl WifiSdioControlState {
     }
 }
 
+fn local_mac_from_state_or_chip(
+    p: &Peripherals,
+    state: &mut WifiSdioControlState,
+) -> Option<[u8; ETHERNET_ADDRESS_BYTES]> {
+    if state.local_mac_valid {
+        return Some(state.local_mac);
+    }
+
+    let mut mac_payload = [0u8; CUR_ETHERADDR_PAYLOAD_BYTES];
+    copy_bytes_to_slice(CUR_ETHERADDR_IOVAR_NAME, &mut mac_payload, 0);
+    let mac = link_control_get_payload(
+        p,
+        state,
+        WLC_GET_VAR_IOCTL,
+        &mac_payload,
+        ETHERNET_ADDRESS_BYTES,
+    );
+    if !matches!(mac.status, WifiSdioLinkGetStatus::Ready) {
+        return None;
+    }
+    if slice_all_eq(&mac.bytes[..ETHERNET_ADDRESS_BYTES], 0) {
+        return None;
+    }
+
+    let mut mac_bytes = [0u8; ETHERNET_ADDRESS_BYTES];
+    copy_bytes_to_slice(&mac.bytes[..ETHERNET_ADDRESS_BYTES], &mut mac_bytes, 0);
+    state.store_local_mac(&mac_bytes);
+    Some(mac_bytes)
+}
+
 pub struct WifiSdioPinSnapshot {
     pub p2_sel0: u32,
     pub p2_sel1: u32,
@@ -7298,27 +7328,13 @@ pub fn tcp_listen_once(
     }
 
     report.step = b"mac";
-    let mut mac_payload = [0u8; CUR_ETHERADDR_PAYLOAD_BYTES];
-    copy_bytes_to_slice(CUR_ETHERADDR_IOVAR_NAME, &mut mac_payload, 0);
-    let mac = link_control_get_payload(
-        p,
-        state,
-        WLC_GET_VAR_IOCTL,
-        &mac_payload,
-        ETHERNET_ADDRESS_BYTES,
-    );
-    if !matches!(mac.status, WifiSdioLinkGetStatus::Ready) {
-        report.status = WifiSdioTcpListenStatus::LocalMacMissing;
-        return finish_tcp_listen_report(p, report);
-    }
-    if slice_all_eq(&mac.bytes[..ETHERNET_ADDRESS_BYTES], 0) {
-        report.status = WifiSdioTcpListenStatus::LocalMacMissing;
-        return finish_tcp_listen_report(p, report);
-    }
-
-    let mut local_mac = [0u8; ETHERNET_ADDRESS_BYTES];
-    copy_bytes_to_slice(&mac.bytes[..ETHERNET_ADDRESS_BYTES], &mut local_mac, 0);
-    state.store_local_mac(&local_mac);
+    let local_mac = match local_mac_from_state_or_chip(p, state) {
+        Some(mac) => mac,
+        None => {
+            report.status = WifiSdioTcpListenStatus::LocalMacMissing;
+            return finish_tcp_listen_report(p, report);
+        }
+    };
     report.local_mac_present = true;
     let local_sequence = state.allocate_tcp_sequence();
     report.local_sequence = local_sequence;
@@ -7491,27 +7507,13 @@ pub fn tcp_receive_once(
     }
 
     report.step = b"mac";
-    let mut mac_payload = [0u8; CUR_ETHERADDR_PAYLOAD_BYTES];
-    copy_bytes_to_slice(CUR_ETHERADDR_IOVAR_NAME, &mut mac_payload, 0);
-    let mac = link_control_get_payload(
-        p,
-        state,
-        WLC_GET_VAR_IOCTL,
-        &mac_payload,
-        ETHERNET_ADDRESS_BYTES,
-    );
-    if !matches!(mac.status, WifiSdioLinkGetStatus::Ready) {
-        report.status = WifiSdioTcpReceiveStatus::LocalMacMissing;
-        return finish_tcp_receive_report(p, report);
-    }
-    if slice_all_eq(&mac.bytes[..ETHERNET_ADDRESS_BYTES], 0) {
-        report.status = WifiSdioTcpReceiveStatus::LocalMacMissing;
-        return finish_tcp_receive_report(p, report);
-    }
-
-    let mut local_mac = [0u8; ETHERNET_ADDRESS_BYTES];
-    copy_bytes_to_slice(&mac.bytes[..ETHERNET_ADDRESS_BYTES], &mut local_mac, 0);
-    state.store_local_mac(&local_mac);
+    let local_mac = match local_mac_from_state_or_chip(p, state) {
+        Some(mac) => mac,
+        None => {
+            report.status = WifiSdioTcpReceiveStatus::LocalMacMissing;
+            return finish_tcp_receive_report(p, report);
+        }
+    };
     report.local_mac_present = true;
     let local_sequence = state.allocate_tcp_sequence();
     report.local_sequence = local_sequence;
@@ -7725,27 +7727,13 @@ pub fn tcp_repl_poll(
     }
 
     report.step = b"mac";
-    let mut mac_payload = [0u8; CUR_ETHERADDR_PAYLOAD_BYTES];
-    copy_bytes_to_slice(CUR_ETHERADDR_IOVAR_NAME, &mut mac_payload, 0);
-    let mac = link_control_get_payload(
-        p,
-        state,
-        WLC_GET_VAR_IOCTL,
-        &mac_payload,
-        ETHERNET_ADDRESS_BYTES,
-    );
-    if !matches!(mac.status, WifiSdioLinkGetStatus::Ready) {
-        report.status = WifiSdioTcpReceiveStatus::LocalMacMissing;
-        return finish_tcp_receive_report(p, report);
-    }
-    if slice_all_eq(&mac.bytes[..ETHERNET_ADDRESS_BYTES], 0) {
-        report.status = WifiSdioTcpReceiveStatus::LocalMacMissing;
-        return finish_tcp_receive_report(p, report);
-    }
-
-    let mut local_mac = [0u8; ETHERNET_ADDRESS_BYTES];
-    copy_bytes_to_slice(&mac.bytes[..ETHERNET_ADDRESS_BYTES], &mut local_mac, 0);
-    state.store_local_mac(&local_mac);
+    let local_mac = match local_mac_from_state_or_chip(p, state) {
+        Some(mac) => mac,
+        None => {
+            report.status = WifiSdioTcpReceiveStatus::LocalMacMissing;
+            return finish_tcp_receive_report(p, report);
+        }
+    };
     report.local_mac_present = true;
     let local_sequence = state.allocate_tcp_sequence();
     report.local_sequence = local_sequence;

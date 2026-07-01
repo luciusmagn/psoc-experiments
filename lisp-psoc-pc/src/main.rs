@@ -18,6 +18,7 @@ mod wifi_resources;
 const SYSCLK_HZ: u32 = 50_000_000;
 const CONSOLE_POLL_DELAY_US: u32 = 50;
 const WIFI_NET_REPL_SERVICE_INTERVAL_MS: u32 = 50;
+const WIFI_TCP_REPL_SERVICE_INTERVAL_MS: u32 = 50;
 const PROCESS_SERVICE_INTERVAL_MS: u32 = 10;
 #[cfg(feature = "uart-pin-probe")]
 const UART_PIN_PROBE_MESSAGE: &[u8] = b"\r\nUART-PIN-PROBE P5.1 GPIO 9600 8N1\r\n";
@@ -134,6 +135,7 @@ fn main() -> ! {
     let mut line_len = 0usize;
     let mut tick_accumulated_us = 0u32;
     let mut net_repl_service_accumulated_ms = 0u32;
+    let mut tcp_repl_service_accumulated_ms = 0u32;
     let mut process_service_accumulated_ms = 0u32;
 
     loop {
@@ -196,6 +198,7 @@ fn main() -> ! {
             tick_accumulated_us -= 1000;
             board_state.tick_ms(&p);
             net_repl_service_accumulated_ms = net_repl_service_accumulated_ms.saturating_add(1);
+            tcp_repl_service_accumulated_ms = tcp_repl_service_accumulated_ms.saturating_add(1);
             process_service_accumulated_ms = process_service_accumulated_ms.saturating_add(1);
         }
 
@@ -209,6 +212,16 @@ fn main() -> ! {
             }
         } else {
             net_repl_service_accumulated_ms = 0;
+        }
+
+        if machine.wifi_tcp_repl_service_enabled() {
+            if tcp_repl_service_accumulated_ms >= WIFI_TCP_REPL_SERVICE_INTERVAL_MS {
+                tcp_repl_service_accumulated_ms = 0;
+                let mut board = board_state.lisp_board(&p);
+                machine.poll_wifi_tcp_repl_service(&mut board);
+            }
+        } else {
+            tcp_repl_service_accumulated_ms = 0;
         }
 
         if process_service_accumulated_ms >= PROCESS_SERVICE_INTERVAL_MS {

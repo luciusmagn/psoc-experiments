@@ -259,6 +259,18 @@ test. Start it through the UDP REPL in the background, then run
 printing `=> 42` and the board report showing `request.status`, `eval.status`,
 and `reply.status` as `ready`. This is a one-shot diagnostic and not a
 persistent Telnet service yet.
+Use `(wifi-tcp-repl-service on 2323 1)` as the current background TCP Lisp REPL
+service smoke test. Enable it through the UDP REPL, send one Lisp form per TCP
+connection with `ncat`, and check
+`tools/send-net-repl.scm --host BOARD_IP --payload-only --read-only '(wifi-tcp-repl-service status)'`.
+Success is at least two TCP requests returning pretty-printed results, the
+status report showing `requests-handled` increased, and the last request, eval,
+and reply statuses as `ready`. This is plain TCP and pre-Telnet: no Telnet IAC
+option handling or persistent line editor exists yet. The UDP and TCP services
+currently poll the same SDIO RX queue independently, so use UDP retries while
+both are enabled and turn TCP off with `(wifi-tcp-repl-service off)` if UDP
+control becomes unreliable. Do not auto-start TCP from `boot.lisp` until the
+shared packet dispatcher or Telnet service layer is deliberately added.
 Use `tools/send-net-repl.scm --color` only when ANSI payload coloring is wanted;
 plain output is the default. Use `--read-only` as a conservative accidental-send
 guard for status, directory, FAT info, Wi-Fi link/lease status, and simple-path

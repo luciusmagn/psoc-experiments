@@ -121,7 +121,8 @@ work on CM4:
 - IPC: fixed-size queues in shared SRAM, explicit message ownership, no shared
   mutable Lisp heap across cores.
 
-This is useful once the single-core cooperative model is clear. Moving the
-current direct evaluator to CM0+ would not solve blocking FAT or Wi-Fi calls;
-it would only move the blockage to another core unless the I/O boundary is also
-made asynchronous.
+This should move up in priority once the plain-TCP REPL service grows Telnet
+handling, because a console front end is a natural CM0+ responsibility. Moving
+the current direct evaluator to CM0+ would not solve blocking FAT or Wi-Fi
+calls; the useful split is a small asynchronous I/O boundary, not a second copy
+of the same blocking evaluator loop.

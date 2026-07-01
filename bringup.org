@@ -6863,3 +6863,116 @@ and prefer the UDP REPL or the new one-shot TCP path for interactive work.
    status.
 11. Add real PDM sample and CapSense scan primitives on top of the existing
     status forms.
+
+* 2026-07-01 Background TCP Lisp REPL Service
+
+Added =(wifi-tcp-repl-service ...)= as the first background plain-TCP REPL
+service. It accepts one Lisp form per TCP connection, evaluates it through the
+normal Lisp path, sends the pretty-printed response over TCP, closes, and then
+re-arms from the main firmware loop. This is pre-Telnet: it does not parse
+Telnet IAC commands, negotiate options, or provide a persistent line editor.
+
+The service status form supports:
+
+#+begin_src scheme
+(wifi-tcp-repl-service status)
+(wifi-tcp-repl-service on)
+(wifi-tcp-repl-service on 2323 1)
+(wifi-tcp-repl-service off)
+#+end_src
+
+Also updated the host read-only guard so this status form can be queried with
+=tools/send-net-repl.scm --read-only=.
+
+The TCP listen/receive paths now use the cached local MAC address once it has
+been learned instead of re-reading =cur_etheraddr= on every TCP poll. This
+keeps idle background polling from replacing the last successful TCP service
+status with an intermittent =local-mac-missing= report.
+
+Validation used a temporary service-smoke image only long enough to repair the
+FAT boot file:
+
+#+begin_src sh
+tools/send-net-repl.scm --host 10.0.0.9 --attempts 4 --wait 30 \
+  '(save-file "boot.lisp" "(begin (wifi-network-bootstrap) (wifi-net-repl-service on))")'
+#+end_src
+
+The board reported:
+
+#+begin_example
+=> ((status . ready)
+    (ready . #t)
+    (path-len . 9)
+    (content-len . 59)
+    (directory-sector . #x00000000)
+    (data-sector . #x00000000))
+#+end_example
+
+Then flashed the normal quiet Wi-Fi image:
+
+#+begin_src sh
+tools/build-lisp.scm --wifi-firmware --wifi-credentials
+tools/flash-lisp.scm
+#+end_src
+
+OpenOCD programmed and verified =745048= bytes, then reset the target. The
+normal image came back through FAT =boot.lisp= and answered the UDP REPL:
+
+#+begin_src sh
+tools/send-net-repl.scm --host 10.0.0.9 --attempts 8 --wait 10 \
+  --payload-only '(+ 1 2)'
+#+end_src
+
+#+begin_example
+=> 3
+#+end_example
+
+Enabled and exercised the TCP service:
+
+#+begin_src sh
+tools/send-net-repl.scm --host 10.0.0.9 --attempts 4 --wait 10 \
+  --payload-only '(wifi-tcp-repl-service on 2323 1)'
+printf '(+ 7 8)\n' | ncat -w 8 -q 3 10.0.0.9 2323
+printf '(list 1 2 3)\n' | ncat -w 8 -q 3 10.0.0.9 2323
+sleep 5
+tools/send-net-repl.scm --host 10.0.0.9 --attempts 4 --wait 10 \
+  --payload-only --read-only '(wifi-tcp-repl-service status)'
+#+end_src
+
+Observed:
+
+#+begin_example
+=> 15
+=> (1 2 3)
+=> ((enabled . #t)
+    (listen-port . #x00000913)
+    (poll-frames . #x00000001)
+    (polls . #x000002d8)
+    (requests-handled . #x00000002)
+    (last.status . ready)
+    (last.request.status . ready)
+    (last.reply.status . ready)
+    (last.eval.status . ready)
+    (last.peer.ip . #x0a000005)
+    (last.peer.port . #x00008354)
+    (last.payload.length . #x0000000d)
+    (last.response.length . #x0000000b)
+    (last.response.truncated . #f))
+#+end_example
+
+The immediate UDP check missed one response while TCP service polling was
+active, but a longer retry window succeeded:
+
+#+begin_src sh
+tools/send-net-repl.scm --host 10.0.0.9 --attempts 8 --wait 10 \
+  --payload-only '(+ 4 5)'
+#+end_src
+
+#+begin_example
+=> 9
+#+end_example
+
+Conclusion: the plain-TCP service works as a stepping stone toward Telnet, but
+UDP and TCP still poll the same SDIO RX queue independently. The next network
+slice should add a shared packet dispatcher or otherwise make the services
+cooperate before auto-starting TCP from =boot.lisp=.
