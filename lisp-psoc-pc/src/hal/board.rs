@@ -712,6 +712,19 @@ impl lisp::Board for PsocBoard<'_> {
         ))
     }
 
+    fn wifi_tcp_listen_once(
+        &mut self,
+        port: u16,
+        poll_frames: u8,
+    ) -> lisp::WifiSdioTcpListenReport {
+        wifi_sdio_tcp_listen_report(wifi_sdio::tcp_listen_once(
+            self.p,
+            &mut self.state.wifi_control_state,
+            port,
+            poll_frames,
+        ))
+    }
+
     fn http_get(&mut self, url: lisp::StringBytes) -> lisp::WifiSdioHttpGetReport {
         wifi_sdio_http_get_report(wifi_sdio::http_get(
             self.p,
@@ -1569,6 +1582,25 @@ fn wifi_sdio_tcp_syn_status(status: wifi_sdio::WifiSdioTcpSynStatus) -> &'static
     }
 }
 
+fn wifi_sdio_tcp_listen_status(status: wifi_sdio::WifiSdioTcpListenStatus) -> &'static [u8] {
+    match status {
+        wifi_sdio::WifiSdioTcpListenStatus::Ready => b"ready",
+        wifi_sdio::WifiSdioTcpListenStatus::NoLease => b"no-lease",
+        wifi_sdio::WifiSdioTcpListenStatus::LeaseMissingAddress => b"lease-missing-address",
+        wifi_sdio::WifiSdioTcpListenStatus::LocalMacMissing => b"local-mac-missing",
+        wifi_sdio::WifiSdioTcpListenStatus::BadPort => b"bad-port",
+        wifi_sdio::WifiSdioTcpListenStatus::HtRequestFailed => b"ht-request-failed",
+        wifi_sdio::WifiSdioTcpListenStatus::ListenPollFailed => b"listen-poll-failed",
+        wifi_sdio::WifiSdioTcpListenStatus::ListenTimeout => b"listen-timeout",
+        wifi_sdio::WifiSdioTcpListenStatus::SynRejected => b"syn-rejected",
+        wifi_sdio::WifiSdioTcpListenStatus::SynAckSendFailed => b"syn-ack-send-failed",
+        wifi_sdio::WifiSdioTcpListenStatus::AckPollFailed => b"ack-poll-failed",
+        wifi_sdio::WifiSdioTcpListenStatus::AckTimeout => b"ack-timeout",
+        wifi_sdio::WifiSdioTcpListenStatus::AckRejected => b"ack-rejected",
+        wifi_sdio::WifiSdioTcpListenStatus::ResetFailed => b"reset-failed",
+    }
+}
+
 fn wifi_sdio_tcp_poll_status(status: wifi_sdio::WifiSdioTcpPollStatus) -> &'static [u8] {
     match status {
         wifi_sdio::WifiSdioTcpPollStatus::NotRun => b"not-run",
@@ -1596,6 +1628,7 @@ fn wifi_sdio_tcp_parse_status(status: wifi_sdio::WifiSdioTcpParseStatus) -> &'st
         wifi_sdio::WifiSdioTcpParseStatus::WrongPorts => b"wrong-ports",
         wifi_sdio::WifiSdioTcpParseStatus::WrongSequence => b"wrong-sequence",
         wifi_sdio::WifiSdioTcpParseStatus::MissingSynAck => b"missing-syn-ack",
+        wifi_sdio::WifiSdioTcpParseStatus::MissingAck => b"missing-ack",
         wifi_sdio::WifiSdioTcpParseStatus::NoPayload => b"no-payload",
         wifi_sdio::WifiSdioTcpParseStatus::Reset => b"reset",
     }
@@ -2620,6 +2653,35 @@ fn wifi_sdio_tcp_syn_report(report: wifi_sdio::WifiSdioTcpSynReport) -> lisp::Wi
             .response_last_error
             .map(wifi_sdio_command_error_report),
         reset_last_error: report.reset_last_error.map(wifi_sdio_command_error_report),
+        host_normal_int: report.host_normal_int,
+        host_error_int: report.host_error_int,
+    }
+}
+
+fn wifi_sdio_tcp_listen_report(
+    report: wifi_sdio::WifiSdioTcpListenReport,
+) -> lisp::WifiSdioTcpListenReport {
+    lisp::WifiSdioTcpListenReport {
+        status: wifi_sdio_tcp_listen_status(report.status),
+        step: report.step,
+        local_ip_address: report.local_ip_address,
+        listen_port: report.listen_port,
+        peer_ip_address: report.peer_ip_address,
+        peer_port: report.peer_port,
+        peer_sequence: report.peer_sequence,
+        ack_number: report.ack_number,
+        flags: report.flags,
+        listen_poll_status: wifi_sdio_tcp_poll_status(report.listen_poll_status),
+        listen_parse_status: wifi_sdio_tcp_parse_status(report.listen_parse_status),
+        listen_polls: report.listen_polls,
+        listen_frames_read: report.listen_frames_read,
+        syn_ack_status: wifi_sdio_f2_control_status(report.syn_ack_status),
+        ack_poll_status: wifi_sdio_tcp_poll_status(report.ack_poll_status),
+        ack_parse_status: wifi_sdio_tcp_parse_status(report.ack_parse_status),
+        ack_polls: report.ack_polls,
+        ack_frames_read: report.ack_frames_read,
+        reset_status: wifi_sdio_f2_control_status(report.reset_status),
+        interrupt_ack_status: wifi_sdio_interrupt_ack_status(report.interrupt_ack_status),
         host_normal_int: report.host_normal_int,
         host_error_int: report.host_error_int,
     }

@@ -236,6 +236,13 @@ test on the TP-Link network. It validates DNS, raw TCP open, HTTP/1.0 GET,
 response preview parsing, and RST/ACK cleanup. Use
 `(http-get "http://192.168.0.1/")` to test HTTP while skipping DNS, and
 `(wifi-tcp-syn-ip #xc0a80001 80)` as the lower-level raw TCP smoke test.
+Use `(wifi-tcp-listen-once 2323 80)` as the current raw inbound TCP smoke test.
+It is a one-shot diagnostic for accepting a SYN, replying SYN-ACK, observing the
+host ACK or RST, and sending RST/ACK cleanup; it is not Telnet yet. Start it
+through the UDP REPL in the background, then connect with
+`nc -vz -w 5 BOARD_IP 2323`. Keep its Lisp report compact because the current
+`nc`-based UDP REPL client has only been reliable with single captured replies
+below about 1 KiB, even though the firmware can build larger UDP payloads.
 Use `tools/send-net-repl.scm --color` only when ANSI payload coloring is wanted;
 plain output is the default. Use `--read-only` as a conservative accidental-send
 guard for status, directory, FAT info, Wi-Fi link/lease status, and simple-path

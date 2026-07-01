@@ -6625,6 +6625,70 @@ tools/send-net-repl.scm --host 10.0.0.9 --payload-only --read-only \
     ...)
 #+end_example
 
+* 2026-07-01 Passive TCP listener diagnostic
+
+Added =(wifi-tcp-listen-once port [poll-frames])= as the first raw inbound TCP
+diagnostic. It is not Telnet yet. It is the layer needed before a Telnet-like
+network console: wait for one inbound SYN to the board's DHCP lease address and
+the requested port, reply with SYN-ACK, observe the host's final ACK or RST,
+then send RST/ACK cleanup.
+
+Implementation notes:
+
+- The existing TCP parser now supports wildcard peer IP and peer port only
+  when the caller passes zero for those expected values. Existing outbound
+  probes still pass concrete peer IP and port values.
+- The listener path reuses the stored DHCP lease, obtains the local MAC through
+  =cur_etheraddr=, answers local ARP requests while polling, and reports the
+  listen, SYN-ACK, ACK, reset, and interrupt-ack stages.
+- The first verbose Lisp report exceeded the current host =nc= receive path:
+  the board reply began with a valid =LPS2= frame and showed =status . ready=,
+  but the host captured only 1024 bytes and rejected the checksum. The Lisp
+  report was reduced to the handshake fields needed for this diagnostic. The
+  HAL report type still carries the detailed counters and errors for future
+  expansion.
+
+Validation after flashing the normal quiet Wi-Fi image:
+
+#+begin_example
+tools/build-flash-lisp.scm --wifi-firmware --wifi-credentials
+
+tools/send-net-repl.scm --host 10.0.0.9 --attempts 20 --wait 5 \
+  --payload-only '(+ 1 2)'
+=> 3
+
+(tools/send-net-repl.scm --host 10.0.0.9 --attempts 1 --wait 60 \
+  --payload-only '(wifi-tcp-listen-once 2323 80)' \
+  > .local/logs/tcp-listen-20260701.out 2>&1) &
+sleep 2
+nc -vz -w 5 10.0.0.9 2323
+
+10.0.0.9 2323 (3d-nfsd) open
+
+=> ((status . ready)
+    (step . done)
+    (local.ip . #x0a000009)
+    (listen.port . #x00000913)
+    (peer.ip . #x0a000005)
+    (peer.port . #x00008d52)
+    (peer.seq . #xd372d333)
+    (ack . #x4c505502)
+    (flags . #x00000010)
+    (listen.status . ready)
+    (listen.parse . ready)
+    (listen.polls . #x00000006)
+    (listen.frames-read . #x00000001)
+    (syn-ack.status . ready)
+    (ack.status . ready)
+    (ack.parse . ready)
+    (ack.polls . #x00000002)
+    (ack.frames-read . #x00000001)
+    (reset.status . ready)
+    (interrupt.ack.status . ready)
+    (HOST.NORM_INT . #x00000100)
+    (HOST.ERR_INT . #x00000000))
+#+end_example
+
 * Next actions
 
 1. Keep UART sanity checks in the workflow. If corruption returns, first replug

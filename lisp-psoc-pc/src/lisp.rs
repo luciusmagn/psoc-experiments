@@ -279,6 +279,7 @@ pub trait Board {
     fn wifi_dns_query(&mut self, name: StringBytes) -> WifiSdioDnsQueryReport;
     fn wifi_tcp_syn(&mut self, name: StringBytes, port: u16) -> WifiSdioTcpSynReport;
     fn wifi_tcp_syn_ip(&mut self, remote_ip_address: u32, port: u16) -> WifiSdioTcpSynReport;
+    fn wifi_tcp_listen_once(&mut self, port: u16, poll_frames: u8) -> WifiSdioTcpListenReport;
     fn http_get(&mut self, url: StringBytes) -> WifiSdioHttpGetReport;
     fn wifi_net_repl_poll(&mut self, poll_frames: u8) -> WifiNetReplRequestReport;
     fn wifi_net_repl_reply(
@@ -1378,6 +1379,32 @@ pub struct WifiSdioTcpSynReport {
 }
 
 #[derive(Clone, Copy)]
+pub struct WifiSdioTcpListenReport {
+    pub status: &'static [u8],
+    pub step: &'static [u8],
+    pub local_ip_address: u32,
+    pub listen_port: u16,
+    pub peer_ip_address: u32,
+    pub peer_port: u16,
+    pub peer_sequence: u32,
+    pub ack_number: u32,
+    pub flags: u8,
+    pub listen_poll_status: &'static [u8],
+    pub listen_parse_status: &'static [u8],
+    pub listen_polls: u8,
+    pub listen_frames_read: u8,
+    pub syn_ack_status: &'static [u8],
+    pub ack_poll_status: &'static [u8],
+    pub ack_parse_status: &'static [u8],
+    pub ack_polls: u8,
+    pub ack_frames_read: u8,
+    pub reset_status: &'static [u8],
+    pub interrupt_ack_status: &'static [u8],
+    pub host_normal_int: u16,
+    pub host_error_int: u16,
+}
+
+#[derive(Clone, Copy)]
 pub struct WifiSdioHttpGetReport {
     pub status: &'static [u8],
     pub step: &'static [u8],
@@ -2239,6 +2266,7 @@ pub enum Primitive {
     WifiDnsQuery,
     WifiTcpSyn,
     WifiTcpSynIp,
+    WifiTcpListenOnce,
     HttpGet,
     WifiNetReplOnce,
     WifiNetReplService,
@@ -2373,6 +2401,7 @@ impl Primitive {
             Self::WifiDnsQuery => "wifi-dns-query",
             Self::WifiTcpSyn => "wifi-tcp-syn",
             Self::WifiTcpSynIp => "wifi-tcp-syn-ip",
+            Self::WifiTcpListenOnce => "wifi-tcp-listen-once",
             Self::HttpGet => "http-get",
             Self::WifiNetReplOnce => "wifi-net-repl-once",
             Self::WifiNetReplService => "wifi-net-repl-service",
@@ -2691,6 +2720,7 @@ impl Machine {
         self.install_primitive(b"wifi-dns-query", Primitive::WifiDnsQuery)?;
         self.install_primitive(b"wifi-tcp-syn", Primitive::WifiTcpSyn)?;
         self.install_primitive(b"wifi-tcp-syn-ip", Primitive::WifiTcpSynIp)?;
+        self.install_primitive(b"wifi-tcp-listen-once", Primitive::WifiTcpListenOnce)?;
         self.install_primitive(b"http-get", Primitive::HttpGet)?;
         self.install_primitive(b"wifi-net-repl-once", Primitive::WifiNetReplOnce)?;
         self.install_primitive(b"wifi-net-repl-service", Primitive::WifiNetReplService)?;
@@ -3748,6 +3778,22 @@ impl Machine {
                 let remote_ip_address = self.expect_u32(args[0])?;
                 let port = self.expect_u16(args[1])?;
                 self.wifi_sdio_tcp_syn_report(board.wifi_tcp_syn_ip(remote_ip_address, port))
+            }
+            Primitive::WifiTcpListenOnce => {
+                let port = match args.len() {
+                    1 | 2 => self.expect_u16(args[0])?,
+                    _ => {
+                        return Err(Error::new(
+                            "wifi-tcp-listen-once expects port and optional poll count",
+                        ))
+                    }
+                };
+                let poll_frames = match args.len() {
+                    1 => 32,
+                    2 => self.expect_u8(args[1])?,
+                    _ => unreachable!(),
+                };
+                self.wifi_sdio_tcp_listen_report(board.wifi_tcp_listen_once(port, poll_frames))
             }
             Primitive::HttpGet => {
                 self.expect_count(args, 1)?;
@@ -6847,6 +6893,62 @@ impl Machine {
             response_parse_status,
             response_polls,
             reset_status,
+        ];
+        self.make_list_from_values(&entries)
+    }
+
+    fn wifi_sdio_tcp_listen_report(
+        &mut self,
+        report: WifiSdioTcpListenReport,
+    ) -> LispResult<Value> {
+        let status = self.symbol_entry(b"status", report.status)?;
+        let step = self.symbol_entry(b"step", report.step)?;
+        let local_ip_address = self.word_entry(b"local.ip", report.local_ip_address)?;
+        let listen_port = self.word_entry(b"listen.port", report.listen_port as u32)?;
+        let peer_ip_address = self.word_entry(b"peer.ip", report.peer_ip_address)?;
+        let peer_port = self.word_entry(b"peer.port", report.peer_port as u32)?;
+        let peer_sequence = self.word_entry(b"peer.seq", report.peer_sequence)?;
+        let ack_number = self.word_entry(b"ack", report.ack_number)?;
+        let flags = self.word_entry(b"flags", report.flags as u32)?;
+        let listen_poll_status = self.symbol_entry(b"listen.status", report.listen_poll_status)?;
+        let listen_parse_status = self.symbol_entry(b"listen.parse", report.listen_parse_status)?;
+        let listen_polls = self.word_entry(b"listen.polls", report.listen_polls as u32)?;
+        let listen_frames_read =
+            self.word_entry(b"listen.frames-read", report.listen_frames_read as u32)?;
+        let syn_ack_status = self.symbol_entry(b"syn-ack.status", report.syn_ack_status)?;
+        let ack_poll_status = self.symbol_entry(b"ack.status", report.ack_poll_status)?;
+        let ack_parse_status = self.symbol_entry(b"ack.parse", report.ack_parse_status)?;
+        let ack_polls = self.word_entry(b"ack.polls", report.ack_polls as u32)?;
+        let ack_frames_read = self.word_entry(b"ack.frames-read", report.ack_frames_read as u32)?;
+        let reset_status = self.symbol_entry(b"reset.status", report.reset_status)?;
+        let interrupt_ack_status =
+            self.symbol_entry(b"interrupt.ack.status", report.interrupt_ack_status)?;
+        let host_normal_int = self.word_entry(b"HOST.NORM_INT", report.host_normal_int as u32)?;
+        let host_error_int = self.word_entry(b"HOST.ERR_INT", report.host_error_int as u32)?;
+
+        let entries = [
+            status,
+            step,
+            local_ip_address,
+            listen_port,
+            peer_ip_address,
+            peer_port,
+            peer_sequence,
+            ack_number,
+            flags,
+            listen_poll_status,
+            listen_parse_status,
+            listen_polls,
+            listen_frames_read,
+            syn_ack_status,
+            ack_poll_status,
+            ack_parse_status,
+            ack_polls,
+            ack_frames_read,
+            reset_status,
+            interrupt_ack_status,
+            host_normal_int,
+            host_error_int,
         ];
         self.make_list_from_values(&entries)
     }
