@@ -5220,6 +5220,8 @@ Added two host-side options to =tools/send-net-repl.scm=:
 
 This is a host-side accidental-send guard, not a firmware security boundary.
 The board-side service still evaluates any valid form it receives.
+This was superseded on 2026-07-01 by the =LPS5= board-side read-only request
+guard described below.
 
 Local validation:
 
@@ -6535,6 +6537,92 @@ tools/send-net-repl.scm --host 10.0.0.9 --payload-only --read-only \
 tools/send-net-repl.scm --host 10.0.0.9 --payload-only --read-only \
   '(sd-status)'
 => ((CD_L . low) (inserted . #t) ...)
+#+end_example
+
+* 2026-07-01 Board-side read-only UDP REPL requests
+
+Added =LPS5= as the current read-only UDP REPL request frame. It has the same
+layout as =LPS3=:
+
+1. magic bytes,
+2. big-endian sequence,
+3. FNV-1a request checksum,
+4. Lisp payload bytes.
+
+The =LPS5= magic tells current firmware to parse the expression and reject it
+before evaluation unless it matches the board-side conservative read-only
+allowlist. The host client still applies its own allowlist before sending.
+This is an accidental-write guard, not authentication.
+
+Current board-side allowlist:
+
+#+begin_example
+(help)
+(millis)
+(processes)
+(regs)
+(heap)
+(ls)
+(fat-info)
+(sd-status)
+(pdm-status)
+(thermistor-status)
+(capsense-status)
+(wifi-link-status)
+(wifi-lease-status)
+(wifi-net-repl-service status)
+(cat "simple/path.lisp")
+(read-file "simple/path.lisp")
+#+end_example
+
+The single-response cache now includes the request's read-only bit in its key,
+so a write-capable =LPS3= request and a read-only =LPS5= request with the same
+source, sequence, and payload do not reuse each other's response.
+
+Validation after flashing the normal quiet Wi-Fi image:
+
+#+begin_example
+tools/send-net-repl.scm --host 10.0.0.9 --attempts 30 --wait 5 \
+  --payload-only '(+ 5 6)'
+=> 11
+
+tools/send-net-repl.scm --host 10.0.0.9 --attempts 30 --wait 5 \
+  --payload-only --read-only '(wifi-link-status)'
+=> ((status . ready) ... (rssi.dbm . -68) ...)
+
+tools/send-net-repl.scm --host 10.0.0.9 --attempts 5 --wait 5 \
+  --read-only '(wifi-lease-status)'
+request.format=LPS5
+response.format=LPS2
+response.checksum.ok=#t
+payload.text==> ((status . ready) ...)
+#+end_example
+
+A manually crafted =LPS5= arithmetic request proved that the board-side guard
+rejects disallowed forms even when the host client allowlist is bypassed:
+
+#+begin_example
+request.magic=LPS5
+request.sequence=4242
+request.payload="(+ 1 2)"
+
+response.magic=LPS2
+response.sequence=4242
+payload=error: read-only request denied
+#+end_example
+
+The next status request captured the denial in the service state:
+
+#+begin_example
+tools/send-net-repl.scm --host 10.0.0.9 --payload-only --read-only \
+  '(wifi-net-repl-service status)'
+=> ((enabled . #t)
+    ...
+    (last.eval.status . read-only-denied)
+    (last.sequence . #x00001092)
+    (last.request.read-only . #t)
+    (last.response.hash . #xea5ae146)
+    ...)
 #+end_example
 
 * Next actions

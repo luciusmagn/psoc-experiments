@@ -100,6 +100,11 @@ uses its own ignored request/response files under =.local/net-repl/=; use
 explicit unique sequences when comparing concurrent UDP requests.
 Current UDP REPL replies carry up to 1400 payload bytes, so larger diagnostics
 such as =(thermistor-read)= fit in one unfragmented reply on the current stack.
+=--read-only= sends an =LPS5= request to current firmware and also applies a
+host-side allowlist. It is useful for observer/status commands such as
+=(wifi-net-repl-service status)=, =(wifi-link-status)=, =(wifi-lease-status)=,
+=(fat-info)=, =(ls)=, =(cat "boot.lisp")=, and =(read-file "boot.lisp")=.
+Treat it as an accidental-write guard, not as authentication.
 This is not Telnet or rlogin. The current working transport is the repo-local
 framed UDP protocol on port 4665; a Telnet-like TCP console still needs a board
 TCP listener and minimal option handling.

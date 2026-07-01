@@ -214,6 +214,9 @@ Use `tools/send-net-repl.scm --host BOARD_IP '(form ...)'` for host-side framed
 UDP REPL requests. It writes ignored binary request/response files under
 `.local/net-repl/`, calls `nc`, and prints response metadata plus payload text.
 The script sends `LPS3`, sequence, request checksum, and payload by default.
+With `--read-only`, the script sends `LPS5`, the same sequence/checksum/payload
+layout, and current firmware rejects requests outside its conservative
+read-only allowlist before evaluation.
 Use `--legacy-request` only when talking to an older flashed image that still
 expects `LPS0` requests. Current firmware replies with `LPS2`, sequence,
 response checksum, and payload; the script verifies the checksum, sends an
@@ -234,13 +237,13 @@ response preview parsing, and RST/ACK cleanup. Use
 `(http-get "http://192.168.0.1/")` to test HTTP while skipping DNS, and
 `(wifi-tcp-syn-ip #xc0a80001 80)` as the lower-level raw TCP smoke test.
 Use `tools/send-net-repl.scm --color` only when ANSI payload coloring is wanted;
-plain output is the default. Use `--read-only` as a conservative host-side
-accidental-send guard for status, directory, FAT info, and simple-path
-file-read forms. Do not treat this client flag as a board-side authorization
-boundary. Use `--payload-only` for clean REPL-like output when transport
-metadata is not needed. Each invocation uses per-process ignored files under
-`.local/net-repl/`; use explicit unique sequences when comparing concurrent UDP
-requests.
+plain output is the default. Use `--read-only` as a conservative accidental-send
+guard for status, directory, FAT info, Wi-Fi link/lease status, and simple-path
+file-read forms. It is a host-client and firmware guard against mistakes, not
+an authentication or authorization boundary. Use `--payload-only` for clean
+REPL-like output when transport metadata is not needed. Each invocation uses
+per-process ignored files under `.local/net-repl/`; use explicit unique
+sequences when comparing concurrent UDP requests.
 
 To make a normal quiet Wi-Fi image start the UDP REPL service from microSD,
 install this `boot.lisp` through the temporary service-smoke image:

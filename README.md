@@ -173,21 +173,24 @@ request from the host. The script writes a checked `LPS3` binary request under
 ignored `.local/net-repl/`, calls `nc`, parses the `LPS2` response, verifies the
 reply checksum, sends an `LPS4` ACK, and prints request/response/ACK metadata
 plus payload text. Use `--legacy-request` to send an older `LPS0` request frame.
+Use `--read-only` to send the current `LPS5` request frame, which has the same
+checksum and payload layout as `LPS3` but asks current firmware to reject forms
+outside its conservative read-only allowlist before evaluation.
 
 `tools/send-net-repl.scm --color` wraps payload text in ANSI color. Plain output
 is the default so logs and scripts do not receive escape codes. Use
 `--payload-only` for a cleaner REPL-like display without transport metadata.
-Use `--read-only` for a conservative host-side guard that refuses forms outside
-status, directory, FAT info, and simple-path file-read operations before it
-sends a UDP request:
+Use `--read-only` for status, directory, FAT info, Wi-Fi link/lease status, and
+simple-path file-read operations:
 
 ```sh
 tools/send-net-repl.scm --host BOARD_IP --payload-only --read-only --color \
   '(wifi-net-repl-service status)'
 ```
 
-This guard is for avoiding accidental writes from the host client; it is not a
-board-side authorization boundary. Each client invocation uses its own ignored
+This guard is for avoiding accidental writes from the host client and current
+firmware; it is not an authentication or authorization boundary. Each client
+invocation uses its own ignored
 request/response files under `.local/net-repl/`; use explicit unique sequences
 when comparing concurrent UDP requests.
 

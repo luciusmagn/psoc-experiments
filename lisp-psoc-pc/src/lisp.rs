@@ -77,6 +77,7 @@ const STATUS_STEP_FAILED: &[u8] = b"step-failed";
 const STATUS_TIMEOUT: &[u8] = b"timeout";
 const STATUS_DUPLICATE: &[u8] = b"duplicate";
 const STATUS_ACK: &[u8] = b"ack";
+const STATUS_READ_ONLY_DENIED: &[u8] = b"read-only-denied";
 const STEP_DONE: &[u8] = b"done";
 const WIFI_NET_REPL_SERVICE_DEFAULT_POLL_FRAMES: u8 = 1;
 
@@ -103,6 +104,7 @@ struct WifiNetReplServiceState {
     last_reply_status: &'static [u8],
     last_eval_status: &'static [u8],
     last_sequence: u32,
+    last_request_read_only: bool,
     last_response_length: u16,
     last_response_hash: u32,
     last_response_truncated: bool,
@@ -121,6 +123,7 @@ const EMPTY_WIFI_NET_REPL_SERVICE_STATE: WifiNetReplServiceState = WifiNetReplSe
     last_reply_status: STATUS_NOT_RUN,
     last_eval_status: STATUS_NOT_RUN,
     last_sequence: 0,
+    last_request_read_only: false,
     last_response_length: 0,
     last_response_hash: 0,
     last_response_truncated: false,
@@ -134,6 +137,7 @@ struct WifiNetReplResponseCache {
     source_ip_address: u32,
     source_mac_hash: u32,
     sequence: u32,
+    read_only: bool,
     payload_hash: u32,
     response: NetReplResponseBytes,
 }
@@ -149,6 +153,7 @@ const EMPTY_WIFI_NET_REPL_RESPONSE_CACHE: WifiNetReplResponseCache = WifiNetRepl
     source_ip_address: 0,
     source_mac_hash: 0,
     sequence: 0,
+    read_only: false,
     payload_hash: 0,
     response: EMPTY_NET_REPL_RESPONSE_BYTES,
 };
@@ -362,6 +367,24 @@ pub trait Board {
 
 fn status_ready(status: &[u8]) -> bool {
     status == STATUS_READY
+}
+
+fn net_repl_read_only_path_safe(path: StringBytes) -> bool {
+    if path.len == 0 {
+        return false;
+    }
+
+    let mut index = 0usize;
+    while index < path.len as usize {
+        let byte = path.bytes[index];
+        let safe = byte.is_ascii_alphanumeric() || matches!(byte, b'.' | b'-' | b'_' | b'/');
+        if !safe {
+            return false;
+        }
+        index += 1;
+    }
+
+    true
 }
 
 fn append_string_byte(target: &mut StringBytes, byte: u8) -> LispResult<()> {
@@ -1394,6 +1417,7 @@ pub struct WifiNetReplRequestReport {
     pub source_port: u16,
     pub source_mac_hash: u32,
     pub sequence: u32,
+    pub read_only: bool,
     pub payload_length: u8,
     pub payload_hash: u32,
     pub ack_response_hash: u32,
@@ -6914,6 +6938,7 @@ impl Machine {
             None => {
                 let (eval_status, response) = self.eval_net_repl_payload(
                     &request.payload[..request.payload_length as usize],
+                    request.read_only,
                     board,
                 );
                 self.store_wifi_net_repl_response(&request, response);
@@ -6950,6 +6975,7 @@ impl Machine {
             && cache.source_ip_address == request.source_ip_address
             && cache.source_mac_hash == request.source_mac_hash
             && cache.sequence == request.sequence
+            && cache.read_only == request.read_only
             && cache.payload_hash == request.payload_hash
         {
             Some(cache.response)
@@ -6968,6 +6994,7 @@ impl Machine {
             source_ip_address: request.source_ip_address,
             source_mac_hash: request.source_mac_hash,
             sequence: request.sequence,
+            read_only: request.read_only,
             payload_hash: request.payload_hash,
             response,
         };
@@ -7008,6 +7035,7 @@ impl Machine {
         self.wifi_net_repl_service.last_reply_status = reply_status;
         self.wifi_net_repl_service.last_eval_status = cycle.eval_status;
         self.wifi_net_repl_service.last_sequence = cycle.request.sequence;
+        self.wifi_net_repl_service.last_request_read_only = cycle.request.read_only;
         self.wifi_net_repl_service.last_response_length = cycle.response_length;
         self.wifi_net_repl_service.last_response_hash = cycle.response_hash;
         self.wifi_net_repl_service.last_response_truncated = cycle.response_truncated;
@@ -7061,6 +7089,8 @@ impl Machine {
             self.symbol_entry(b"last.reply.status", service.last_reply_status)?;
         let last_eval_status = self.symbol_entry(b"last.eval.status", service.last_eval_status)?;
         let last_sequence = self.word_entry(b"last.sequence", service.last_sequence)?;
+        let last_request_read_only =
+            self.bool_entry(b"last.request.read-only", service.last_request_read_only)?;
         let last_response_length =
             self.word_entry(b"last.response.length", service.last_response_length as u32)?;
         let last_response_hash =
@@ -7082,6 +7112,7 @@ impl Machine {
             last_reply_status,
             last_eval_status,
             last_sequence,
+            last_request_read_only,
             last_response_length,
             last_response_hash,
             last_response_truncated,
@@ -7094,6 +7125,7 @@ impl Machine {
     fn eval_net_repl_payload<B: Board>(
         &mut self,
         input: &[u8],
+        read_only: bool,
         board: &mut B,
     ) -> (&'static [u8], NetReplResponseBytes) {
         let mut writer = NetReplResponseWriter::new();
@@ -7107,6 +7139,12 @@ impl Machine {
                 return (b"read-error", writer.response());
             }
         };
+
+        if read_only && !self.net_repl_read_only_expression_allowed(expression) {
+            writeln!(writer, "error: read-only request denied").ok();
+            self.collect_garbage();
+            return (STATUS_READ_ONLY_DENIED, writer.response());
+        }
 
         self.active_expression = expression;
         let result = self.eval(expression, Value::Nil, board, &mut writer, 0);
@@ -7134,6 +7172,69 @@ impl Machine {
 
         self.collect_garbage();
         (status, writer.response())
+    }
+
+    fn net_repl_read_only_expression_allowed(&self, expression: Value) -> bool {
+        let (operator, args) = match self.list_next(expression) {
+            Ok(Some(pair)) => pair,
+            _ => return false,
+        };
+        let symbol = match operator {
+            Value::Symbol(symbol) => symbol,
+            _ => return false,
+        };
+
+        if self.net_repl_read_only_no_arg_symbol(symbol) {
+            return args == Value::Nil;
+        }
+        if self.symbol_name_eq(symbol, b"wifi-net-repl-service") {
+            return self.net_repl_read_only_status_arg(args);
+        }
+        if self.symbol_name_eq(symbol, b"cat") || self.symbol_name_eq(symbol, b"read-file") {
+            return self.net_repl_read_only_file_arg(args);
+        }
+
+        false
+    }
+
+    fn net_repl_read_only_no_arg_symbol(&self, symbol: SymbolId) -> bool {
+        self.symbol_name_eq(symbol, b"help")
+            || self.symbol_name_eq(symbol, b"millis")
+            || self.symbol_name_eq(symbol, b"processes")
+            || self.symbol_name_eq(symbol, b"regs")
+            || self.symbol_name_eq(symbol, b"heap")
+            || self.symbol_name_eq(symbol, b"ls")
+            || self.symbol_name_eq(symbol, b"fat-info")
+            || self.symbol_name_eq(symbol, b"sd-status")
+            || self.symbol_name_eq(symbol, b"pdm-status")
+            || self.symbol_name_eq(symbol, b"thermistor-status")
+            || self.symbol_name_eq(symbol, b"capsense-status")
+            || self.symbol_name_eq(symbol, b"wifi-link-status")
+            || self.symbol_name_eq(symbol, b"wifi-lease-status")
+    }
+
+    fn net_repl_read_only_status_arg(&self, args: Value) -> bool {
+        match self.single_list_arg(args) {
+            Some(Value::Symbol(symbol)) => symbol == self.specials.status,
+            _ => false,
+        }
+    }
+
+    fn net_repl_read_only_file_arg(&self, args: Value) -> bool {
+        match self.single_list_arg(args) {
+            Some(value) => match self.expect_string(value) {
+                Ok(path) => net_repl_read_only_path_safe(path),
+                Err(_) => false,
+            },
+            None => false,
+        }
+    }
+
+    fn single_list_arg(&self, args: Value) -> Option<Value> {
+        match self.list_next(args) {
+            Ok(Some((arg, tail))) if tail == Value::Nil => Some(arg),
+            _ => None,
+        }
     }
 
     fn wifi_net_repl_once_report(
@@ -7168,6 +7269,7 @@ impl Machine {
         let request_source_mac_hash =
             self.word_entry(b"request.source-mac-hash", request.source_mac_hash)?;
         let request_sequence = self.word_entry(b"request.sequence", request.sequence)?;
+        let request_read_only = self.bool_entry(b"request.read-only", request.read_only)?;
         let request_payload_length =
             self.word_entry(b"request.payload-length", request.payload_length as u32)?;
         let request_payload_hash =
@@ -7309,6 +7411,7 @@ impl Machine {
             request_source_port,
             request_source_mac_hash,
             request_sequence,
+            request_read_only,
             request_payload_length,
             request_payload_hash,
             request_ack_response_hash,

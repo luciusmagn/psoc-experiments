@@ -2673,6 +2673,7 @@ fn wifi_sdio_net_repl_request_report(
         source_port: report.source_port,
         source_mac_hash: report.source_mac_hash,
         sequence: report.sequence,
+        read_only: report.read_only,
         payload_length: report.payload_length,
         payload_hash: report.payload_hash,
         ack_response_hash: report.ack_response_hash,

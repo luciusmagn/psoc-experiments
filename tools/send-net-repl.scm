@@ -31,11 +31,12 @@
   (say "Sends one framed UDP Lisp request to the board network REPL endpoint.")
   (say "The Lisp form is written to an ignored binary request file, not printed in the shell command.")
   (say "The default request frame is LPS3 with a request checksum.")
+  (say "--read-only sends LPS5 with the same checksum and asks current firmware to reject mutating forms.")
   (say "After a verified response, the client sends an LPS4 ACK with the response checksum.")
   (say "--legacy-request sends the older LPS0 request frame for older flashed images.")
   (say "--color wraps the payload text in ANSI color. The default is plain output.")
   (say "--payload-only prints only the decoded response payload.")
-  (say "--read-only refuses forms outside the conservative host-side read-only allowlist.")
+  (say "--read-only also refuses forms outside the conservative host-side read-only allowlist.")
   (say "HOST may also be supplied with PSOC_NET_REPL_HOST."))
 
 (define (parse-integer-option name text min max)
@@ -200,12 +201,18 @@
     (say command))
   (system command))
 
-(define (write-request path sequence form legacy-request? verbose?)
+(define (request-magic legacy-request? read-only?)
+  (cond
+    (legacy-request? "LPS0")
+    (read-only? "LPS5")
+    (else "LPS3")))
+
+(define (write-request path sequence form legacy-request? read-only? verbose?)
   (run-checked (string-append "mkdir -p " (shell-quote (dirname path))) verbose?)
   (call-with-port
    (open-file-output-port path (file-options no-fail replace) (buffer-mode none))
    (lambda (port)
-     (put-ascii port (if legacy-request? "LPS0" "LPS3"))
+     (put-ascii port (request-magic legacy-request? read-only?))
      (put-u32-be port sequence)
      (when (not legacy-request?)
        (put-u32-be port (checksum-bytes (ascii-byte-list form))))
@@ -396,6 +403,12 @@
         (string=? text "(ls)")
         (string=? text "(fat-info)")
         (string=? text "(sd-status)")
+        (string=? text "(wifi-link-status)")
+        (string=? text "(wifi-lease-status)")
+        (string=? text "(help)")
+        (string=? text "(millis)")
+        (string=? text "(regs)")
+        (string=? text "(heap)")
         (string=? text "(pdm-status)")
         (string=? text "(thermistor-status)")
         (string=? text "(capsense-status)")
@@ -404,7 +417,7 @@
 
 (define (enforce-read-only form)
   (unless (read-only-form? form)
-    (die "read-only mode allows only status, processes, ls, fat-info, sd-status, board status, cat, and read-file forms")))
+    (die "read-only mode allows only status, processes, help, millis, regs, heap, ls, fat-info, sd-status, Wi-Fi link/lease status, board status, cat, and read-file forms")))
 
 (define (legacy-response? bytes sequence)
   (and (>= (length bytes) 8)
@@ -534,11 +547,11 @@
 (define request-checksum (and (not legacy-request?) (checksum-bytes (ascii-byte-list form))))
 (define verbose? (not payload-only?))
 
-(write-request request-file sequence form legacy-request? verbose?)
+(write-request request-file sequence form legacy-request? read-only? verbose?)
 (when verbose?
   (say (string-append "request.bytes="
                       (number->string (+ request-frame-header-bytes (string-length form)))))
-  (say (string-append "request.format=" (if legacy-request? "LPS0" "LPS3")))
+  (say (string-append "request.format=" (request-magic legacy-request? read-only?)))
   (when request-checksum
     (say (string-append "request.checksum=#x" (u32-hex request-checksum))))
   (say (string-append "sequence=" (number->string sequence))))

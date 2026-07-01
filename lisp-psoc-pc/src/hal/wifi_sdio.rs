@@ -170,6 +170,7 @@ const NET_REPL_LEGACY_REQUEST_MAGIC: u32 = 0x4c50_5330;
 const NET_REPL_CHECKED_REQUEST_MAGIC: u32 = 0x4c50_5333;
 const NET_REPL_RESPONSE_MAGIC: u32 = 0x4c50_5332;
 const NET_REPL_ACK_MAGIC: u32 = 0x4c50_5334;
+const NET_REPL_READ_ONLY_REQUEST_MAGIC: u32 = 0x4c50_5335;
 const NET_REPL_UDP_PORT: u16 = 4665;
 const NET_REPL_IP_IDENTIFICATION: u16 = 0x4c52;
 const NET_REPL_DEFAULT_POLL_FRAMES: u8 = 1;
@@ -2169,6 +2170,7 @@ pub struct WifiSdioNetReplRequestReport {
     pub source_port: u16,
     pub source_mac_hash: u32,
     pub sequence: u32,
+    pub read_only: bool,
     pub payload_length: u8,
     pub payload_hash: u32,
     pub ack_response_hash: u32,
@@ -7773,6 +7775,7 @@ struct ParsedNetReplRequest {
     source_ip_address: u32,
     source_port: u16,
     sequence: u32,
+    read_only: bool,
     payload_length: u8,
     payload_hash: u32,
     ack_response_hash: u32,
@@ -8440,6 +8443,7 @@ fn empty_parsed_net_repl_request() -> ParsedNetReplRequest {
         source_ip_address: 0,
         source_port: 0,
         sequence: 0,
+        read_only: false,
         payload_length: 0,
         payload_hash: 0,
         ack_response_hash: 0,
@@ -8505,6 +8509,7 @@ fn copy_net_repl_poll_to_report(
     report.source_port = poll.packet.source_port;
     report.source_mac_hash = checksum_bytes(&poll.packet.source_mac);
     report.sequence = poll.packet.sequence;
+    report.read_only = poll.packet.read_only;
     report.payload_length = poll.packet.payload_length;
     report.payload_hash = poll.packet.payload_hash;
     report.ack_response_hash = poll.packet.ack_response_hash;
@@ -11963,14 +11968,17 @@ fn parse_net_repl_frame(
         return packet;
     }
 
-    let request_checksum = match request_magic {
-        NET_REPL_LEGACY_REQUEST_MAGIC => None,
-        NET_REPL_CHECKED_REQUEST_MAGIC => {
+    let (request_checksum, request_read_only) = match request_magic {
+        NET_REPL_LEGACY_REQUEST_MAGIC => (None, false),
+        NET_REPL_CHECKED_REQUEST_MAGIC | NET_REPL_READ_ONLY_REQUEST_MAGIC => {
             if payload_offset + NET_REPL_CHECKED_REQUEST_FRAME_HEADER_BYTES > payload_end {
                 packet.status = WifiSdioNetReplParseStatus::PayloadTooShort;
                 return packet;
             }
-            Some(read_slice_be_u32(bytes, payload_offset + 8))
+            (
+                Some(read_slice_be_u32(bytes, payload_offset + 8)),
+                request_magic == NET_REPL_READ_ONLY_REQUEST_MAGIC,
+            )
         }
         _ => {
             packet.status = WifiSdioNetReplParseStatus::WrongMagic;
@@ -11998,6 +12006,7 @@ fn parse_net_repl_frame(
 
     copy_net_repl_source(bytes, ethernet_offset, ip_offset, udp_offset, &mut packet);
     packet.sequence = read_slice_be_u32(bytes, payload_offset + 4);
+    packet.read_only = request_read_only;
     packet.payload_length = repl_payload_length as u8;
     copy_bytes_to_slice(
         &bytes[repl_payload_offset..payload_end],
@@ -16054,6 +16063,7 @@ fn empty_net_repl_request_report(p: &Peripherals) -> WifiSdioNetReplRequestRepor
         source_port: 0,
         source_mac_hash: 0,
         sequence: 0,
+        read_only: false,
         payload_length: 0,
         payload_hash: 0,
         ack_response_hash: 0,
