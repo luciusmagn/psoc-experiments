@@ -52,11 +52,13 @@ Send one small serial smoke-test form:
 tools/send-lisp.scm '(+ 1 2)'
 #+end_src
 
-Current UART note: after a host reboot, board replug, and KitProg3 HID-mode
-switch on 2026-07-01, the normal 115200 console produced readable reset
-banners and clean tiny forms such as =(+ 3 4)=. Longer serial input still
-corrupted in live tests, so use UART for smoke tests and recovery, then prefer
-the UDP network REPL for real interaction once Wi-Fi is up.
+Current UART note: on 2026-07-01, =tools/serial-console.scm= was fixed to set
+=CREAD= explicitly before opening the KitProg3 UART. The normal 115200 console
+now shows reset banners through the repo script, though startup text can still
+lose occasional characters. Tiny forms work with the conservative
+=tools/send-lisp.scm= default 500 ms byte pacing; 50 ms pacing corrupted a
+live =(+ 8 9)= test. Use UART for smoke tests and recovery, then prefer the UDP
+or Telnet network REPL for real interaction once Wi-Fi is up.
 
 Check and switch KitProg3 mode:
 

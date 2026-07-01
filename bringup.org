@@ -7128,3 +7128,85 @@ lisp> => 7
 lisp> => ((enabled . #f) ...)
 => 43
 #+end_example
+
+* 2026-07-01 Serial console CREAD fix
+
+After the Telnet/demux validation, the repo-local serial console script opened
+=/dev/ttyACM0= but captured no bytes across an SWD reset:
+
+#+begin_src sh
+timeout 50 tools/serial-console.scm --log .local/logs/serial-validation.log
+/opt/ModusToolbox/tools_3.4/openocd/bin/openocd \
+  -s /opt/ModusToolbox/tools_3.4/openocd/scripts \
+  -f interface/cmsis-dap.cfg \
+  -f target/psoc6_2m.cfg \
+  -c 'init; reset run; shutdown'
+wc -c .local/logs/serial-validation.log
+#+end_src
+
+#+begin_example
+0 .local/logs/serial-validation.log
+#+end_example
+
+KitProg3 was present as =kp3-hid= and the primary UART flow control was
+=none=. =picocom= then captured UART bytes across the same reset, which pointed
+at host TTY setup rather than firmware TX being fully dead. The shared
+=configure-serial-device= function now sets =CREAD= explicitly.
+
+Validation after adding =CREAD=:
+
+#+begin_src sh
+timeout 45 tools/serial-console.scm \
+  --log .local/logs/serial-console-validation-after-cread.log
+#+end_src
+
+With SWD reset while the script was open, the repo script captured the startup
+banner. A few startup characters were still damaged, so this does not make UART
+a high-trust transport:
+
+#+begin_example
+PSoC6 lisp-psoc-pc
+UART: SCBm P5.1 TX / P5.0 RX, 115200 8N1
+#+end_example
+
+The network REPL confirmed the board reached the normal Wi-Fi image after that
+reset:
+
+#+begin_src sh
+tools/send-net-repl.scm --host 10.0.0.9 --sequence 952 --attempts 10 --wait 10 \
+  --payload-only '(+ 6 7)'
+#+end_src
+
+#+begin_example
+=> 13
+#+end_example
+
+Serial RX remained speed-sensitive. With =tools/serial-console.scm= logging,
+=tools/send-lisp.scm --delay-ms 50 '(+ 8 9)'= corrupted the line into a
+continuation prompt:
+
+#+begin_example
+(W 8 9
+
+....>
+#+end_example
+
+After clearing with Ctrl-C, the default 500 ms byte pacing worked:
+
+#+begin_src sh
+printf '\003' > /dev/ttyACM0
+tools/send-lisp.scm '(+ 8 9)'
+#+end_src
+
+#+begin_example
+^C
+lisp> (+ 8 9)
+=> 17
+
+lisp>
+#+end_example
+
+Operational conclusion: the repo serial tools are usable again for startup
+observation and tiny recovery forms when they own the device and use the
+default slow pacing. UART remains too lossy for routine interaction; prefer the
+UDP or Telnet network REPL once Wi-Fi is up.

@@ -125,7 +125,7 @@
         (shell-quote device)
         " "
         psoc-serial-baud
-        " cs8 -cstopb -parenb -ixon -ixoff -crtscts -hupcl clocal raw -echo -echoe -echok -echoctl -echoke -icanon min 1 time 0")))
+        " cs8 cread -cstopb -parenb -ixon -ixoff -crtscts -hupcl clocal raw -echo -echoe -echok -echoctl -echoke -icanon min 1 time 0")))
 
 (define (capture-first-line command)
   (ensure-local-dir)

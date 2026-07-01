@@ -309,7 +309,9 @@ tools/send-lisp.scm '(wifi-setup-backplane)'
 `tools/serial-console.scm` mirrors bytes into
 `.local/logs/serial-console.log` by default. Use
 `tools/serial-console.scm --tail-log` to watch that file without opening the
-UART device.
+UART device. The shared serial setup explicitly enables `CREAD`; keep the
+`tools/send-lisp.scm` default 500 ms byte pacing for recovery smoke tests
+because faster live UART input is still unreliable on the current hardware path.
 
 For local Wi-Fi credentials, generate the ignored env file from a local IWD
 PSK profile, or all usable non-enterprise PSK profiles:
