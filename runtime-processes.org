@@ -51,6 +51,31 @@ The automatic poller normally advances ready processes without manual
 =(process-poll)=. Manual polling remains useful in a debugger session or in a
 future recovery image with the automatic poller disabled.
 
+* 2026-07-01 Live Validation
+
+The current normal Wi-Fi image, started through FAT =boot.lisp= and controlled
+over the UDP REPL, can spawn and complete a sleeping top-level process:
+
+#+begin_src sh
+tools/send-net-repl.scm --host 10.0.0.9 --payload-only --read-only \
+  '(processes)'
+tools/send-net-repl.scm --host 10.0.0.9 --payload-only \
+  '(spawn (quote (begin (sleep-ms 1000) (+ 40 2))))'
+tools/send-net-repl.scm --host 10.0.0.9 --payload-only --read-only \
+  '(processes)'
+#+end_src
+
+Observed result:
+
+#+begin_example
+=> nil
+=> #x00000001
+=> (((pid . #x00000001)
+        (state . done)
+        (steps . #x00000002)
+        (error . "")))
+#+end_example
+
 * Remaining Architecture
 
 The first scheduler is deliberately above the evaluator. A later process model
