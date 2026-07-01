@@ -86,6 +86,8 @@ the current SD path, but writes and larger reads still need the longer wait.
 Use =--payload-only= for a cleaner REPL-like display. Each client invocation
 uses its own ignored request/response files under =.local/net-repl/=; use
 explicit unique sequences when comparing concurrent UDP requests.
+Current UDP REPL replies carry up to 1400 payload bytes, so larger diagnostics
+such as =(thermistor-read)= fit in one unfragmented reply on the current stack.
 
 If a Wi-Fi smoke marker or UART status shows a valid lease and an enabled UDP
 service but host requests still time out, check host routing and ARP/neighbour

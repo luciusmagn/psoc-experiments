@@ -6330,9 +6330,7 @@ Board facility forms were also validated from the UART console:
 
 The equal midscale thermistor counts are suspicious as a physical reading, but
 the primitive now exercises the SAR path and powers the thermistor network down
-afterwards without wedging the console. The UDP response budget is too small
-for the full detailed thermistor report, so use UART for that full diagnostic
-until larger network responses are implemented.
+afterwards without wedging the console.
 
 The current local non-enterprise Wi-Fi credential was extracted through the
 ignored credential scripts. Sanitized build output reported only field lengths
@@ -6402,13 +6400,32 @@ This proves the current board image can boot from FAT, associate to the current
 Wi-Fi network, acquire DHCP, serve the framed UDP REPL, ACK responses, read
 the FAT card over UDP, and perform DNS plus HTTP over the CYW4343W path.
 
+The first UDP =(thermistor-read)= attempt showed why the fixed 512-byte network
+REPL response was too small for hardware diagnostics. The response payload
+limit was raised to 1400 bytes, still below the existing 1500-byte SDIO send
+packet guard. After flashing that image, the full detailed thermistor report
+returned over UDP:
+
+#+begin_example
+tools/send-net-repl.scm --host 10.0.0.9 --attempts 5 --wait 10 \
+  --payload-only '(thermistor-read)'
+=> ((status . ready)
+    ...
+    (HSIOM.PRT10.SEL0 . #x00000000))
+
+tools/send-net-repl.scm --host 10.0.0.9 --attempts 5 --wait 5 \
+  --payload-only --read-only '(wifi-net-repl-service status)'
+=> (... (last.response.length . #x0000034d)
+        (last.response.truncated . #f) ...)
+#+end_example
+
 * Next actions
 
 1. Keep UART sanity checks in the workflow. If corruption returns, first replug
    and reset host tty state before changing SCB5 firmware.
 2. Add REPL history and better editing across continuation lines.
-3. Increase or stream UDP REPL responses so large diagnostics such as
-   =(thermistor-read)= are not truncated.
+3. Stream or page UDP REPL responses if future payloads need more than one
+   unfragmented packet.
 4. Add FAT long-file-name support or document a PC-side =.LSP= convention for
    Lisp source files.
 5. Test the newer Infineon target =infineon/cy8cxxa.cfg= as a replacement
