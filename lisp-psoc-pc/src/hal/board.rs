@@ -176,6 +176,7 @@ impl lisp::Board for PsocBoard<'_> {
             scb5_tx_status: self.p.SCB5.tx_fifo_status.read().bits(),
             peri_clock5: self.p.PERI.clock_ctl[5].read().bits(),
             peri_div8_0: self.p.PERI.div_8_ctl[0].read().bits(),
+            peri_div16_5_0: self.p.PERI.div_16_5_ctl[0].read().bits(),
             hsiom_prt5_sel0: self.p.HSIOM.prt5.port_sel0.read().bits(),
             gpio_prt5_cfg: self.p.GPIO.prt5.cfg.read().bits(),
             gpio_prt13_out: self.p.GPIO.prt13.out.read().bits(),

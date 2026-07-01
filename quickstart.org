@@ -52,9 +52,11 @@ Send one serial form:
 tools/send-lisp.scm '(+ 1 2)'
 #+end_src
 
-Current UART note: the KitProg3 USB-UART path is physically suspect. The
-firmware SCB5 setup and KitProg3 firmware/flow-control settings have been
-checked; the =P5.1= GPIO pin probe still captures corrupt bytes.
+Current UART note: after a host reboot and board replug on 2026-07-01, the
+normal 115200 console produced a clean reset banner and a clean =(+ 1 2)=
+round trip. If the console becomes corrupt again, first close other serial
+readers, reset the host tty to 115200 raw with the tools, and physically
+replug the KitProg3 USB connection before changing firmware.
 
 USB-UART physical-path probe:
 
@@ -65,8 +67,8 @@ timeout 5s cat /dev/ttyACM0
 tools/build-flash-lisp.scm --wifi-firmware --wifi-credentials --skip-boot-file
 #+end_src
 
-The probe should print =UART-PIN-PROBE P5.1 GPIO 9600 8N1=. If it does not,
-inspect the KitProg3 UART physical path before changing SCB5 firmware.
+The probe should print =UART-PIN-PROBE P5.1 GPIO 9600 8N1=. Use it only when
+the normal console remains corrupt after replugging and resetting the tty.
 
 Network REPL, after Wi-Fi and the UDP service are running:
 
@@ -85,10 +87,16 @@ Use =--payload-only= for a cleaner REPL-like display. Each client invocation
 uses its own ignored request/response files under =.local/net-repl/=; use
 explicit unique sequences when comparing concurrent UDP requests.
 
-If a Wi-Fi smoke marker shows a valid lease and an enabled UDP service but
-host requests still time out, check host ARP/neighbour state. On this network,
-pinning the board's known local MAC for the current lease was enough to make
-UDP replies work again. Keep the actual generated MAC out of committed docs and
+If a Wi-Fi smoke marker or UART status shows a valid lease and an enabled UDP
+service but host requests still time out, check host routing and ARP/neighbour
+state. On networks that overlap a VPN route, add a temporary host route for the
+board IP through the Wi-Fi interface, for example:
+
+#+begin_src sh
+ip route replace BOARD_IP/32 dev wlan0 src HOST_WIFI_IP
+#+end_src
+
+Keep generated MAC addresses, SSIDs, and passphrases out of committed docs and
 logs.
 
 * Current Useful Forms

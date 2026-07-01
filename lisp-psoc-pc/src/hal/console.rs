@@ -8,15 +8,26 @@ pub const UART_BAUD: u32 = 115_200;
 #[cfg(feature = "uart-pin-probe")]
 pub const UART_PIN_PROBE_BAUD: u32 = 9_600;
 
-const UART_OVERSAMPLE: u32 = 12;
-const UART_DIVIDER_VALUE: u32 = 35; // 50 MHz / (35 + 1) / 12 = 115740 baud.
+const UART_OVERSAMPLE: u32 = 16;
 #[cfg(feature = "uart-pin-probe")]
 const UART_PIN_PROBE_BIT_US: u32 = 1_000_000 / UART_PIN_PROBE_BAUD;
 
 const SCB5_CLOCK: usize = 5;
-const UART_CLOCK_DIVIDER: usize = 0;
-const DIV_CMD_ENABLE_8BIT_0: u32 = (1 << 31) | (0xff << 16) | (3 << 24);
-const DIV_CMD_DISABLE_8BIT_0: u32 = (1 << 30) | (0xff << 16) | (3 << 24);
+const UART_CLOCK_DIVIDER_16_5: usize = 0;
+const UART_DIVIDER_INT16: u32 = 26;
+const UART_DIVIDER_FRAC5: u32 = 4; // 50 MHz / (27.125 * 16) = 115207 baud.
+const PERI_DIV_TYPE_8_0: u32 = 0;
+const PERI_DIV_TYPE_16_5: u32 = 2;
+const PERI_DIV_TYPE_24_5: u32 = 3;
+const PERI_DIV_NO_PHASE_ALIGN: u32 = 0xff;
+const DIV_CMD_ENABLE_16_5_UART: u32 = (1 << 31)
+    | (UART_CLOCK_DIVIDER_16_5 as u32)
+    | (PERI_DIV_TYPE_16_5 << 8)
+    | (PERI_DIV_NO_PHASE_ALIGN << 16)
+    | (PERI_DIV_TYPE_24_5 << 24);
+const DIV_CMD_DISABLE_8_0_0: u32 = (1 << 30) | PERI_DIV_TYPE_8_0;
+const DIV_CMD_DISABLE_16_5_UART: u32 =
+    (1 << 30) | (UART_CLOCK_DIVIDER_16_5 as u32) | (PERI_DIV_TYPE_16_5 << 8);
 
 const SCB_CTRL_ENABLED: u32 = 1 << 31;
 const SCB_CTRL_MODE_UART: u32 = 2 << 24;
@@ -64,14 +75,21 @@ impl<'a> Console<'a> {
 
         p.PERI
             .div_cmd
-            .write(|w| unsafe { w.bits(DIV_CMD_DISABLE_8BIT_0) });
+            .write(|w| unsafe { w.bits(DIV_CMD_DISABLE_8_0_0) });
         while p.PERI.div_cmd.read().disable().bit_is_set() {}
-
-        p.PERI.div_8_ctl[UART_CLOCK_DIVIDER].write(|w| unsafe { w.bits(UART_DIVIDER_VALUE << 8) });
-        p.PERI.clock_ctl[SCB5_CLOCK].write(|w| unsafe { w.bits(0) });
         p.PERI
             .div_cmd
-            .write(|w| unsafe { w.bits(DIV_CMD_ENABLE_8BIT_0) });
+            .write(|w| unsafe { w.bits(DIV_CMD_DISABLE_16_5_UART) });
+        while p.PERI.div_cmd.read().disable().bit_is_set() {}
+
+        p.PERI.div_16_5_ctl[UART_CLOCK_DIVIDER_16_5]
+            .write(|w| unsafe { w.bits((UART_DIVIDER_INT16 << 8) | (UART_DIVIDER_FRAC5 << 3)) });
+        p.PERI.clock_ctl[SCB5_CLOCK].write(|w| unsafe {
+            w.bits((PERI_DIV_TYPE_16_5 << 8) | UART_CLOCK_DIVIDER_16_5 as u32)
+        });
+        p.PERI
+            .div_cmd
+            .write(|w| unsafe { w.bits(DIV_CMD_ENABLE_16_5_UART) });
         while p.PERI.div_cmd.read().enable().bit_is_set() {}
 
         p.SCB5.uart_ctrl.write(|w| unsafe { w.bits(SCB_UART_STD) });

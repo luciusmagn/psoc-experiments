@@ -6264,27 +6264,161 @@ tools/build-lisp.scm --wifi-firmware --wifi-credentials --skip-boot-file
 git diff --check
 #+end_src
 
-Live =(thermistor-read)= output is not validated yet because the KitProg3
-USB-UART path is physically corrupt and the current recovery image skips the
-FAT boot file, so the UDP REPL service is not automatically available.
+Live validation was added in the 2026-07-01 run below.
+
+* 2026-07-01 Replugged UART and summer-house Wi-Fi
+
+After a host restart and a physical board replug, the KitProg3 USB-UART path
+was clean again. The =--wifi-firmware --wifi-credentials --skip-boot-file=
+recovery image produced a complete 115200 8N1 reset banner:
+
+#+begin_example
+166 .local/logs/uart-20260701-replug-reset.bin
+ascii_clean=166/166
+#+end_example
+
+A slow one-form UART round trip also worked:
+
+#+begin_example
+tools/send-lisp.scm '(+ 1 2)'
+=> 3
+#+end_example
+
+While testing UART, the console clock was moved from an 8-bit integer divider
+at 12x oversampling to a 16.5 fractional divider at 16x oversampling:
+
+#+begin_example
+PERI.CLOCK5 = #x00000200
+PERI.DIV16_5.0 = #x00001a21
+#+end_example
+
+This produces approximately 115207 baud from the current 50 MHz peripheral
+clock. The replug was the important recovery event; the fractional divider is
+kept because it removes avoidable baud error and =(regs)= now reports both the
+old =PERI.DIV8.0= and active =PERI.DIV16_5.0= register values.
+
+With the recovery image and clean UART, the 32 GB microSD card still reported
+a valid FAT32 partition and the boot file was intact:
+
+#+begin_example
+(fat-info)
+=> ((status . ready) ... (root-entry-count . 5) ...)
+
+(cat "boot.lisp")
+=> "(begin (wifi-network-bootstrap) (wifi-net-repl-service on))"
+#+end_example
+
+Board facility forms were also validated from the UART console:
+
+#+begin_example
+(thermistor-status)
+=> ((out0 . P10.1) (out1 . P10.2) ...)
+
+(thermistor-read)
+=> ((status . ready)
+    (source . RT1)
+    (out0.counts . #x00000800)
+    (out1.counts . #x00000800)
+    (powered-after . #f) ...)
+
+(capsense-status)
+=> ((tx . P1.0) (cmod . P7.7) (buttons . P8.1-P8.2) ...)
+
+(pdm-status)
+=> ((clock . P10.4) (data . P10.5) ...)
+#+end_example
+
+The equal midscale thermistor counts are suspicious as a physical reading, but
+the primitive now exercises the SAR path and powers the thermistor network down
+afterwards without wedging the console. The UDP response budget is too small
+for the full detailed thermistor report, so use UART for that full diagnostic
+until larger network responses are implemented.
+
+The current local non-enterprise Wi-Fi credential was extracted through the
+ignored credential scripts. Sanitized build output reported only field lengths
+and paths. The normal image was then flashed with:
+
+#+begin_src sh
+tools/build-flash-lisp.scm --wifi-firmware --wifi-credentials
+#+end_src
+
+The FAT =boot.lisp= startup enabled the UDP REPL service. UART status showed a
+valid association and lease:
+
+#+begin_example
+(wifi-link-status)
+=> ((status . ready) ... (rssi.dbm . -66) ...)
+
+(wifi-lease-status)
+=> ((status . ready)
+    (lease.valid . #t)
+    (lease.ip . #x0a000009)
+    (lease.router . #x0a00008a)
+    (lease.dns . #x0a00008a) ...)
+#+end_example
+
+The host also had a WireGuard route for =10.0.0.0/24=, so Linux initially
+routed packets for the board through =wg0=. A temporary host route for just the
+board IP fixed UDP reachability:
+
+#+begin_src sh
+ip route replace 10.0.0.9/32 dev wlan0 src 10.0.0.5
+#+end_src
+
+Network REPL validation on the summer-house network:
+
+#+begin_example
+tools/send-net-repl.scm --host 10.0.0.9 --payload-only '(+ 10 20 12)'
+=> 42
+
+tools/send-net-repl.scm --host 10.0.0.9 --payload-only --read-only \
+  '(wifi-net-repl-service status)'
+=> ((enabled . #t) ... (requests-handled . #x00000002)
+    (acks-received . #x00000002) ...)
+
+tools/send-net-repl.scm --host 10.0.0.9 --payload-only --read-only \
+  '(fat-info)'
+=> ((status . ready) ...)
+
+tools/send-net-repl.scm --host 10.0.0.9 --payload-only --read-only \
+  '(read-file "boot.lisp")'
+=> ((status . ready) ... (content-len . 59) ...)
+
+tools/send-net-repl.scm --host 10.0.0.9 --payload-only \
+  '(http-get "http://example.com/")'
+=> ((status . ready)
+    (step . done)
+    (code . #x000000c8)
+    (dns . ready)
+    (syn . ready)
+    (get . ready)
+    (response . ready)
+    (parse . ready)
+    (reset . ready)
+    ...)
+#+end_example
+
+This proves the current board image can boot from FAT, associate to the current
+Wi-Fi network, acquire DHCP, serve the framed UDP REPL, ACK responses, read
+the FAT card over UDP, and perform DNS plus HTTP over the CYW4343W path.
 
 * Next actions
 
-1. Recover or bypass the KitProg3 USB-UART physical path. SCB5 configuration is
-   no longer the primary suspect because the =P5.1= GPIO pin probe also
-   corrupts.
+1. Keep UART sanity checks in the workflow. If corruption returns, first replug
+   and reset host tty state before changing SCB5 firmware.
 2. Add REPL history and better editing across continuation lines.
-3. Add FAT long-file-name support or document a PC-side =.LSP= convention for
+3. Increase or stream UDP REPL responses so large diagnostics such as
+   =(thermistor-read)= are not truncated.
+4. Add FAT long-file-name support or document a PC-side =.LSP= convention for
    Lisp source files.
-4. Test the newer Infineon target =infineon/cy8cxxa.cfg= as a replacement
+5. Test the newer Infineon target =infineon/cy8cxxa.cfg= as a replacement
    for obsolete =target/psoc6_2m.cfg=.
-5. Keep boot-smoke and UDP REPL validation available while UART is physically
-   unreliable.
-6. Exercise ACK plus host retry behavior under induced packet loss and decide
+6. Keep boot-smoke and UDP REPL validation available for unattended runs.
+7. Exercise ACK plus host retry behavior under induced packet loss and decide
    whether an ACK should clear or preserve the single-entry response cache.
-7. Extend HTTP from a first response preview into a streamed or file-backed
+8. Extend HTTP from a first response preview into a streamed or file-backed
    body reader, probably saving larger responses to FAT.
-8. Add generic CDC ioctl/iovar helpers for firmware version, join, and link
+9. Add generic CDC ioctl/iovar helpers for firmware version, join, and link
    status.
-9. Start Wi-Fi from a known-good Infineon or Zephyr sample before trying
-   to hand-port the full CYW4343W network stack.
+10. Add real PDM sample and CapSense scan primitives on top of the existing
+    status forms.

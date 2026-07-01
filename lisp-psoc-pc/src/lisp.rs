@@ -400,6 +400,7 @@ pub struct RegisterReport {
     pub scb5_tx_status: u32,
     pub peri_clock5: u32,
     pub peri_div8_0: u32,
+    pub peri_div16_5_0: u32,
     pub hsiom_prt5_sel0: u32,
     pub gpio_prt5_cfg: u32,
     pub gpio_prt13_out: u32,
@@ -4950,6 +4951,7 @@ impl Machine {
         let scb5_tx_status = self.word_entry(b"SCB5.TX_STATUS", report.scb5_tx_status)?;
         let peri_clock5 = self.word_entry(b"PERI.CLOCK5", report.peri_clock5)?;
         let peri_div8_0 = self.word_entry(b"PERI.DIV8.0", report.peri_div8_0)?;
+        let peri_div16_5_0 = self.word_entry(b"PERI.DIV16_5.0", report.peri_div16_5_0)?;
         let hsiom_prt5_sel0 = self.word_entry(b"HSIOM.PRT5.SEL0", report.hsiom_prt5_sel0)?;
         let gpio_prt5_cfg = self.word_entry(b"GPIO.PRT5.CFG", report.gpio_prt5_cfg)?;
         let gpio_prt13_out = self.word_entry(b"GPIO.PRT13.OUT", report.gpio_prt13_out)?;
@@ -4961,6 +4963,7 @@ impl Machine {
             scb5_tx_status,
             peri_clock5,
             peri_div8_0,
+            peri_div16_5_0,
             hsiom_prt5_sel0,
             gpio_prt5_cfg,
             gpio_prt13_out,
