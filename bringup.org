@@ -6717,6 +6717,72 @@ payload.text==> (help
     ...)
 #+end_example
 
+* 2026-07-01 Passive TCP payload receive diagnostic
+
+Added =(wifi-tcp-receive-once port [poll-frames])= as the next raw inbound TCP
+step after =(wifi-tcp-listen-once)=. It accepts one connection, handles the
+SYN/SYN-ACK/ACK handshake, accepts payload either on the final ACK or on the
+next TCP payload frame, reports payload length/hash/preview, and sends RST/ACK
+cleanup. This is still a diagnostic, not Telnet and not a TCP REPL, because it
+does not send evaluated Lisp output back on the TCP stream yet.
+
+The implementation reuses the existing TCP frame parser and the payload polling
+path that already backed =(http-get ...)=. The passive path opts into wildcard
+peer matching only for the initial SYN; once the peer address and port are
+known, ACK and payload parsing are strict.
+
+Validation after flashing the normal quiet Wi-Fi image:
+
+#+begin_example
+tools/build-flash-lisp.scm --wifi-firmware --wifi-credentials
+
+tools/send-net-repl.scm --host 10.0.0.9 --attempts 20 --wait 5 \
+  --payload-only '(+ 1 2)'
+=> 3
+
+(tools/send-net-repl.scm --host 10.0.0.9 --attempts 1 --wait 60 \
+  --payload-only '(wifi-tcp-receive-once 2323 80)' \
+  > .local/logs/tcp-receive-20260701.out 2>&1) &
+sleep 2
+printf 'hello from tcp\n' | ncat -w 5 -q 1 10.0.0.9 2323 || true
+
+Ncat: Connection reset by peer.
+
+=> ((status . ready)
+    (step . done)
+    (local.ip . #x0a000009)
+    (listen.port . #x00000913)
+    (peer.ip . #x0a000005)
+    (peer.port . #x0000d32c)
+    (peer.seq . #xa1d12c22)
+    (ack . #x4c505502)
+    (flags . #x00000018)
+    (listen.status . ready)
+    (listen.parse . ready)
+    (listen.polls . #x00000006)
+    (listen.frames-read . #x00000001)
+    (syn-ack.status . ready)
+    (ack.status . ready)
+    (ack.parse . ready)
+    (ack.polls . #x00000001)
+    (ack.frames-read . #x00000001)
+    (payload.status . ready)
+    (payload.parse . ready)
+    (payload.polls . #x00000001)
+    (payload.frames-read . #x00000001)
+    (payload.bytes . #x0000000f)
+    (payload.hash . #x79fdf36c)
+    (preview . "hello from tcp\n")
+    (reset.status . ready)
+    (interrupt.ack.status . ready)
+    (HOST.NORM_INT . #x00000100)
+    (HOST.ERR_INT . #x00000000))
+#+end_example
+
+The host-side reset is expected for this diagnostic. The next TCP REPL slice
+should keep enough accepted-connection state to send a response payload before
+closing.
+
 * Next actions
 
 1. Keep UART sanity checks in the workflow. If corruption returns, first replug

@@ -83,10 +83,14 @@ less dependent on the flaky serial RX path. `(wifi-tcp-syn "example.com" 80)`
 resolves a host through the stored DNS server, sends a raw TCP SYN, parses a
 SYN-ACK, and sends RST/ACK cleanup. `(wifi-tcp-syn-ip #xc0a80001 80)` skips DNS
 and probes a numeric IPv4 address directly, which is useful while DNS behavior
-is being debugged. `(http-get "http://example.com/")` resolves the host, opens
-a raw TCP connection to port 80, sends an HTTP/1.0 GET with `Connection: close`,
-captures a short response preview, and sends RST/ACK cleanup. Plain HTTP only
-is implemented; HTTPS/TLS is not. Dotted numeric URLs such as
+is being debugged. `(wifi-tcp-listen-once 2323 80)` accepts one inbound TCP
+handshake and closes it with RST/ACK cleanup. `(wifi-tcp-receive-once 2323 80)`
+accepts one inbound TCP connection, captures one payload frame preview, and
+then closes with RST/ACK cleanup. `(http-get "http://example.com/")` resolves
+the host, opens a raw TCP connection to port 80, sends an HTTP/1.0 GET with
+`Connection: close`, captures a short response preview, and sends RST/ACK
+cleanup. Plain HTTP only is implemented; HTTPS/TLS is not. Dotted numeric URLs
+such as
 `(http-get "http://192.168.0.1/")` skip DNS.
 `(wifi-net-repl-once)` polls UDP port 4665 for one framed request. The current
 request payload is `LPS3`, a big-endian 32-bit sequence number, a big-endian

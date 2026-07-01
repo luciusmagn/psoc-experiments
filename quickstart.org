@@ -113,6 +113,9 @@ framed UDP protocol on port 4665. The first inbound TCP diagnostic is
 =(wifi-tcp-listen-once port [poll-frames])=, which accepts one raw TCP
 handshake and immediately sends RST/ACK cleanup. It is a prerequisite for a
 Telnet-like console, not the console itself.
+=(wifi-tcp-receive-once port [poll-frames])= extends that path by accepting one
+connection, receiving one TCP payload frame, reporting a 96-byte preview, and
+then sending RST/ACK cleanup.
 
 Raw inbound TCP smoke test, with the UDP REPL already running:
 
@@ -129,6 +132,22 @@ cat .local/logs/tcp-listen.out
 A successful run has =nc= report the port open and the board report
 =(status . ready)=, =(listen.status . ready)=, =(syn-ack.status . ready)=,
 =(ack.status . ready)=, and =(reset.status . ready)=.
+
+Raw inbound TCP payload smoke test:
+
+#+begin_src sh
+(tools/send-net-repl.scm --host BOARD_IP --attempts 1 --wait 60 \
+  --payload-only '(wifi-tcp-receive-once 2323 80)' \
+  > .local/logs/tcp-receive.out 2>&1) &
+sleep 2
+printf 'hello from tcp\n' | ncat -w 5 -q 1 BOARD_IP 2323 || true
+wait
+cat .local/logs/tcp-receive.out
+#+end_src
+
+A successful run reports =(payload.status . ready)=, =(payload.bytes . ...)=,
+and a =preview= string matching the payload. The host currently sees a reset
+because this diagnostic closes the connection without sending a TCP response.
 
 If a Wi-Fi smoke marker or UART status shows a valid lease and an enabled UDP
 service but host requests still time out, check host routing and ARP/neighbour
@@ -157,6 +176,7 @@ logs.
 (wifi-net-repl-service on)
 (wifi-net-repl-service status)
 (wifi-tcp-listen-once 2323 80)
+(wifi-tcp-receive-once 2323 80)
 (http-get "http://example.com/")
 (spawn '(begin (sleep-ms 1000) (+ 40 2)))
 (processes)

@@ -245,6 +245,12 @@ through the UDP REPL in the background, then connect with
 UDP REPL client falls back to GNU `nc` when `ncat` is unavailable, and that path
 has only been reliable with single captured replies below about 1 KiB. With
 `ncat`, `tools/send-net-repl.scm` has validated full 1412-byte `LPS2` datagrams.
+Use `(wifi-tcp-receive-once 2323 80)` as the current raw inbound TCP payload
+smoke test. Start it through the UDP REPL in the background, then run
+`printf 'hello from tcp\n' | ncat -w 5 -q 1 BOARD_IP 2323 || true`. The host
+currently reports a reset because the diagnostic closes with RST/ACK after
+capturing the payload; success is the board report showing `payload.status` as
+`ready` and the expected preview string.
 Use `tools/send-net-repl.scm --color` only when ANSI payload coloring is wanted;
 plain output is the default. Use `--read-only` as a conservative accidental-send
 guard for status, directory, FAT info, Wi-Fi link/lease status, and simple-path
