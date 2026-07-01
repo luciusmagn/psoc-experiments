@@ -150,10 +150,12 @@ it mirrors bytes into `.local/logs/serial-console.log` by default. Use
 `tools/serial-console.scm --tail-log` when the user should watch console output
 without opening the UART device. Use `tools/send-lisp.scm '(form ...)'` for
 one-off Lisp forms. The serial setup must enable `CREAD`, and the current
-known-good UART smoke path uses the default 500 ms byte pacing; faster pacing
-has corrupted live input. These scripts encode the current known-good build,
-pack, flash, and serial-console commands and should be kept up to date when that
-flow changes.
+known-good UART smoke path uses the default 500 ms byte pacing plus the default
+500 ms post-CR hold. Faster pacing has corrupted live input, and even 1 second
+byte pacing can still corrupt RX on the current KitProg path. Treat UART as a
+recovery/status path and prefer UDP or Telnet once Wi-Fi is up. These scripts
+encode the current known-good build, pack, flash, and serial-console commands
+and should be kept up to date when that flow changes.
 
 Use `tools/build-lisp.scm --uart-pin-probe` or
 `tools/build-flash-lisp.scm --uart-pin-probe` only for USB-UART physical-path

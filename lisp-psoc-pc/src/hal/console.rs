@@ -1,5 +1,6 @@
 use core::fmt::{self, Write};
 
+use cortex_m::asm;
 #[cfg(feature = "uart-pin-probe")]
 use cortex_m::delay::Delay;
 use psoc6_pac::{Peripherals, SCB5};
@@ -41,6 +42,8 @@ const SCB_DATA_WIDTH_8: u32 = 7;
 const FIFO_USED_MASK: u32 = 0x01ff;
 const FIFO_SR_VALID: u32 = 1 << 15;
 const FIFO_CLEAR: u32 = 1 << 16;
+// The KitProg3 USB-UART bridge has repeatedly corrupted continuous TX bursts.
+const UART_TX_GAP_CYCLES: u32 = 100_000;
 
 #[cfg(feature = "uart-pin-probe")]
 const P5_1_CFG_MASK: u32 = 0xf0;
@@ -136,6 +139,7 @@ impl<'a> Console<'a> {
         self.scb
             .tx_fifo_wr
             .write(|w| unsafe { w.bits(byte as u32) });
+        asm::delay(UART_TX_GAP_CYCLES);
     }
 
     pub fn write_bytes(&mut self, bytes: &[u8]) {

@@ -10,8 +10,8 @@ after the startup marker, and exposes a tiny Lisp machine.
 Current working capabilities:
 
 - UART banner and prompt over KitProg3 USB serial at =115200 8N1= on
-  =/dev/ttyACM0=. The UART path is usable for startup and recovery, but the
-  stream can still corrupt bytes.
+  =/dev/ttyACM0=. Firmware TX pacing can produce a clean reset banner, but
+  RX can still corrupt tiny forms even with slow host pacing.
 - Lisp forms over the framed UDP network REPL on port =4665=.
 - Wi-Fi association, DHCP lease acquisition, router ARP, DNS queries, and a
   small HTTP GET smoke test.

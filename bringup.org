@@ -7277,3 +7277,62 @@ the bridge and made the reset text more recognizable, but it was still corrupt.
 The mode was restored to =kp3-hid=. This keeps the current conclusion intact:
 UART remains a fragile recovery path, and normal control should use UDP or
 Telnet once Wi-Fi is up.
+
+* 2026-07-01 UART TX pacing improves reset banner
+
+Added a small idle gap after each firmware UART transmit byte in
+=hal::console=. The first test with =25_000= delay cycles made the banner
+mostly readable but still left two corrupt byte clusters:
+
+#+begin_example
+PSoC6 lisp-psoc-pc
+UART:<bad>SCB5 P5.1 TX / <bad><bad>5.0 RX, 115200 8N1
+#+end_example
+
+Increasing the gap to =100_000= cycles produced a clean reset capture through
+=tools/serial-console.scm=:
+
+#+begin_src sh
+timeout 24 tools/serial-console.scm \
+  --log .local/logs/serial-tx-gap-100k-reset-validation.log
+/opt/ModusToolbox/tools_3.4/openocd/bin/openocd \
+  -s /opt/ModusToolbox/tools_3.4/openocd/scripts \
+  -f interface/cmsis-dap.cfg \
+  -f target/psoc6_2m.cfg \
+  -c 'init; reset run; shutdown'
+#+end_src
+
+#+begin_example
+PSoC6 lisp-psoc-pc
+UART: SCB5 P5.1 TX / P5.0 RX, 115200 8N1
+#+end_example
+
+This helps board-to-host status output, but it does not fix host-to-board RX.
+=tools/send-lisp.scm= now holds the writer open for 500 ms after the final
+carriage return; that made the line submit, but the echoed payload was still
+corrupted:
+
+#+begin_example
+^C
+lisp> (+9`10)
+error: unbound symbol
+#+end_example
+
+A slower =--delay-ms 1000 --post-cr-delay-ms 1000= send still corrupted RX:
+
+#+begin_example
+(+91<bad>
+error: unbound symbol
+#+end_example
+
+The network REPL stayed healthy after these UART experiments:
+
+#+begin_example
+tools/send-net-repl.scm --host 10.0.0.9 --sequence 988 \
+  --payload-only '(+ 70 7)'
+=> 77
+#+end_example
+
+Operational conclusion: keep firmware TX pacing because it turns reset banners
+back into useful status output. Do not treat UART RX as reliable yet. Use UDP or
+Telnet for normal control once Wi-Fi has bootstrapped.
