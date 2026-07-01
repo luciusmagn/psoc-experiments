@@ -46,17 +46,29 @@ console without touching the UART device, use:
 tools/serial-console.scm --tail-log
 #+end_src
 
-Send one serial form:
+Send one small serial smoke-test form:
 
 #+begin_src sh
 tools/send-lisp.scm '(+ 1 2)'
 #+end_src
 
-Current UART note: after a host reboot and board replug on 2026-07-01, the
-normal 115200 console produced a clean reset banner and a clean =(+ 1 2)=
-round trip. If the console becomes corrupt again, first close other serial
-readers, reset the host tty to 115200 raw with the tools, and physically
-replug the KitProg3 USB connection before changing firmware.
+Current UART note: after a host reboot, board replug, and KitProg3 HID-mode
+switch on 2026-07-01, the normal 115200 console produced readable reset
+banners and clean tiny forms such as =(+ 3 4)=. Longer serial input still
+corrupted in live tests, so use UART for smoke tests and recovery, then prefer
+the UDP network REPL for real interaction once Wi-Fi is up.
+
+Check and switch KitProg3 mode:
+
+#+begin_src sh
+.local/fw-loader/fw-loader/bin/fw-loader --device-list
+.local/fw-loader/fw-loader/bin/fw-loader --mode kp3-hid
+#+end_src
+
+If the console becomes corrupt again, first close other serial readers, reset
+the host tty to 115200 raw with the tools, and physically replug the KitProg3
+USB connection before changing firmware. Use =kp3-bulk= only when HID mode
+causes a specific regression that has been documented.
 
 USB-UART physical-path probe:
 
@@ -88,6 +100,9 @@ uses its own ignored request/response files under =.local/net-repl/=; use
 explicit unique sequences when comparing concurrent UDP requests.
 Current UDP REPL replies carry up to 1400 payload bytes, so larger diagnostics
 such as =(thermistor-read)= fit in one unfragmented reply on the current stack.
+This is not Telnet or rlogin. The current working transport is the repo-local
+framed UDP protocol on port 4665; a Telnet-like TCP console still needs a board
+TCP listener and minimal option handling.
 
 If a Wi-Fi smoke marker or UART status shows a valid lease and an enabled UDP
 service but host requests still time out, check host routing and ARP/neighbour

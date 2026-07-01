@@ -11,7 +11,9 @@ small interactive machine:
 3. Storage through the microSD slot.
 4. Wi-Fi through the onboard CYW4343W module.
 
-The console milestone is now working.
+The serial console milestone is partially working. UART is useful for reset
+banners, small smoke forms, and recovery, but the framed UDP REPL is the
+current reliable control path for longer interaction.
 
 * Current known-good state
 
@@ -80,11 +82,16 @@ The red user LED then blinks, which means the CM4 app loop is running.
 
 ** USB devices
 
-The host sees KitProg3:
+The current preferred KitProg3 mode is =kp3-hid= when UART corruption appears
+in =kp3-bulk=. In HID mode the host sees KitProg3 as:
 
 #+begin_example
-04b4:f155 Cypress Semiconductor Corp. KitProg3 CMSIS-DAP
+04b4:f154 Cypress Semiconductor Corp. KitProg3 CMSIS-DAP
 #+end_example
+
+Bulk mode has also been observed on this board as =04b4:f155=. HID mode keeps
+OpenOCD usable and made the USB-UART bridge materially better in the
+2026-07-01 validation below, though not perfect.
 
 The USB-UART bridge appears as:
 
@@ -6417,6 +6424,117 @@ tools/send-net-repl.scm --host 10.0.0.9 --attempts 5 --wait 5 \
   --payload-only --read-only '(wifi-net-repl-service status)'
 => (... (last.response.length . #x0000034d)
         (last.response.truncated . #f) ...)
+#+end_example
+
+* 2026-07-01 KitProg HID UART and quiet boot-file output
+
+After the first clean summer-house UART run, serial corruption returned in
+=kp3-bulk= mode. A recovery image that skipped =boot.lisp= still produced
+damaged reset text and damaged echoed input, so the problem was not caused by
+Wi-Fi startup or FAT boot-file loading.
+
+The KitProg3 bridge was switched to HID mode:
+
+#+begin_src sh
+.local/fw-loader/fw-loader/bin/fw-loader --mode kp3-hid
+.local/fw-loader/fw-loader/bin/fw-loader --device-list
+#+end_src
+
+The firmware loader reported:
+
+#+begin_example
+KitProg3 CMSIS-DAP HID, FW Version 2.81.1663
+#+end_example
+
+OpenOCD still worked in HID mode. It printed ~CMSIS-DAP: FW Version = 1.2.0~
+from the debug adapter path and successfully programmed and verified the
+normal quiet Wi-Fi image, although flashing was visibly slower than bulk mode.
+
+The firmware now prints only a compact success line after loading FAT
+=boot.lisp=:
+
+#+begin_example
+boot.lisp: loaded
+#+end_example
+
+This replaces the previous =boot.lisp => VALUE= print, which echoed the full
+startup form during every normal boot and made the already-fragile UART path
+noisier.
+
+HID-mode UART validation of the normal Wi-Fi image:
+
+#+begin_example
+140 .local/logs/uart-20260701-kp3-hid-normal-quiet.log
+ascii_clean=137/140
+
+23 .local/logs/uart-20260701-kp3-hid-normal-send.log
+ascii_clean=23/23
+(+ 3 4)
+=> 7
+#+end_example
+
+Longer serial input remained unreliable. Sending
+=(wifi-net-repl-service status)= corrupted before evaluation with both 25 ms
+and 500 ms byte pacing. A single read/write descriptor experiment produced no
+captured bytes on this CDC device and is not useful as an operator workflow.
+
+Operational decision: keep KitProg3 in =kp3-hid= for now, use UART for reset
+banners and tiny forms, and use the framed UDP REPL for normal board control.
+The current network REPL is not Telnet, rlogin, or Serial-over-LAN. It is the
+repo-local framed UDP protocol on port =4665=. A standard Telnet-like console
+should come later as a raw TCP listener with minimal Telnet option handling
+only after inbound TCP service code exists.
+
+Post-flash UDP validation on the summer-house network:
+
+#+begin_example
+tools/send-net-repl.scm --host 10.0.0.9 --payload-only '(+ 20 22)'
+=> 42
+
+tools/send-net-repl.scm --host 10.0.0.9 --payload-only '(wifi-link-status)'
+=> ((status . ready) ... (rssi.dbm . -66) ...)
+
+tools/send-net-repl.scm --host 10.0.0.9 --payload-only --read-only \
+  '(fat-info)'
+=> ((status . ready) ... (root-entry-count . 5) ...)
+
+tools/send-net-repl.scm --host 10.0.0.9 --payload-only --read-only \
+  '(read-file "boot.lisp")'
+=> ((status . ready)
+    ...
+    (content . "(begin (wifi-network-bootstrap) (wifi-net-repl-service on))"))
+
+tools/send-net-repl.scm --host 10.0.0.9 --payload-only \
+  '(http-get "http://example.com/")'
+=> ((status . ready)
+    (step . done)
+    (code . #x000000c8)
+    (dns . ready)
+    (syn . ready)
+    (get . ready)
+    (response . ready)
+    (parse . ready)
+    (reset . ready)
+    ...)
+#+end_example
+
+Process and SD-card status also survived the normal boot path:
+
+#+begin_example
+tools/send-net-repl.scm --host 10.0.0.9 --payload-only \
+  '(spawn (quote (begin (sleep-ms 1000) (+ 40 2))))'
+=> #x00000001
+
+tools/send-net-repl.scm --host 10.0.0.9 --payload-only --read-only \
+  '(processes)'
+=> (((pid . #x00000001)
+        (state . done)
+        (steps . #x00000002)
+        (error . "")))
+
+tools/send-net-repl.scm --host 10.0.0.9 --payload-only --read-only \
+  '(sd-status)'
+=> ((CD_L . low) (inserted . #t) ...)
 #+end_example
 
 * Next actions

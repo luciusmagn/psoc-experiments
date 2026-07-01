@@ -72,9 +72,15 @@ Observed result:
 => #x00000001
 => (((pid . #x00000001)
         (state . done)
+        (wake-ms . #x0000b892)
         (steps . #x00000002)
         (error . "")))
 #+end_example
+
+This was revalidated after the KitProg3 HID-mode switch on the normal
+FAT-booted Wi-Fi image. The process runner stayed usable while UART long-form
+input was still corrupt, which reinforces the current rule that the UDP REPL
+is the practical control plane for scheduler work.
 
 * Remaining Architecture
 

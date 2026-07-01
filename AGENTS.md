@@ -283,7 +283,10 @@ directory.
 The current KitProg3 firmware loader is installed under ignored
 `.local/fw-loader/` when needed. Use its `fw-loader` binary for KitProg3
 device-list, firmware update, mode, and UART flow-control checks, and document
-any device firmware or bridge-setting change in `bringup.org`.
+any device firmware or bridge-setting change in `bringup.org`. The current
+validated bridge preference is `kp3-hid` when `kp3-bulk` corrupts UART; check
+with `.local/fw-loader/fw-loader/bin/fw-loader --device-list` and switch with
+`.local/fw-loader/fw-loader/bin/fw-loader --mode kp3-hid` when needed.
 
 The underlying manual flow for the active console firmware is:
 

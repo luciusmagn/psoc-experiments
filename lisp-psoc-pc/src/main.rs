@@ -537,11 +537,7 @@ fn load_boot_file<B: lisp::Board, W: Write>(
 ) -> fmt::Result {
     let path = string_bytes(b"boot.lisp");
     match machine.load_file(path, board, output) {
-        Ok(lisp::LoadFileOutcome::Loaded(value)) => {
-            write!(output, "boot.lisp => ")?;
-            machine.write_value_to(value, output)?;
-            writeln!(output)
-        }
+        Ok(lisp::LoadFileOutcome::Loaded(_value)) => writeln!(output, "boot.lisp: loaded"),
         Ok(lisp::LoadFileOutcome::NotReady(report)) => {
             if report.status != b"not-found" {
                 write!(output, "boot.lisp: ")?;
