@@ -6976,3 +6976,155 @@ Conclusion: the plain-TCP service works as a stepping stone toward Telnet, but
 UDP and TCP still poll the same SDIO RX queue independently. The next network
 slice should add a shared packet dispatcher or otherwise make the services
 cooperate before auto-starting TCP from =boot.lisp=.
+
+* 2026-07-01 Telnet Lisp REPL Service
+
+Replaced the background TCP REPL service internals with a Telnet-aware session
+service instead of treating TCP as one Lisp payload and close. The one-shot
+=wifi-tcp-repl-once= diagnostic remains raw TCP. The background service now:
+
+- keeps an accepted TCP peer open across polls;
+- sends data without FIN for normal replies;
+- parses Telnet =IAC= command state;
+- refuses unsupported =DO= and =WILL= options with =WONT= and =DONT=;
+- skips subnegotiation through =IAC SE=;
+- handles =AYT=, =EC=, and =EL= commands;
+- treats NVT =CR LF= as newline and =CR NUL= as literal carriage return;
+- converts Lisp output to NVT text and doubles outbound =IAC= bytes;
+- sends a =lisp> = prompt on connect and after each completed line;
+- replies to payload-plus-FIN by evaluating the payload and closing with the
+  server FIN afterward.
+
+This is still single-session. The Wi-Fi HAL now has a small demux cache for the
+two background REPL services: framed UDP REPL requests and ACKs are preserved if
+the TCP poller reads them first, and active TCP REPL packets are preserved if
+the UDP poller reads them first. This fixes the immediate RX queue race without
+requiring user-facing code to know which service read the CYW4343W queue first.
+A board-wide packet dispatcher remains the right future architecture for
+general user network code.
+
+Validation:
+
+#+begin_src sh
+tools/build-lisp.scm --wifi-firmware --wifi-credentials
+tools/flash-lisp.scm
+tools/send-net-repl.scm --host 10.0.0.9 --attempts 12 --wait 10 \
+  --payload-only '(+ 1 2)'
+tools/send-net-repl.scm --host 10.0.0.9 --attempts 6 --wait 10 \
+  --payload-only '(wifi-tcp-repl-service on 2323 1)'
+#+end_src
+
+UDP came back after FAT =boot.lisp=:
+
+#+begin_example
+=> 3
+#+end_example
+
+Raw TCP line mode:
+
+#+begin_src sh
+printf '(+ 2 3)\r\n' | ncat -w 10 -q 3 10.0.0.9 2323 | xxd -g 1
+#+end_src
+
+#+begin_example
+00000000: 6c 69 73 70 3e 20 3d 3e 20 35 0d 0a 6c 69 73 70  lisp> => 5..lisp
+00000010: 3e 20                                            >
+#+end_example
+
+Telnet negotiation bytes in-band:
+
+#+begin_src sh
+printf '\377\375\003(+ 2 5)\r\n' | ncat -w 10 -q 3 10.0.0.9 2323 | xxd -g 1
+#+end_src
+
+#+begin_example
+00000000: 6c 69 73 70 3e 20 ff fc 03 3d 3e 20 37 0d 0a 6c  lisp> ...=> 7..l
+00000010: 69 73 70 3e 20                                   isp>
+#+end_example
+
+The =ff fc 03= bytes are =IAC WONT 3= in response to the test =IAC DO 3=.
+
+Stock =telnet= needed stdin kept open briefly after connect:
+
+#+begin_src sh
+timeout 20 sh -c "(sleep 1; printf '(+ 3 4)\r\n'; sleep 3) | telnet 10.0.0.9 2323"
+#+end_src
+
+#+begin_example
+Trying 10.0.0.9...
+Connected to 10.0.0.9.
+Escape character is '^]'.
+lisp> => 7
+lisp> lisp> Connection closed by foreign host.
+#+end_example
+
+The extra prompt appears when the scripted client closes. The service status
+with a fresh UDP sequence showed the stock Telnet line was evaluated:
+
+#+begin_example
+=> ((enabled . #t)
+    (listen-port . #x00000913)
+    (poll-frames . #x00000001)
+    (polls . #x000005f9)
+    (requests-handled . #x00000003)
+    (last.status . peer-closed)
+    (last.request.status . peer-closed)
+    (last.reply.status . not-run)
+    (last.eval.status . not-run)
+    (last.peer.ip . #x0a000005)
+    (last.peer.port . #x0000b94e))
+#+end_example
+
+Disabled the service afterward:
+
+#+begin_src sh
+tools/send-net-repl.scm --host 10.0.0.9 --sequence 902 --attempts 12 --wait 10 \
+  --payload-only '(wifi-tcp-repl-service off)'
+tools/send-net-repl.scm --host 10.0.0.9 --sequence 903 --attempts 4 --wait 10 \
+  --payload-only '(+ 20 23)'
+#+end_src
+
+#+begin_example
+=> ((enabled . #f) ...)
+=> 43
+#+end_example
+
+Follow-up demux and lifecycle validation:
+
+- Added a small HAL demux cache for the background UDP REPL and Telnet REPL
+  services. If the UDP poller reads an active TCP REPL packet first, the packet
+  is cached for the TCP service. If the TCP poller reads a framed UDP REPL
+  request or ACK first, the packet is cached for the UDP service.
+- Changed Telnet-side service reset to defer the HAL peer reset until after the
+  response for the current line has been sent. This lets
+  =(wifi-tcp-repl-service off)= be used from the Telnet session itself.
+
+Validated on the normal quiet image after rebuild and flash:
+
+#+begin_src sh
+tools/send-net-repl.scm --host 10.0.0.9 --sequence 940 --attempts 12 --wait 10 \
+  --payload-only '(+ 1 2)'
+tools/send-net-repl.scm --host 10.0.0.9 --sequence 941 --attempts 6 --wait 10 \
+  --payload-only '(wifi-tcp-repl-service on 2323 1)'
+printf '(+ 2 3)\r\n' | ncat -w 10 -q 3 10.0.0.9 2323 | xxd -g 1
+tools/send-net-repl.scm --host 10.0.0.9 --sequence 942 --attempts 8 --wait 10 \
+  --payload-only --read-only '(wifi-tcp-repl-service status)'
+printf '\377\375\003(+ 2 5)\r\n' | ncat -w 10 -q 3 10.0.0.9 2323 | xxd -g 1
+timeout 20 sh -c "(sleep 1; printf '(+ 3 4)\r\n(wifi-tcp-repl-service off)\r\n'; sleep 3) | telnet 10.0.0.9 2323"
+tools/send-net-repl.scm --host 10.0.0.9 --sequence 943 --attempts 8 --wait 10 \
+  --payload-only '(+ 20 23)'
+#+end_src
+
+Key results:
+
+#+begin_example
+=> 3
+00000000: 6c 69 73 70 3e 20 3d 3e 20 35 0d 0a 6c 69 73 70  lisp> => 5..lisp
+00000010: 3e 20                                            >
+=> ((enabled . #t) ... (requests-handled . #x00000001) ...)
+00000000: 6c 69 73 70 3e 20 ff fc 03 3d 3e 20 37 0d 0a 6c  lisp> ...=> 7..l
+00000010: 69 73 70 3e 20                                   isp>
+lisp> => 7
+lisp> => ((enabled . #f) ...)
+=> 43
+#+end_example

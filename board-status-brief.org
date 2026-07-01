@@ -24,9 +24,11 @@ Current working capabilities:
 - A one-shot TCP Lisp REPL form, =(wifi-tcp-repl-once port [poll-frames])=,
   which accepts one TCP connection, evaluates one received Lisp form, sends the
   pretty-printed result back over TCP, and closes.
-- A background plain-TCP Lisp REPL service,
-  =(wifi-tcp-repl-service on 2323 1)=, which accepts one Lisp form per TCP
-  connection and re-arms after replying.
+- A Telnet Lisp REPL service, =(wifi-tcp-repl-service on 2323 1)=, with
+  persistent TCP session state, IAC command parsing, WONT/DONT option refusal,
+  NVT line endings, prompts, and pretty-printed Lisp results.
+- A small HAL demux cache that lets the UDP REPL service and Telnet service
+  poll concurrently without discarding each other's framed packets.
 
 * Core Usage
 
@@ -64,14 +66,13 @@ leak into Lisp reader/evaluator code.
 
 Near-term work should focus on making interaction less fragile:
 
-1. Add Telnet IAC option handling on top of the plain-TCP REPL service.
-2. Add a shared packet dispatcher so UDP and TCP services no longer race on the
-   same Wi-Fi RX queue.
-3. Start the CM0+ live-I/O split once the IPC surface is small and explicit.
-4. Keep the UART console working as a recovery path and continue reducing byte
+1. Promote the small UDP/TCP REPL demux cache into a board-wide packet
+   dispatcher for user network code.
+2. Start the CM0+ live-I/O split once the IPC surface is small and explicit.
+3. Keep the UART console working as a recovery path and continue reducing byte
    corruption.
-5. Add paging or streaming for network REPL responses larger than one UDP
+4. Add paging or streaming for network REPL responses larger than one UDP
    packet.
-6. Replace the current top-level process runner with resumable evaluator frames
+5. Replace the current top-level process runner with resumable evaluator frames
    so processes can yield inside longer Lisp computations.
-7. Expand FAT loading/saving beyond the current small-file limits.
+6. Expand FAT loading/saving beyond the current small-file limits.

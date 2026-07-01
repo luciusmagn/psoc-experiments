@@ -89,9 +89,10 @@ accepts one inbound TCP connection, captures one payload frame preview, and
 then closes with RST/ACK cleanup. `(wifi-tcp-repl-once 2323 80)` accepts one
 TCP connection, evaluates one received Lisp form, sends the pretty-printed
 result over TCP, and closes. `(wifi-tcp-repl-service on 2323 1)` enables the
-current background plain-TCP Lisp REPL service: one Lisp form per TCP
-connection, then a pretty-printed reply and close. It is a stepping stone
-toward Telnet, not Telnet yet. `(http-get "http://example.com/")` resolves the
+current Telnet Lisp REPL service. It keeps one TCP session open, parses Telnet
+IAC commands, refuses unsupported options with standard WONT/DONT replies,
+handles NVT CR/LF line endings, evaluates complete Lisp lines, and sends NVT
+text responses with a prompt. `(http-get "http://example.com/")` resolves the
 host, opens a raw TCP connection to port 80, sends an HTTP/1.0 GET with
 `Connection: close`, captures a short response preview, and sends RST/ACK
 cleanup. Plain HTTP only is implemented; HTTPS/TLS is not. Dotted numeric URLs
@@ -117,9 +118,9 @@ While polling, the service answers ARP requests for its DHCP lease so host-side
 clients do not need a pinned neighbor entry.
 `(wifi-tcp-repl-service status)`, `(wifi-tcp-repl-service on)`,
 `(wifi-tcp-repl-service on 2323 1)`, and `(wifi-tcp-repl-service off)` control
-the background plain-TCP evaluator. The UDP and TCP services currently poll the
-same SDIO RX queue independently, so keep UDP retries in scripts while both
-services are running.
+the Telnet evaluator. The service is currently single-session. The UDP REPL and
+Telnet service poll concurrently through a small HAL demux cache for framed UDP
+REPL requests and active TCP REPL packets.
 `(wifi-network-bootstrap)` runs local association, DHCP, lease status, and
 router ARP resolution as one compact high-level form.
 

@@ -121,7 +121,7 @@ work on CM4:
 - IPC: fixed-size queues in shared SRAM, explicit message ownership, no shared
   mutable Lisp heap across cores.
 
-This should move up in priority once the plain-TCP REPL service grows Telnet
+This should move up in priority now that the TCP REPL has real Telnet session
 handling, because a console front end is a natural CM0+ responsibility. Moving
 the current direct evaluator to CM0+ would not solve blocking FAT or Wi-Fi
 calls; the useful split is a small asynchronous I/O boundary, not a second copy

@@ -758,6 +758,34 @@ impl lisp::Board for PsocBoard<'_> {
         ))
     }
 
+    fn wifi_tcp_repl_service_poll(
+        &mut self,
+        port: u16,
+        poll_frames: u8,
+    ) -> lisp::WifiSdioTcpReceiveReport {
+        wifi_sdio_tcp_receive_report(wifi_sdio::tcp_repl_service_poll(
+            self.p,
+            &mut self.state.wifi_control_state,
+            port,
+            poll_frames,
+        ))
+    }
+
+    fn wifi_tcp_repl_service_send(
+        &mut self,
+        payload: lisp::NetReplResponseBytes,
+    ) -> lisp::WifiSdioTcpReplReplyReport {
+        wifi_sdio_tcp_repl_reply_report(wifi_sdio::tcp_repl_service_send(
+            self.p,
+            &mut self.state.wifi_control_state,
+            &payload.bytes[..payload.len as usize],
+        ))
+    }
+
+    fn wifi_tcp_repl_service_reset(&mut self) {
+        wifi_sdio::tcp_repl_service_reset(&mut self.state.wifi_control_state);
+    }
+
     fn http_get(&mut self, url: lisp::StringBytes) -> lisp::WifiSdioHttpGetReport {
         wifi_sdio_http_get_report(wifi_sdio::http_get(
             self.p,
@@ -1637,6 +1665,8 @@ fn wifi_sdio_tcp_listen_status(status: wifi_sdio::WifiSdioTcpListenStatus) -> &'
 fn wifi_sdio_tcp_receive_status(status: wifi_sdio::WifiSdioTcpReceiveStatus) -> &'static [u8] {
     match status {
         wifi_sdio::WifiSdioTcpReceiveStatus::Ready => b"ready",
+        wifi_sdio::WifiSdioTcpReceiveStatus::Connected => b"connected",
+        wifi_sdio::WifiSdioTcpReceiveStatus::AckOnly => b"ack-only",
         wifi_sdio::WifiSdioTcpReceiveStatus::NoLease => b"no-lease",
         wifi_sdio::WifiSdioTcpReceiveStatus::LeaseMissingAddress => b"lease-missing-address",
         wifi_sdio::WifiSdioTcpReceiveStatus::LocalMacMissing => b"local-mac-missing",
@@ -1654,6 +1684,7 @@ fn wifi_sdio_tcp_receive_status(status: wifi_sdio::WifiSdioTcpReceiveStatus) -> 
         wifi_sdio::WifiSdioTcpReceiveStatus::PayloadRejected => b"payload-rejected",
         wifi_sdio::WifiSdioTcpReceiveStatus::PayloadTooLarge => b"payload-too-large",
         wifi_sdio::WifiSdioTcpReceiveStatus::PeerReset => b"peer-reset",
+        wifi_sdio::WifiSdioTcpReceiveStatus::PeerClosed => b"peer-closed",
         wifi_sdio::WifiSdioTcpReceiveStatus::ResetFailed => b"reset-failed",
     }
 }

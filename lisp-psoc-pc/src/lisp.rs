@@ -76,13 +76,38 @@ const STATUS_NOT_RUN: &[u8] = b"not-run";
 const STATUS_STEP_FAILED: &[u8] = b"step-failed";
 const STATUS_TIMEOUT: &[u8] = b"timeout";
 const STATUS_LISTEN_TIMEOUT: &[u8] = b"listen-timeout";
+const STATUS_CONNECTED: &[u8] = b"connected";
+const STATUS_ACK_ONLY: &[u8] = b"ack-only";
+const STATUS_PEER_RESET: &[u8] = b"peer-reset";
+const STATUS_PEER_CLOSED: &[u8] = b"peer-closed";
 const STATUS_DUPLICATE: &[u8] = b"duplicate";
 const STATUS_ACK: &[u8] = b"ack";
 const STATUS_READ_ONLY_DENIED: &[u8] = b"read-only-denied";
+const STATUS_LINE_PENDING: &[u8] = b"line-pending";
+const STATUS_PROTOCOL: &[u8] = b"protocol";
 const STEP_DONE: &[u8] = b"done";
 const WIFI_NET_REPL_SERVICE_DEFAULT_POLL_FRAMES: u8 = 1;
 const WIFI_TCP_REPL_SERVICE_DEFAULT_PORT: u16 = 2323;
 const WIFI_TCP_REPL_SERVICE_DEFAULT_POLL_FRAMES: u8 = 1;
+const TELNET_SE: u8 = 240;
+const TELNET_SB: u8 = 250;
+const TELNET_WILL: u8 = 251;
+const TELNET_WONT: u8 = 252;
+const TELNET_DO: u8 = 253;
+const TELNET_DONT: u8 = 254;
+const TELNET_IAC: u8 = 255;
+const TELNET_AYT: u8 = 246;
+const TELNET_EC: u8 = 247;
+const TELNET_EL: u8 = 248;
+const TELNET_STATE_DATA: u8 = 0;
+const TELNET_STATE_IAC: u8 = 1;
+const TELNET_STATE_OPTION: u8 = 2;
+const TELNET_STATE_SUBNEGOTIATION: u8 = 3;
+const TELNET_STATE_SUBNEGOTIATION_IAC: u8 = 4;
+const TELNET_STATE_CR: u8 = 5;
+const TELNET_PROMPT: &[u8] = b"lisp> ";
+const TELNET_AYT_RESPONSE: &[u8] = b"[yes]\n";
+const TCP_FLAG_FIN: u8 = 0x01;
 
 #[derive(Clone, Copy)]
 struct WifiNetReplCycleReport {
@@ -144,6 +169,12 @@ struct WifiTcpReplServiceState {
     last_response_length: u16,
     last_response_hash: u32,
     last_response_truncated: bool,
+    processing_telnet_request: bool,
+    reset_peer_after_reply: bool,
+    telnet_state: u8,
+    telnet_command: u8,
+    telnet_line: [u8; NET_REPL_REQUEST_PAYLOAD_BYTES],
+    telnet_line_len: u8,
 }
 
 const EMPTY_WIFI_NET_REPL_SERVICE_STATE: WifiNetReplServiceState = WifiNetReplServiceState {
@@ -182,6 +213,12 @@ const EMPTY_WIFI_TCP_REPL_SERVICE_STATE: WifiTcpReplServiceState = WifiTcpReplSe
     last_response_length: 0,
     last_response_hash: 0,
     last_response_truncated: false,
+    processing_telnet_request: false,
+    reset_peer_after_reply: false,
+    telnet_state: TELNET_STATE_DATA,
+    telnet_command: 0,
+    telnet_line: [0; NET_REPL_REQUEST_PAYLOAD_BYTES],
+    telnet_line_len: 0,
 };
 
 #[derive(Clone, Copy)]
@@ -336,6 +373,16 @@ pub trait Board {
     fn wifi_tcp_receive_once(&mut self, port: u16, poll_frames: u8) -> WifiSdioTcpReceiveReport;
     fn wifi_tcp_repl_poll(&mut self, port: u16, poll_frames: u8) -> WifiSdioTcpReceiveReport;
     fn wifi_tcp_repl_reply(&mut self, payload: NetReplResponseBytes) -> WifiSdioTcpReplReplyReport;
+    fn wifi_tcp_repl_service_poll(
+        &mut self,
+        port: u16,
+        poll_frames: u8,
+    ) -> WifiSdioTcpReceiveReport;
+    fn wifi_tcp_repl_service_send(
+        &mut self,
+        payload: NetReplResponseBytes,
+    ) -> WifiSdioTcpReplReplyReport;
+    fn wifi_tcp_repl_service_reset(&mut self);
     fn http_get(&mut self, url: StringBytes) -> WifiSdioHttpGetReport;
     fn wifi_net_repl_poll(&mut self, poll_frames: u8) -> WifiNetReplRequestReport;
     fn wifi_net_repl_reply(
@@ -2253,6 +2300,72 @@ impl Write for NetReplResponseWriter {
     }
 }
 
+struct TelnetResponseBuilder {
+    len: usize,
+    truncated: bool,
+    bytes: [u8; NET_REPL_RESPONSE_BYTES],
+}
+
+impl TelnetResponseBuilder {
+    fn new() -> Self {
+        Self {
+            len: 0,
+            truncated: false,
+            bytes: [0; NET_REPL_RESPONSE_BYTES],
+        }
+    }
+
+    fn response(self) -> NetReplResponseBytes {
+        NetReplResponseBytes {
+            len: self.len as u16,
+            truncated: self.truncated,
+            bytes: self.bytes,
+        }
+    }
+
+    fn append_control(&mut self, byte: u8) {
+        self.append_raw(byte);
+    }
+
+    fn append_nvt_text(&mut self, bytes: &[u8]) {
+        for byte in bytes {
+            self.append_nvt_byte(*byte);
+        }
+    }
+
+    fn append_lisp_response(&mut self, response: &NetReplResponseBytes) {
+        self.truncated |= response.truncated;
+        self.append_nvt_text(&response.bytes[..response.len as usize]);
+    }
+
+    fn append_nvt_byte(&mut self, byte: u8) {
+        match byte {
+            b'\n' => {
+                self.append_raw(b'\r');
+                self.append_raw(b'\n');
+            }
+            b'\r' => {
+                self.append_raw(b'\r');
+                self.append_raw(0);
+            }
+            TELNET_IAC => {
+                self.append_raw(TELNET_IAC);
+                self.append_raw(TELNET_IAC);
+            }
+            byte => self.append_raw(byte),
+        }
+    }
+
+    fn append_raw(&mut self, byte: u8) {
+        if self.len < self.bytes.len() {
+            self.bytes[self.len] = byte;
+            self.len += 1;
+        } else {
+            self.truncated = true;
+        }
+    }
+}
+
 struct FileBytesWriter {
     len: usize,
     truncated: bool,
@@ -3023,7 +3136,7 @@ impl Machine {
 
         let listen_port = self.wifi_tcp_repl_service.listen_port;
         let poll_frames = self.wifi_tcp_repl_service.poll_frames;
-        let cycle = self.run_wifi_tcp_repl_cycle(board, listen_port, poll_frames);
+        let cycle = self.run_wifi_telnet_repl_service_cycle(board, listen_port, poll_frames);
         self.record_wifi_tcp_repl_service_cycle(cycle);
     }
 
@@ -4002,7 +4115,7 @@ impl Machine {
                 self.wifi_net_repl_once(board, poll_frames)
             }
             Primitive::WifiNetReplService => self.wifi_net_repl_service(args),
-            Primitive::WifiTcpReplService => self.wifi_tcp_repl_service(args),
+            Primitive::WifiTcpReplService => self.wifi_tcp_repl_service(args, board),
             Primitive::WifiNetworkBootstrap => {
                 self.expect_count(args, 0)?;
                 self.wifi_network_bootstrap(board)
@@ -7293,6 +7406,286 @@ impl Machine {
         }
     }
 
+    fn run_wifi_telnet_repl_service_cycle<B: Board>(
+        &mut self,
+        board: &mut B,
+        port: u16,
+        poll_frames: u8,
+    ) -> WifiTcpReplCycleReport {
+        let request = board.wifi_tcp_repl_service_poll(port, poll_frames);
+        if request.status == STATUS_LISTEN_TIMEOUT || request.status == STATUS_ACK_ONLY {
+            return self.wifi_tcp_repl_cycle_without_reply(request.status, request);
+        }
+        if request.status == STATUS_PEER_RESET || request.status == STATUS_PEER_CLOSED {
+            self.reset_telnet_repl_connection();
+            return self.wifi_tcp_repl_cycle_without_reply(request.status, request);
+        }
+
+        if request.status == STATUS_CONNECTED {
+            self.reset_telnet_repl_connection();
+            let response = self.telnet_prompt_response();
+            return self.send_wifi_telnet_repl_response(board, request, response, STATUS_NOT_RUN);
+        }
+
+        if !status_ready(request.status) {
+            return self.wifi_tcp_repl_cycle_without_reply(request.status, request);
+        }
+
+        let payload_len = request.payload_bytes as usize;
+        self.wifi_tcp_repl_service.processing_telnet_request = true;
+        let (eval_status, response) =
+            self.process_telnet_repl_payload(&request.payload[..payload_len], board);
+        self.wifi_tcp_repl_service.processing_telnet_request = false;
+        let should_ack = payload_len > 0 && response.len == 0;
+        if response.len == 0 && !should_ack {
+            return WifiTcpReplCycleReport {
+                status: STATUS_LINE_PENDING,
+                request,
+                reply: None,
+                eval_status,
+                response_length: 0,
+                response_hash: 0,
+                response_truncated: false,
+            };
+        }
+
+        self.send_wifi_telnet_repl_response(board, request, response, eval_status)
+    }
+
+    fn wifi_tcp_repl_cycle_without_reply(
+        &self,
+        status: &'static [u8],
+        request: WifiSdioTcpReceiveReport,
+    ) -> WifiTcpReplCycleReport {
+        WifiTcpReplCycleReport {
+            status,
+            request,
+            reply: None,
+            eval_status: STATUS_NOT_RUN,
+            response_length: 0,
+            response_hash: 0,
+            response_truncated: false,
+        }
+    }
+
+    fn send_wifi_telnet_repl_response<B: Board>(
+        &mut self,
+        board: &mut B,
+        request: WifiSdioTcpReceiveReport,
+        response: NetReplResponseBytes,
+        eval_status: &'static [u8],
+    ) -> WifiTcpReplCycleReport {
+        let response_length = response.len;
+        let response_truncated = response.truncated;
+        let response_hash = checksum_bytes(&response.bytes[..response.len as usize]);
+        let reply = if request.flags & TCP_FLAG_FIN != 0 {
+            board.wifi_tcp_repl_reply(response)
+        } else {
+            board.wifi_tcp_repl_service_send(response)
+        };
+        if self.wifi_tcp_repl_service.reset_peer_after_reply {
+            self.wifi_tcp_repl_service.reset_peer_after_reply = false;
+            board.wifi_tcp_repl_service_reset();
+        }
+        let status: &'static [u8] = if status_ready(reply.status) {
+            if eval_status == STATUS_NOT_RUN {
+                STATUS_PROTOCOL
+            } else {
+                STATUS_READY
+            }
+        } else {
+            b"reply-failed"
+        };
+
+        WifiTcpReplCycleReport {
+            status,
+            request,
+            reply: Some(reply),
+            eval_status,
+            response_length,
+            response_hash,
+            response_truncated,
+        }
+    }
+
+    fn reset_telnet_repl_connection(&mut self) {
+        self.wifi_tcp_repl_service.telnet_state = TELNET_STATE_DATA;
+        self.wifi_tcp_repl_service.telnet_command = 0;
+        self.wifi_tcp_repl_service.telnet_line_len = 0;
+        self.wifi_tcp_repl_service.telnet_line = [0; NET_REPL_REQUEST_PAYLOAD_BYTES];
+    }
+
+    fn reset_wifi_tcp_repl_service_peer<B: Board>(&mut self, board: &mut B) {
+        if self.wifi_tcp_repl_service.processing_telnet_request {
+            self.wifi_tcp_repl_service.reset_peer_after_reply = true;
+        } else {
+            self.wifi_tcp_repl_service.reset_peer_after_reply = false;
+            board.wifi_tcp_repl_service_reset();
+        }
+    }
+
+    fn telnet_prompt_response(&self) -> NetReplResponseBytes {
+        let mut builder = TelnetResponseBuilder::new();
+        builder.append_nvt_text(TELNET_PROMPT);
+        builder.response()
+    }
+
+    fn process_telnet_repl_payload<B: Board>(
+        &mut self,
+        payload: &[u8],
+        board: &mut B,
+    ) -> (&'static [u8], NetReplResponseBytes) {
+        let mut builder = TelnetResponseBuilder::new();
+        let mut eval_status = STATUS_NOT_RUN;
+
+        for byte in payload {
+            if self.telnet_consume_byte(*byte, &mut builder) {
+                let line_len = self.wifi_tcp_repl_service.telnet_line_len as usize;
+                if line_len == 0 {
+                    builder.append_nvt_text(TELNET_PROMPT);
+                    continue;
+                }
+
+                let line = self.wifi_tcp_repl_service.telnet_line;
+                self.wifi_tcp_repl_service.telnet_line_len = 0;
+                let (line_status, line_response) =
+                    self.eval_net_repl_payload(&line[..line_len], false, board);
+                eval_status = line_status;
+                builder.append_lisp_response(&line_response);
+                builder.append_nvt_text(TELNET_PROMPT);
+            }
+        }
+
+        (eval_status, builder.response())
+    }
+
+    fn telnet_consume_byte(&mut self, byte: u8, builder: &mut TelnetResponseBuilder) -> bool {
+        match self.wifi_tcp_repl_service.telnet_state {
+            TELNET_STATE_DATA => self.telnet_consume_data_byte(byte, builder),
+            TELNET_STATE_IAC => {
+                self.telnet_consume_iac_command(byte, builder);
+                false
+            }
+            TELNET_STATE_OPTION => {
+                self.telnet_consume_option(byte, builder);
+                false
+            }
+            TELNET_STATE_SUBNEGOTIATION => {
+                if byte == TELNET_IAC {
+                    self.wifi_tcp_repl_service.telnet_state = TELNET_STATE_SUBNEGOTIATION_IAC;
+                }
+                false
+            }
+            TELNET_STATE_SUBNEGOTIATION_IAC => {
+                self.wifi_tcp_repl_service.telnet_state = if byte == TELNET_SE {
+                    TELNET_STATE_DATA
+                } else {
+                    TELNET_STATE_SUBNEGOTIATION
+                };
+                false
+            }
+            TELNET_STATE_CR => {
+                self.wifi_tcp_repl_service.telnet_state = TELNET_STATE_DATA;
+                if byte == b'\n' {
+                    true
+                } else if byte == 0 {
+                    self.telnet_append_line_byte(b'\r', builder);
+                    false
+                } else {
+                    self.telnet_append_line_byte(b'\r', builder);
+                    self.telnet_consume_data_byte(byte, builder)
+                }
+            }
+            _ => {
+                self.wifi_tcp_repl_service.telnet_state = TELNET_STATE_DATA;
+                false
+            }
+        }
+    }
+
+    fn telnet_consume_data_byte(&mut self, byte: u8, builder: &mut TelnetResponseBuilder) -> bool {
+        match byte {
+            TELNET_IAC => {
+                self.wifi_tcp_repl_service.telnet_state = TELNET_STATE_IAC;
+                false
+            }
+            b'\r' => {
+                self.wifi_tcp_repl_service.telnet_state = TELNET_STATE_CR;
+                false
+            }
+            b'\n' => true,
+            0 => false,
+            byte => {
+                self.telnet_append_line_byte(byte, builder);
+                false
+            }
+        }
+    }
+
+    fn telnet_append_line_byte(&mut self, byte: u8, builder: &mut TelnetResponseBuilder) {
+        let len = self.wifi_tcp_repl_service.telnet_line_len as usize;
+        if len < self.wifi_tcp_repl_service.telnet_line.len() {
+            self.wifi_tcp_repl_service.telnet_line[len] = byte;
+            self.wifi_tcp_repl_service.telnet_line_len =
+                self.wifi_tcp_repl_service.telnet_line_len.saturating_add(1);
+        } else {
+            self.wifi_tcp_repl_service.telnet_line_len = 0;
+            builder.append_nvt_text(b"error: telnet line too long\n");
+            builder.append_nvt_text(TELNET_PROMPT);
+        }
+    }
+
+    fn telnet_consume_iac_command(&mut self, command: u8, builder: &mut TelnetResponseBuilder) {
+        match command {
+            TELNET_IAC => {
+                self.telnet_append_line_byte(TELNET_IAC, builder);
+                self.wifi_tcp_repl_service.telnet_state = TELNET_STATE_DATA;
+            }
+            TELNET_DO | TELNET_DONT | TELNET_WILL | TELNET_WONT => {
+                self.wifi_tcp_repl_service.telnet_command = command;
+                self.wifi_tcp_repl_service.telnet_state = TELNET_STATE_OPTION;
+            }
+            TELNET_SB => {
+                self.wifi_tcp_repl_service.telnet_state = TELNET_STATE_SUBNEGOTIATION;
+            }
+            TELNET_AYT => {
+                builder.append_nvt_text(TELNET_AYT_RESPONSE);
+                builder.append_nvt_text(TELNET_PROMPT);
+                self.wifi_tcp_repl_service.telnet_state = TELNET_STATE_DATA;
+            }
+            TELNET_EC => {
+                self.wifi_tcp_repl_service.telnet_line_len =
+                    self.wifi_tcp_repl_service.telnet_line_len.saturating_sub(1);
+                self.wifi_tcp_repl_service.telnet_state = TELNET_STATE_DATA;
+            }
+            TELNET_EL => {
+                self.wifi_tcp_repl_service.telnet_line_len = 0;
+                self.wifi_tcp_repl_service.telnet_state = TELNET_STATE_DATA;
+            }
+            _ => {
+                self.wifi_tcp_repl_service.telnet_state = TELNET_STATE_DATA;
+            }
+        }
+    }
+
+    fn telnet_consume_option(&mut self, option: u8, builder: &mut TelnetResponseBuilder) {
+        match self.wifi_tcp_repl_service.telnet_command {
+            TELNET_DO => {
+                builder.append_control(TELNET_IAC);
+                builder.append_control(TELNET_WONT);
+                builder.append_control(option);
+            }
+            TELNET_WILL => {
+                builder.append_control(TELNET_IAC);
+                builder.append_control(TELNET_DONT);
+                builder.append_control(option);
+            }
+            _ => {}
+        }
+        self.wifi_tcp_repl_service.telnet_command = 0;
+        self.wifi_tcp_repl_service.telnet_state = TELNET_STATE_DATA;
+    }
+
     fn wifi_tcp_repl_once_report(
         &mut self,
         status_value: &'static [u8],
@@ -7751,7 +8144,7 @@ impl Machine {
             return;
         }
 
-        if cycle.reply.is_some() {
+        if cycle.reply.is_some() && cycle.eval_status != STATUS_NOT_RUN {
             self.wifi_tcp_repl_service.requests_handled = self
                 .wifi_tcp_repl_service
                 .requests_handled
@@ -7771,16 +8164,24 @@ impl Machine {
         self.wifi_tcp_repl_service.last_response_truncated = cycle.response_truncated;
     }
 
-    fn wifi_tcp_repl_service(&mut self, args: &[Value]) -> LispResult<Value> {
+    fn wifi_tcp_repl_service<B: Board>(
+        &mut self,
+        args: &[Value],
+        board: &mut B,
+    ) -> LispResult<Value> {
         match args.len() {
             0 => {}
             1 => match args[0] {
                 Value::Symbol(symbol) if symbol == self.specials.status => {}
                 Value::Symbol(symbol) if symbol == self.specials.on => {
                     self.wifi_tcp_repl_service.enabled = true;
+                    self.reset_telnet_repl_connection();
+                    self.reset_wifi_tcp_repl_service_peer(board);
                 }
                 Value::Symbol(symbol) if symbol == self.specials.off => {
                     self.wifi_tcp_repl_service.enabled = false;
+                    self.reset_telnet_repl_connection();
+                    self.reset_wifi_tcp_repl_service_peer(board);
                 }
                 _ => {
                     return Err(Error::new(
@@ -7797,6 +8198,8 @@ impl Machine {
                         WIFI_TCP_REPL_SERVICE_DEFAULT_POLL_FRAMES
                     };
                     self.enable_wifi_tcp_repl_service(listen_port, poll_frames);
+                    self.reset_telnet_repl_connection();
+                    self.reset_wifi_tcp_repl_service_peer(board);
                 }
                 _ => return Err(Error::new("wifi-tcp-repl-service port requires on")),
             },

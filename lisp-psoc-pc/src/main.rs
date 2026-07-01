@@ -202,6 +202,16 @@ fn main() -> ! {
             process_service_accumulated_ms = process_service_accumulated_ms.saturating_add(1);
         }
 
+        if machine.wifi_tcp_repl_service_enabled() {
+            if tcp_repl_service_accumulated_ms >= WIFI_TCP_REPL_SERVICE_INTERVAL_MS {
+                tcp_repl_service_accumulated_ms = 0;
+                let mut board = board_state.lisp_board(&p);
+                machine.poll_wifi_tcp_repl_service(&mut board);
+            }
+        } else {
+            tcp_repl_service_accumulated_ms = 0;
+        }
+
         if machine.wifi_net_repl_service_enabled() {
             if net_repl_service_accumulated_ms >= WIFI_NET_REPL_SERVICE_INTERVAL_MS {
                 net_repl_service_accumulated_ms = 0;
@@ -212,16 +222,6 @@ fn main() -> ! {
             }
         } else {
             net_repl_service_accumulated_ms = 0;
-        }
-
-        if machine.wifi_tcp_repl_service_enabled() {
-            if tcp_repl_service_accumulated_ms >= WIFI_TCP_REPL_SERVICE_INTERVAL_MS {
-                tcp_repl_service_accumulated_ms = 0;
-                let mut board = board_state.lisp_board(&p);
-                machine.poll_wifi_tcp_repl_service(&mut board);
-            }
-        } else {
-            tcp_repl_service_accumulated_ms = 0;
         }
 
         if process_service_accumulated_ms >= PROCESS_SERVICE_INTERVAL_MS {
